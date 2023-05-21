@@ -1,0 +1,38 @@
+pub enum Token {
+    And,
+    Break,
+    Do,
+    If,
+    Else,
+    ElseIf,
+    End,
+    For,
+    While,
+    Function,
+    In,
+    Local,
+    Nil,
+    Not,
+    Or,
+    Repeat,
+    Until,
+    Return,
+    Then,
+    True,
+    False,
+
+    // symbols
+    Assign,
+    Add,
+    AddAssign,
+    Subtract,
+    SubtractAssign,
+    Multiply,
+    MultiplyAssign,
+    Divide,
+    DivideAssign,
+    Modulus,
+    Exponent,
+    LengthOp, //#
+}
+pub type Literals = List;
