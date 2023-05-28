@@ -27,10 +27,8 @@ pub enum Token {
     // symbols
     Assign, //Equal
     Add,
-    Increment,
     AddAssign,
     Sub,
-    Decrement,
     SubAssign,
     Multiply,
     MultiplyAssign,
@@ -43,7 +41,10 @@ pub enum Token {
     Concat,
     OpenParen,
     CloseParen,
+    OpenBracket,
+    CloseBracket,
     SemiColon,
+    Comma,
 
     Equal,
     LessThan,
@@ -53,6 +54,7 @@ pub enum Token {
     //extra
     Class,
     Number(f64),
+    StringLiteral(String),
 }
 
 impl Display for Token {
@@ -81,10 +83,8 @@ impl Display for Token {
             Token::False => write!(f, "false"),
             Token::Assign => write!(f, "::="),
             Token::Add => write!(f, "+"),
-            Token::Increment => write!(f, "++"),
             Token::AddAssign => write!(f, "+="),
             Token::Sub => write!(f, "-"),
-            Token::Decrement => write!(f, "--"),
             Token::SubAssign => write!(f, "-="),
             Token::Multiply => write!(f, "*"),
             Token::MultiplyAssign => write!(f, "*="),
@@ -106,6 +106,10 @@ impl Display for Token {
             Token::OpenParen => write!(f, "("),
             Token::CloseParen => write!(f, ")"),
             Token::SemiColon => write!(f, ";"),
+            Token::Comma => write!(f, ","),
+            Token::StringLiteral(ref s) => write!(f, "string({})", s),
+            Token::OpenBracket => write!(f, "["),
+            Token::CloseBracket => write!(f, "]"),
         }
     }
 }

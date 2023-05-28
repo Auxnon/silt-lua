@@ -5,10 +5,14 @@ fn main() {
     let source = r#"
     abc
     abc2
-    2bc
+    bc=5--hi there
     a=1
     b=2
     c=a+b
+    d='hello'
+    e="world"
+    f=[[multi 
+    line]]
     print(c)
     "#;
 
@@ -17,14 +21,24 @@ fn main() {
     let mut lexer = lexer::Lexer {
         source: source.to_string(),
         start: 0,
+        column: 0,
         current: 0,
         end: source.len(),
         line: 1,
         iterator: sourceIter,
+        error_out: None,
+        tokens: Vec::new(),
     };
-    lexer.for_each(|token| {
-        println!("{}", token);
-    });
+    let t = lexer.parse();
+    t.iter().for_each(|t| println!("{}", t));
+
+    // match lexer.get_error() {
+    //     Some(s) => println!("ERROR {}", s),
+    //     None => println!("No error"),
+    // }
+    if let Some(s) = lexer.get_error() {
+        println!("ERROR {}", s);
+    }
 }
 
 #[cfg(test)]
