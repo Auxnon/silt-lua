@@ -12,6 +12,7 @@ pub enum Token {
     For,
     While,
     Function,
+    ArrowFunction,
     In,
     Local,
     Nil,
@@ -25,6 +26,7 @@ pub enum Token {
     False,
 
     // symbols
+    Call,
     Assign, //Equal
     Add,
     AddAssign,
@@ -70,6 +72,7 @@ impl Display for Token {
             Token::For => write!(f, "for"),
             Token::While => write!(f, "while"),
             Token::Function => write!(f, "function"),
+            Token::ArrowFunction => write!(f, "arrow function"),
             Token::In => write!(f, "in"),
             Token::Local => write!(f, "local"),
             Token::Nil => write!(f, "nil"),

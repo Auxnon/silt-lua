@@ -14,6 +14,10 @@ fn main() {
     f=[[multi 
     line]]
     print(c)
+    if a==1 then
+    a=2
+    end
+    print(a)
     "#;
 
     let sourceIter = source.chars().peekable();

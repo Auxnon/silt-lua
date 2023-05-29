@@ -53,6 +53,15 @@ impl<'a> Lexer<'a> {
     fn add(&mut self, token: Token) {
         self.tokens.push(token);
     }
+    fn eat_add(&mut self, token: Token) {
+        self.eat();
+        self.add(token);
+    }
+    fn eat_eat_add(&mut self, token: Token) {
+        self.eat();
+        self.eat();
+        self.add(token);
+    }
     fn maybe_add(&mut self, token: Option<Token>) {
         if let Some(t) = token {
             self.tokens.push(t);
@@ -170,7 +179,7 @@ impl<'a> Lexer<'a> {
                     // println!("c :{}: {}", c, self.current);
 
                     match c {
-                        'a'..='z' | 'A'..='Z' => {
+                        '_' | 'a'..='z' | 'A'..='Z' => {
                             self.start = self.current;
                             self.eat();
                             while self.current < self.end {
@@ -210,6 +219,11 @@ impl<'a> Lexer<'a> {
                             });
                         }
                         '0'..='9' => self.number(),
+                        '.' => match self.peek() {
+                            Some('0'..='9') => self.number(),
+                            Some('.') => self.eat_eat_add(Token::Concat),
+                            _ => self.eat_add(Token::Call),
+                        },
                         '=' => {
                             self.eat();
                             let t = match self.peek() {
@@ -247,6 +261,10 @@ impl<'a> Lexer<'a> {
                                 Some('=') => {
                                     self.eat();
                                     self.add(Token::SubAssign);
+                                }
+                                Some('>') => {
+                                    self.eat();
+                                    self.add(Token::ArrowFunction)
                                 }
                                 _ => self.add(Token::Sub),
                             };
