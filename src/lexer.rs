@@ -1,36 +1,40 @@
-use std::vec;
+use crate::{
+    error::{ErrorTuple, Location, SiltError},
+    token::Token,
+};
 
-use crate::token::Token;
-
-pub struct Lexer<'a> {
-    // pub tokens: Vec<Token>,
+pub struct Lexer {
     pub source: String,
-    pub iterator: std::iter::Peekable<std::str::Chars<'a>>,
+    pub iterator: std::iter::Peekable<std::vec::IntoIter<char>>,
     pub start: usize,
     pub end: usize,
     pub current: usize,
-    // pub // currentString: String,
     pub line: usize,
     pub column: usize,
-    pub error_out: Option<String>,
+    pub error_list: Vec<ErrorTuple>,
     pub tokens: Vec<Token>,
+    pub locations: Vec<Location>,
 }
 
-impl<'a> Lexer<'a> {
-    //     pub fn new(source: &str) -> Self {
-    //         let st = source.to_string();
-    //         let it = st.chars().peekable();
-    //         Lexer {
-    //             tokens: vec![],
-    //             source: st,
-    //             end: source.len(),
-    //             iterator: it,
-    //             start: 0,
-    //             current: 0,
-    //             // currentString: String::new(),
-    //             line: 1,
-    //         }
-    //     }
+impl<'a> Lexer {
+    pub fn new(source: String) -> Self {
+        let st = source.clone();
+        let len = st.len();
+        // TODO is this insane?
+        let chars = source.chars().collect::<Vec<_>>().into_iter().peekable();
+        Lexer {
+            source: st,
+            start: 0,
+            column: 0,
+            current: 0,
+            end: len,
+            line: 1,
+            iterator: chars,
+            error_list: Vec::new(),
+            tokens: Vec::new(),
+            locations: Vec::new(),
+        }
+    }
     fn eat(&mut self) {
         self.current += 1;
         self.column += 1;
@@ -44,14 +48,18 @@ impl<'a> Lexer<'a> {
     fn peek(&mut self) -> Option<&char> {
         self.iterator.peek()
     }
-    fn error(&mut self, message: String) {
-        self.error_out = Some(format!("{} at  {}:{}", message, self.line, self.column));
+    fn error(&mut self, code: SiltError) {
+        self.error_list.push(ErrorTuple {
+            code,
+            location: (self.line, self.column),
+        });
     }
-    pub fn get_error(&mut self) -> Option<String> {
-        self.error_out.clone()
+    pub fn get_errors(&mut self) -> Vec<ErrorTuple> {
+        self.error_list.drain(..).collect()
     }
     fn add(&mut self, token: Token) {
         self.tokens.push(token);
+        self.locations.push((self.line, self.column));
     }
     fn eat_add(&mut self, token: Token) {
         self.eat();
@@ -62,11 +70,12 @@ impl<'a> Lexer<'a> {
         self.eat();
         self.add(token);
     }
-    fn maybe_add(&mut self, token: Option<Token>) {
-        if let Some(t) = token {
-            self.tokens.push(t);
-        }
-    }
+    // fn maybe_add(&mut self, token: Option<Token>) {
+    //     if let Some(t) = token {
+    //         self.tokens.push(t);
+    //         self.locations.push((self.line, self.column));
+    //     }
+    // }
     fn new_line(&mut self) {
         self.line += 1;
         self.column = 0;
@@ -87,7 +96,7 @@ impl<'a> Lexer<'a> {
                         self.eat();
                     }
                     'a'..='z' | 'A'..='Z' | '_' => {
-                        self.error(format!("Invalid number {}", self.get_sofar()));
+                        self.error(SiltError::InvalidNumber(self.get_sofar()));
                         return;
                     }
                     _ => break,
@@ -99,7 +108,7 @@ impl<'a> Lexer<'a> {
         let n = match cc.parse::<f64>() {
             Ok(n) => n,
             Err(_) => {
-                self.error(format!("{} is not a number", cc));
+                self.error(SiltError::NotANumber(cc.to_string()));
                 return;
             }
         };
@@ -113,7 +122,7 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 Some(c) => match c {
                     '\n' => {
-                        self.error("Unterminated string".to_string());
+                        self.error(SiltError::UnterminatedString);
                         return None;
                     }
                     '\'' => {
@@ -133,7 +142,7 @@ impl<'a> Lexer<'a> {
                     }
                 },
                 None => {
-                    self.error("Unterminated string".to_string());
+                    self.error(SiltError::UnterminatedString);
                     return None;
                 }
             }
@@ -145,7 +154,8 @@ impl<'a> Lexer<'a> {
         self.start = self.current;
         self.eat();
         while self.current < self.end {
-            match self.peek() {
+            let char = self.peek();
+            match char {
                 Some(c) => match c {
                     '\n' => {
                         self.new_line();
@@ -163,7 +173,7 @@ impl<'a> Lexer<'a> {
                     }
                 },
                 None => {
-                    self.error("Unterminated string".to_string());
+                    self.error(SiltError::UnterminatedString);
                     return None;
                 }
             }
@@ -172,222 +182,199 @@ impl<'a> Lexer<'a> {
         Some(Token::StringLiteral(cc))
     }
 
-    pub fn parse(&mut self) -> Vec<Token> {
+    pub fn parse(&mut self) -> (Vec<Token>, Vec<Location>) {
         while self.current < self.end {
-            match self.iterator.peek() {
-                Some(c) => {
-                    // println!("c :{}: {}", c, self.current);
+            let char = match self.peek() {
+                Some(c) => *c,
+                None => break,
+            };
 
-                    match c {
-                        '_' | 'a'..='z' | 'A'..='Z' => {
-                            self.start = self.current;
-                            self.eat();
-                            while self.current < self.end {
-                                match self.iterator.peek() {
-                                    Some(c) => match c {
-                                        'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.eat(),
-                                        _ => break,
-                                    },
-                                    None => break,
-                                }
-                            }
-                            let cc = &self.source[self.start..self.current];
-                            self.add(match cc {
-                                "if" => Token::If,
-                                "else" => (Token::Else),
-                                "elseif" => (Token::ElseIf),
-                                "end" => (Token::End),
-                                "for" => (Token::For),
-                                "while" => (Token::While),
-                                "function" => (Token::Function),
-                                "in" => (Token::In),
-                                "local" => (Token::Local),
-                                "nil" => (Token::Nil),
-                                "not" => (Token::Not),
-                                "or" => (Token::Or),
-                                "repeat" => (Token::Repeat),
-                                "until" => (Token::Until),
-                                "return" => (Token::Return),
-                                "then" => (Token::Then),
-                                "true" => (Token::True),
-                                "false" => (Token::False),
-                                "and" => (Token::And),
-                                "break" => (Token::Break),
-                                "do" => (Token::Do),
-                                "class" => (Token::Class),
-                                _ => (Token::Identifier(cc.to_string())),
-                            });
-                        }
-                        '0'..='9' => self.number(),
-                        '.' => match self.peek() {
-                            Some('0'..='9') => self.number(),
-                            Some('.') => self.eat_eat_add(Token::Concat),
-                            _ => self.eat_add(Token::Call),
-                        },
-                        '=' => {
-                            self.eat();
-                            let t = match self.peek() {
-                                Some('=') => {
-                                    self.eat();
-                                    Token::Equal
-                                }
-                                _ => Token::Assign,
-                            };
-                            self.add(t);
-                        }
-                        '+' => {
-                            self.eat();
-                            let t = match self.peek() {
-                                Some('=') => {
-                                    self.eat();
-                                    Token::AddAssign
-                                }
-                                _ => Token::Add,
-                            };
-                            self.add(t);
-                        }
-                        '-' => {
-                            self.eat();
-                            match self.peek() {
-                                Some('-') => {
-                                    self.eat();
-                                    while self.current < self.end {
-                                        if let Some('\n') = self.eat_out() {
-                                            self.new_line();
-                                            break;
-                                        }
-                                    }
-                                }
-                                Some('=') => {
-                                    self.eat();
-                                    self.add(Token::SubAssign);
-                                }
-                                Some('>') => {
-                                    self.eat();
-                                    self.add(Token::ArrowFunction)
-                                }
-                                _ => self.add(Token::Sub),
-                            };
-                        }
-                        '(' => {
-                            self.eat();
-                            self.add(Token::OpenParen);
-                        }
-                        ')' => {
-                            self.eat();
-                            self.add(Token::CloseParen);
-                        }
-                        ';' => {
-                            self.eat();
-                            self.add(Token::SemiColon);
-                        }
-                        ',' => {
-                            self.eat();
-                            self.add(Token::Comma);
-                        }
-                        '"' => {
-                            if let Some(t) = self.string(false) {
-                                self.add(t);
-                            }
-                        }
-                        '\'' => {
-                            if let Some(t) = self.string(true) {
-                                self.add(t);
-                            }
-                        }
-                        '[' => {
-                            self.eat();
-                            match self.peek() {
-                                Some(c) => match c {
-                                    '[' => {
-                                        self.eat();
-                                        if let Some(t) = self.multi_line_string() {
-                                            self.add(t);
-                                        }
-                                    }
-                                    // '=' => {
-                                    //     self.eat();
-                                    //     return Some(Token::OpenBracketAssign);
-                                    // }
-                                    _ => self.add(Token::OpenBracket),
-                                },
-                                None => self.add(Token::OpenBracket),
-                            }
-                        }
-                        ']' => {
-                            self.eat();
-                            self.add(Token::CloseBracket);
-                        }
-                        ' ' | '\r' | '\t' => self.eat(),
-                        '\n' => {
-                            self.new_line();
-                            self.eat();
-                        }
-                        cw => {
-                            let s = format!("Unexpected character {}", cw);
-                            self.error(s)
+            match char {
+                '_' | 'a'..='z' | 'A'..='Z' => {
+                    self.start = self.current;
+                    self.eat();
+                    while self.current < self.end {
+                        match self.peek() {
+                            Some(c) => match c {
+                                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.eat(),
+                                _ => break,
+                            },
+                            None => break,
                         }
                     }
+                    let cc = &self.source[self.start..self.current];
+                    self.add(match cc {
+                        "if" => Token::If,
+                        "else" => Token::Else,
+                        "elseif" => Token::ElseIf,
+                        "end" => Token::End,
+                        "for" => Token::For,
+                        "while" => Token::While,
+                        "function" => Token::Function,
+                        "in" => Token::In,
+                        "local" => Token::Local,
+                        "nil" => Token::Nil,
+                        "not" => Token::Not,
+                        "or" => Token::Or,
+                        "repeat" => Token::Repeat,
+                        "until" => Token::Until,
+                        "return" => Token::Return,
+                        "then" => Token::Then,
+                        "true" => Token::True,
+                        "false" => Token::False,
+                        "and" => Token::And,
+                        "break" => Token::Break,
+                        "do" => Token::Do,
+                        "class" => Token::Class,
+                        _ => Token::Identifier(cc.to_string()),
+                    });
                 }
-                None => break,
+                '0'..='9' => self.number(),
+                '.' => match self.peek() {
+                    Some('0'..='9') => self.number(),
+                    Some('.') => self.eat_eat_add(Token::Concat),
+                    _ => self.eat_add(Token::Call),
+                },
+                '=' => {
+                    self.eat();
+                    let t = match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            Token::Equal
+                        }
+                        _ => Token::Assign,
+                    };
+                    self.add(t);
+                }
+                '+' => {
+                    self.eat();
+                    let t = match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            Token::AddAssign
+                        }
+                        _ => Token::Add,
+                    };
+                    self.add(t);
+                }
+                '-' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('-') => {
+                            self.eat();
+                            while self.current < self.end {
+                                if let Some('\n') = self.eat_out() {
+                                    self.new_line();
+                                    break;
+                                }
+                            }
+                        }
+                        Some('=') => {
+                            self.eat();
+                            self.add(Token::SubAssign);
+                        }
+                        Some('>') => {
+                            self.eat();
+                            self.add(Token::ArrowFunction)
+                        }
+                        _ => self.add(Token::Sub),
+                    };
+                }
+                '/' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            self.add(Token::DivideAssign);
+                        }
+                        _ => self.add(Token::Divide),
+                    };
+                }
+                '*' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            self.add(Token::MultiplyAssign);
+                        }
+                        _ => self.add(Token::Multiply),
+                    };
+                }
+                '%' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            self.add(Token::ModulusAssign);
+                        }
+                        _ => self.add(Token::Modulus),
+                    };
+                }
+                '(' => {
+                    self.eat();
+                    self.add(Token::OpenParen);
+                }
+                ')' => {
+                    self.eat();
+                    self.add(Token::CloseParen);
+                }
+                ';' => {
+                    self.eat();
+                    self.add(Token::SemiColon);
+                }
+                ',' => {
+                    self.eat();
+                    self.add(Token::Comma);
+                }
+                '"' => {
+                    if let Some(t) = self.string(false) {
+                        self.add(t);
+                    }
+                }
+                '\'' => {
+                    if let Some(t) = self.string(true) {
+                        self.add(t);
+                    }
+                }
+                '[' => {
+                    self.eat();
+                    match self.peek() {
+                        Some(c) => match c {
+                            '[' => {
+                                self.eat();
+                                if let Some(t) = self.multi_line_string() {
+                                    self.add(t);
+                                }
+                            }
+                            // '=' => {
+                            //     self.eat();
+                            //     return Some(Token::OpenBracketAssign);
+                            // }
+                            _ => self.add(Token::OpenBracket),
+                        },
+                        None => self.add(Token::OpenBracket),
+                    }
+                }
+                ']' => {
+                    self.eat();
+                    self.add(Token::CloseBracket);
+                }
+                ' ' | '\r' | '\t' => self.eat(),
+                '\n' => {
+                    self.new_line();
+                    self.eat();
+                }
+                cw => {
+                    self.error(SiltError::UnexpectedCharacter(cw));
+                    self.eat();
+                }
             }
-
-            // if self.current>=self.end{
-            //     return None;
-            // }
-            // match self.iterator.nth(self.current){
-            //     Some(c)=>{
-            //         match c{
-
-            //         }
-            //     }
-            // }
-            // eat white space
-            // while self.current<self.end{
-            //     match self.iterator.nth(self.current){
-            //         Some(c)=>{
-            //             match c{
-            //                 ' '|'\r'|'\t'=>self.current+=1,
-            //                 '\n'=>{
-            //                     self.line+=1;
-            //                     self.current+=1;
-            //                 }
-            //                 'a'..='z'|'A'..='Z'|' =>{
-
-            //                 }
-            //                 _=>break,
-            //             }
-            //         }
-            //         None=>break,
-            //     }
-            // }
-            // self.start=self.current;
-            // if self.current>=self.end{
-            //     return None;
-            // }
-            // let c=self.iterator.nth(self.current);
-            // match c{
-            //     Some(c)=>{
-            //         match c{
-            //             t @ 'a'..='z'|'A'..='Z'|'_'=>{
-
-            //             }
-            //             '0'..='9'=>{
-
-            //             }
-            //             _=>{
-
-            //             }
-            //         }
-            //     }
-            //     None=>{
-
-            //     }
-            // }
-
-            // if self.current<self.end{
         }
-        self.tokens.drain(..).collect()
+
+        (
+            self.tokens.drain(..).collect(),
+            self.locations.drain(..).collect(),
+        )
     }
     // fn add_char(&mut self, c: char) {
     //     self.current += 1;

@@ -1,5 +1,7 @@
 use core::fmt::Display;
+// implement clone
 
+#[derive(Debug, Clone)]
 pub enum Token {
     Identifier(String),
     And,
@@ -37,6 +39,7 @@ pub enum Token {
     Divide,
     DivideAssign,
     Modulus,
+    ModulusAssign,
     Exponent,
     LengthOp, //#
     TypeOp,   //:
@@ -49,6 +52,7 @@ pub enum Token {
     Comma,
 
     Equal,
+    NotEqual,
     LessThan,
     LessThanOrEqual,
     GreaterThan,
@@ -57,6 +61,7 @@ pub enum Token {
     Class,
     Number(f64),
     StringLiteral(String),
+    EOF,
 }
 
 impl Display for Token {
@@ -94,6 +99,7 @@ impl Display for Token {
             Token::Divide => write!(f, "/"),
             Token::DivideAssign => write!(f, "/="),
             Token::Modulus => write!(f, "%"),
+            Token::ModulusAssign => write!(f, "%="),
             Token::Exponent => write!(f, "^"),
             Token::LengthOp => write!(f, "#"),
             Token::TypeOp => write!(f, ":"),
@@ -113,6 +119,9 @@ impl Display for Token {
             Token::StringLiteral(ref s) => write!(f, "string({})", s),
             Token::OpenBracket => write!(f, "["),
             Token::CloseBracket => write!(f, "]"),
+            Token::EOF => write!(f, "EOF"),
+            Token::Call => write!(f, "call"),
+            Token::NotEqual => write!(f, "~="),
         }
     }
 }
