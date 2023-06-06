@@ -1,7 +1,10 @@
 mod error;
+mod expression;
 mod lexer;
 mod parser;
+mod statement;
 mod token;
+mod value;
 fn main() {
     // println!("Hello, world!");
     // let source = r#"
@@ -21,25 +24,40 @@ fn main() {
     // end
     // print(a)
     // "#;
-    let source = "6+5/3-1%2";
+    while (true) {
+        let mut line = String::new();
+        if let Ok(_) = std::io::stdin().read_line(&mut line) {
+            // let source = "1/0"; //6+5/3-6";
+            let source = line.trim();
+            println!("-----------------");
 
-    let mut lexer = lexer::Lexer::new(source.to_owned());
-    // println!("step 1");
-    let (t, p) = lexer.parse();
-    // println!("step 2");
-    t.iter().for_each(|t| println!("{}", t));
+            let mut lexer = lexer::Lexer::new(source.to_owned());
+            // println!("step 1");
+            let (t, p) = lexer.parse();
+            // println!("step 2");
+            t.iter().for_each(|t| println!("{}", t));
 
-    // match lexer.get_error() {
-    //     Some(s) => println!("ERROR {}", s),
-    //     None => println!("No error"),
-    // }
-    lexer
-        .get_errors()
-        .iter()
-        .for_each(|e| println!("Err!!{}", e));
+            // match lexer.get_error() {
+            //     Some(s) => println!("ERROR {}", s),
+            //     None => println!("No error"),
+            // }
+            lexer
+                .get_errors()
+                .iter()
+                .for_each(|e| println!("Err!!{}", e));
 
-    let exp = crate::parser::Parser::new(t, p).parse();
-    println!("{}", exp);
+            let mut parser = crate::parser::parser::Parser::new(t, p);
+            let exp = parser.parse();
+            println!("{}", exp);
+            let val = parser.evaluate(exp);
+            println!("-----------------");
+            match val {
+                Ok(v) => println!("{}", v),
+                Err(e) => println!("Error: {}", e),
+            }
+            println!("-----------------");
+        }
+    }
 }
 
 #[cfg(test)]

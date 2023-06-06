@@ -1,6 +1,6 @@
 use crate::{
     error::{ErrorTuple, Location, SiltError},
-    token::Token,
+    token::{Operator, Token},
 };
 
 pub struct Lexer {
@@ -214,25 +214,26 @@ impl<'a> Lexer {
                         "in" => Token::In,
                         "local" => Token::Local,
                         "nil" => Token::Nil,
-                        "not" => Token::Not,
-                        "or" => Token::Or,
+                        "not" => Token::Op(Operator::Not),
+                        "or" => Token::Op(Operator::Or),
                         "repeat" => Token::Repeat,
                         "until" => Token::Until,
                         "return" => Token::Return,
                         "then" => Token::Then,
                         "true" => Token::True,
                         "false" => Token::False,
-                        "and" => Token::And,
+                        "and" => Token::Op(Operator::And),
                         "break" => Token::Break,
                         "do" => Token::Do,
                         "class" => Token::Class,
+                        "print" => Token::Print,
                         _ => Token::Identifier(cc.to_string()),
                     });
                 }
                 '0'..='9' => self.number(),
                 '.' => match self.peek() {
                     Some('0'..='9') => self.number(),
-                    Some('.') => self.eat_eat_add(Token::Concat),
+                    Some('.') => self.eat_eat_add(Token::Op(Operator::Concat)),
                     _ => self.eat_add(Token::Call),
                 },
                 '=' => {
@@ -240,7 +241,7 @@ impl<'a> Lexer {
                     let t = match self.peek() {
                         Some('=') => {
                             self.eat();
-                            Token::Equal
+                            Token::Op(Operator::Equal)
                         }
                         _ => Token::Assign,
                     };
@@ -253,7 +254,7 @@ impl<'a> Lexer {
                             self.eat();
                             Token::AddAssign
                         }
-                        _ => Token::Add,
+                        _ => Token::Op(Operator::Add),
                     };
                     self.add(t);
                 }
@@ -277,7 +278,7 @@ impl<'a> Lexer {
                             self.eat();
                             self.add(Token::ArrowFunction)
                         }
-                        _ => self.add(Token::Sub),
+                        _ => self.add(Token::Op(Operator::Sub)),
                     };
                 }
                 '/' => {
@@ -287,7 +288,7 @@ impl<'a> Lexer {
                             self.eat();
                             self.add(Token::DivideAssign);
                         }
-                        _ => self.add(Token::Divide),
+                        _ => self.add(Token::Op(Operator::Divide)),
                     };
                 }
                 '*' => {
@@ -297,7 +298,7 @@ impl<'a> Lexer {
                             self.eat();
                             self.add(Token::MultiplyAssign);
                         }
-                        _ => self.add(Token::Multiply),
+                        _ => self.add(Token::Op(Operator::Multiply)),
                     };
                 }
                 '%' => {
@@ -307,7 +308,7 @@ impl<'a> Lexer {
                             self.eat();
                             self.add(Token::ModulusAssign);
                         }
-                        _ => self.add(Token::Modulus),
+                        _ => self.add(Token::Op(Operator::Modulus)),
                     };
                 }
                 '(' => {
@@ -363,6 +364,17 @@ impl<'a> Lexer {
                 '\n' => {
                     self.new_line();
                     self.eat();
+                }
+                #[cfg(feature = "bang")]
+                '!' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            self.add(Token::NotEqual);
+                        }
+                        _ => self.add(Token::Not),
+                    };
                 }
                 cw => {
                     self.error(SiltError::UnexpectedCharacter(cw));

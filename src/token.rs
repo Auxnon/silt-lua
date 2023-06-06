@@ -3,8 +3,10 @@ use core::fmt::Display;
 
 #[derive(Debug, Clone)]
 pub enum Token {
+    // TODO temporary
+    Print,
+
     Identifier(String),
-    And,
     Break,
     Do,
     If,
@@ -18,8 +20,6 @@ pub enum Token {
     In,
     Local,
     Nil,
-    Not,
-    Or,
     Repeat,
     Until,
     Return,
@@ -30,20 +30,33 @@ pub enum Token {
     // symbols
     Call,
     Assign, //Equal
-    Add,
+
+    // operator
+    Op(Operator),
+    // Not,
+    // And,
+    // Or,
+    // Add,
+    // Sub,
+    // Multiply,
+    // Divide,
+    // FloorDivide,
+    // Modulus,
+    // Exponent,
+    // Concat,
+    // Equal,
+    // NotEqual,
+    // LessThan,
+    // LessThanOrEqual,
+    // GreaterThan,
+    // GreaterThanOrEqual,
     AddAssign,
-    Sub,
     SubAssign,
-    Multiply,
     MultiplyAssign,
-    Divide,
     DivideAssign,
-    Modulus,
     ModulusAssign,
-    Exponent,
     LengthOp, //#
     TypeOp,   //:
-    Concat,
     OpenParen,
     CloseParen,
     OpenBracket,
@@ -51,12 +64,6 @@ pub enum Token {
     SemiColon,
     Comma,
 
-    Equal,
-    NotEqual,
-    LessThan,
-    LessThanOrEqual,
-    GreaterThan,
-    GreaterThanOrEqual,
     //extra
     Class,
     Number(f64),
@@ -64,10 +71,32 @@ pub enum Token {
     EOF,
 }
 
+#[derive(Debug, Clone)]
+pub enum Operator {
+    Not,
+    And,
+    Or,
+    Add,
+    Sub,
+    Multiply,
+    Divide,
+    FloorDivide,
+    Modulus,
+    Exponent,
+    Concat,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+}
+
 impl Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
-            Token::And => write!(f, "and"),
+            Token::Print => write!(f, "print"),
+            Token::Op(ref op) => write!(f, "{}", op),
             Token::Break => write!(f, "break"),
             Token::Do => write!(f, "do"),
             Token::If => write!(f, "if"),
@@ -81,8 +110,6 @@ impl Display for Token {
             Token::In => write!(f, "in"),
             Token::Local => write!(f, "local"),
             Token::Nil => write!(f, "nil"),
-            Token::Not => write!(f, "not"),
-            Token::Or => write!(f, "or"),
             Token::Repeat => write!(f, "repeat"),
             Token::Until => write!(f, "until"),
             Token::Return => write!(f, "return"),
@@ -90,27 +117,15 @@ impl Display for Token {
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),
             Token::Assign => write!(f, "::="),
-            Token::Add => write!(f, "+"),
             Token::AddAssign => write!(f, "+="),
-            Token::Sub => write!(f, "-"),
             Token::SubAssign => write!(f, "-="),
-            Token::Multiply => write!(f, "*"),
             Token::MultiplyAssign => write!(f, "*="),
-            Token::Divide => write!(f, "/"),
             Token::DivideAssign => write!(f, "/="),
-            Token::Modulus => write!(f, "%"),
             Token::ModulusAssign => write!(f, "%="),
-            Token::Exponent => write!(f, "^"),
             Token::LengthOp => write!(f, "#"),
             Token::TypeOp => write!(f, ":"),
-            Token::Concat => write!(f, ".."),
-            Token::Equal => write!(f, "=="),
-            Token::LessThan => write!(f, "<"),
-            Token::LessThanOrEqual => write!(f, "<="),
-            Token::GreaterThan => write!(f, ">"),
-            Token::GreaterThanOrEqual => write!(f, ">="),
             Token::Class => write!(f, "class"),
-            Token::Number(n) => write!(f, "f64({})", n),
+            Token::Number(n) => write!(f, "{}f", n),
             Token::Identifier(ref s) => write!(f, "ident({})", s),
             Token::OpenParen => write!(f, "("),
             Token::CloseParen => write!(f, ")"),
@@ -121,7 +136,30 @@ impl Display for Token {
             Token::CloseBracket => write!(f, "]"),
             Token::EOF => write!(f, "EOF"),
             Token::Call => write!(f, "call"),
-            Token::NotEqual => write!(f, "~="),
+        }
+    }
+}
+
+impl Display for Operator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Operator::And => write!(f, "and"),
+            Operator::Not => write!(f, "not"),
+            Operator::Or => write!(f, "or"),
+            Operator::Add => write!(f, "+"),
+            Operator::Sub => write!(f, "-"),
+            Operator::Multiply => write!(f, "*"),
+            Operator::Divide => write!(f, "/"),
+            Operator::FloorDivide => write!(f, "//"),
+            Operator::Modulus => write!(f, "%"),
+            Operator::Exponent => write!(f, "^"),
+            Operator::Concat => write!(f, ".."),
+            Operator::Equal => write!(f, "=="),
+            Operator::NotEqual => write!(f, "~="),
+            Operator::LessThan => write!(f, "<"),
+            Operator::LessThanOrEqual => write!(f, "<="),
+            Operator::GreaterThan => write!(f, ">"),
+            Operator::GreaterThanOrEqual => write!(f, ">="),
         }
     }
 }
