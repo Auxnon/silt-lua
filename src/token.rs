@@ -19,13 +19,11 @@ pub enum Token {
     ArrowFunction,
     In,
     Local,
-    Nil,
+
     Repeat,
     Until,
     Return,
     Then,
-    True,
-    False,
 
     // symbols
     Call,
@@ -56,7 +54,7 @@ pub enum Token {
     DivideAssign,
     ModulusAssign,
     LengthOp, //#
-    TypeOp,   //:
+    Colon,    //:
     OpenParen,
     CloseParen,
     OpenBracket,
@@ -64,16 +62,25 @@ pub enum Token {
     SemiColon,
     Comma,
 
-    //extra
-    Class,
+    // primary
+    Nil,
     Number(f64),
+    Integer(i64),
     StringLiteral(String),
-    EOF,
+    True,
+    False,
+
+    // EOF,
+
+    //extra
+    Bang, // !
+    Class,
 }
 
 #[derive(Debug, Clone)]
 pub enum Operator {
     Not,
+    Tilde,
     And,
     Or,
     Add,
@@ -123,9 +130,10 @@ impl Display for Token {
             Token::DivideAssign => write!(f, "/="),
             Token::ModulusAssign => write!(f, "%="),
             Token::LengthOp => write!(f, "#"),
-            Token::TypeOp => write!(f, ":"),
+            Token::Colon => write!(f, ":"),
             Token::Class => write!(f, "class"),
             Token::Number(n) => write!(f, "{}f", n),
+            Token::Integer(i) => write!(f, "{}i", i),
             Token::Identifier(ref s) => write!(f, "ident({})", s),
             Token::OpenParen => write!(f, "("),
             Token::CloseParen => write!(f, ")"),
@@ -134,8 +142,9 @@ impl Display for Token {
             Token::StringLiteral(ref s) => write!(f, "string({})", s),
             Token::OpenBracket => write!(f, "["),
             Token::CloseBracket => write!(f, "]"),
-            Token::EOF => write!(f, "EOF"),
+            // Token::EOF => write!(f, "EOF"),
             Token::Call => write!(f, "call"),
+            Token::Bang => write!(f, "!"),
         }
     }
 }
@@ -160,6 +169,7 @@ impl Display for Operator {
             Operator::LessThanOrEqual => write!(f, "<="),
             Operator::GreaterThan => write!(f, ">"),
             Operator::GreaterThanOrEqual => write!(f, ">="),
+            Operator::Tilde => write!(f, "~"),
         }
     }
 }

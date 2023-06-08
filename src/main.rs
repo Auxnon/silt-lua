@@ -1,5 +1,7 @@
+mod environment;
 mod error;
 mod expression;
+mod interpreter;
 mod lexer;
 mod parser;
 mod statement;
@@ -24,6 +26,7 @@ fn main() {
     // end
     // print(a)
     // "#;
+    let mut global = environment::Environment::new();
     while (true) {
         let mut line = String::new();
         if let Ok(_) = std::io::stdin().read_line(&mut line) {
@@ -35,7 +38,10 @@ fn main() {
             // println!("step 1");
             let (t, p) = lexer.parse();
             // println!("step 2");
-            t.iter().for_each(|t| println!("{}", t));
+            t.iter().enumerate().for_each(|(i, t)| {
+                let p = p.get(i).unwrap_or(&(0, 0));
+                println!("|{}:{}| {}", p.0, p.1, t)
+            });
 
             // match lexer.get_error() {
             //     Some(s) => println!("ERROR {}", s),
@@ -44,18 +50,35 @@ fn main() {
             lexer
                 .get_errors()
                 .iter()
-                .for_each(|e| println!("Err!!{}", e));
+                .for_each(|e| println!("| Err!!{}", e));
 
             let mut parser = crate::parser::parser::Parser::new(t, p);
-            let exp = parser.parse();
-            println!("{}", exp);
-            let val = parser.evaluate(exp);
-            println!("-----------------");
-            match val {
-                Ok(v) => println!("{}", v),
-                Err(e) => println!("Error: {}", e),
+            println!("|----------------");
+            let statements = parser.parse();
+            statements
+                .iter()
+                .enumerate()
+                .for_each(|(i, e)| println!("| {} {}", i, e));
+            // println!("{}", exp);
+            // let val = parser.evaluate(exp);
+            let err = parser.get_errors();
+            if err.len() > 0 {
+                println!("|----------------");
+                println!("Parse Errors:");
+                err.iter().for_each(|e| println!("{}", e));
+                println!("-----------------");
+            } else {
+                println!("-----------------");
+                crate::interpreter::execute(&mut global, statements);
             }
-            println!("-----------------");
+
+            // println!("-----------------");
+            // match val {
+            //     Ok(v) => println!("{}", v),
+            //     Err(e) => println!("Error: {}", e),
+            // }
+            // println!("-----------------");
+            println!("")
         }
     }
 }

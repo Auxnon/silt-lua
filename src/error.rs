@@ -1,16 +1,23 @@
-use crate::{token::Operator, value::Value};
+use crate::token::{Operator, Token};
 
 pub enum SiltError {
+    //parse errors
     InvalidNumber(String),
     NotANumber(String),
     UnexpectedCharacter(char),
     UnterminatedString,
+    UnterminatedParenthesis(usize, usize),
 
-    UnterminatedParenthesis,
+    //expression errors
+    InvalidTokenPlacement(Token),
     InvalidExpressionOperator(Operator),
+    ExpInvalidBitwise(ErrorTypes),
     ExpOpValueWithValue(ErrorTypes, Operator, ErrorTypes),
-    ExpInvalidNegation(Value),
+    ExpInvalidNegation(ErrorTypes),
     EarlyEndOfFile,
+
+    //interpreted errors
+    EvalNoInteger(ErrorTypes),
 }
 pub enum ErrorTypes {
     String,
@@ -31,8 +38,12 @@ impl std::fmt::Display for SiltError {
             SiltError::NotANumber(s) => write!(f, "Not a number: {}", s),
             SiltError::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),
             SiltError::UnterminatedString => write!(f, "Unterminated string"),
-            SiltError::UnterminatedParenthesis => {
-                write!(f, "Expected closing paren ')' after expression")
+            SiltError::UnterminatedParenthesis(x, y) => {
+                write!(
+                    f,
+                    "Expected closing paren due to open paren '(' here {}:{}",
+                    x, y
+                )
             }
             SiltError::InvalidExpressionOperator(t) => write!(f, "Invalid expression token: {}", t),
             SiltError::EarlyEndOfFile => write!(f, "File ended early"),
@@ -40,6 +51,11 @@ impl std::fmt::Display for SiltError {
                 write!(f, "Cannot {} '{}' and '{}'", op, v1, v2)
             }
             SiltError::ExpInvalidNegation(v) => write!(f, "Cannot negate '{}'", v),
+            SiltError::InvalidTokenPlacement(t) => write!(f, "Invalid token placement: {}", t),
+            SiltError::ExpInvalidBitwise(v) => write!(f, "Cannot bitwise on '{}'", v),
+            SiltError::EvalNoInteger(v) => {
+                write!(f, "{} has no direct integer conversion for operation", v)
+            }
         }
     }
 }

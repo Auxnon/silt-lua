@@ -11,6 +11,7 @@ pub struct Lexer {
     pub current: usize,
     pub line: usize,
     pub column: usize,
+    pub column_start: usize,
     pub error_list: Vec<ErrorTuple>,
     pub tokens: Vec<Token>,
     pub locations: Vec<Location>,
@@ -26,6 +27,7 @@ impl<'a> Lexer {
             source: st,
             start: 0,
             column: 0,
+            column_start: 0,
             current: 0,
             end: len,
             line: 1,
@@ -34,6 +36,10 @@ impl<'a> Lexer {
             tokens: Vec::new(),
             locations: Vec::new(),
         }
+    }
+    fn set_start(&mut self) {
+        self.start = self.current;
+        self.column_start = self.column;
     }
     fn eat(&mut self) {
         self.current += 1;
@@ -51,7 +57,7 @@ impl<'a> Lexer {
     fn error(&mut self, code: SiltError) {
         self.error_list.push(ErrorTuple {
             code,
-            location: (self.line, self.column),
+            location: (self.line, self.start),
         });
     }
     pub fn get_errors(&mut self) -> Vec<ErrorTuple> {
@@ -59,7 +65,7 @@ impl<'a> Lexer {
     }
     fn add(&mut self, token: Token) {
         self.tokens.push(token);
-        self.locations.push((self.line, self.column));
+        self.locations.push((self.line, self.column_start + 1)); // add 1 because column_start is 0-indexed
     }
     fn eat_add(&mut self, token: Token) {
         self.eat();
@@ -84,8 +90,9 @@ impl<'a> Lexer {
         self.source[self.start..self.current].to_string()
     }
     fn number(&mut self) {
-        self.start = self.current;
+        self.set_start();
         self.eat();
+        let mut is_float = false;
         while self.current < self.end {
             match self.peek() {
                 Some(c) => match c {
@@ -93,6 +100,11 @@ impl<'a> Lexer {
                         self.eat();
                     }
                     '.' => {
+                        if is_float {
+                            self.error(SiltError::InvalidNumber(self.get_sofar()));
+                            return;
+                        }
+                        is_float = true;
                         self.eat();
                     }
                     'a'..='z' | 'A'..='Z' | '_' => {
@@ -105,17 +117,30 @@ impl<'a> Lexer {
             }
         }
         let cc = &self.source[self.start..self.current];
-        let n = match cc.parse::<f64>() {
-            Ok(n) => n,
-            Err(_) => {
-                self.error(SiltError::NotANumber(cc.to_string()));
-                return;
-            }
-        };
-        self.add(Token::Number(n));
+        if is_float {
+            let n = match cc.parse::<f64>() {
+                Ok(n) => n,
+                Err(_) => {
+                    self.error(SiltError::NotANumber(cc.to_string()));
+                    return;
+                }
+            };
+            self.add(Token::Number(n));
+        } else {
+            let n = match cc.parse::<i64>() {
+                Ok(n) => n,
+                Err(_) => {
+                    self.error(SiltError::NotANumber(cc.to_string()));
+                    return;
+                }
+            };
+            self.add(Token::Integer(n));
+        }
     }
 
     fn string(&mut self, apos: bool) -> Option<Token> {
+        // start column at '"' not within string starter
+        self.column_start = self.column;
         self.eat();
         self.start = self.current;
         while self.current < self.end {
@@ -151,8 +176,9 @@ impl<'a> Lexer {
         Some(Token::StringLiteral(cc))
     }
     fn multi_line_string(&mut self) -> Option<Token> {
-        self.start = self.current;
+        self.column_start = self.column;
         self.eat();
+        self.start = self.current;
         while self.current < self.end {
             let char = self.peek();
             match char {
@@ -189,9 +215,9 @@ impl<'a> Lexer {
                 None => break,
             };
 
+            self.set_start();
             match char {
                 '_' | 'a'..='z' | 'A'..='Z' => {
-                    self.start = self.current;
                     self.eat();
                     while self.current < self.end {
                         match self.peek() {
@@ -342,7 +368,7 @@ impl<'a> Lexer {
                     match self.peek() {
                         Some(c) => match c {
                             '[' => {
-                                self.eat();
+                                // self.eat();
                                 if let Some(t) = self.multi_line_string() {
                                     self.add(t);
                                 }
@@ -365,15 +391,33 @@ impl<'a> Lexer {
                     self.new_line();
                     self.eat();
                 }
+                '#' => {
+                    self.eat();
+                    self.add(Token::LengthOp);
+                }
+                ':' => {
+                    self.eat();
+                    self.add(Token::Colon);
+                }
+                '~' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            self.add(Token::Op(Operator::NotEqual));
+                        }
+                        _ => self.add(Token::Op(Operator::Tilde)),
+                    };
+                }
                 #[cfg(feature = "bang")]
                 '!' => {
                     self.eat();
                     match self.peek() {
                         Some('=') => {
                             self.eat();
-                            self.add(Token::NotEqual);
+                            self.add(Token::Op(Operator::NotEqual));
                         }
-                        _ => self.add(Token::Not),
+                        _ => self.add(Token::Bang),
                     };
                 }
                 cw => {

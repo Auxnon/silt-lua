@@ -4,7 +4,7 @@ use crate::{
 };
 
 pub enum Expression {
-    BinaryExpression {
+    Binary {
         left: Box<Expression>,
         operator: Operator,
         right: Box<Expression>,
@@ -22,13 +22,13 @@ pub enum Expression {
     GroupingExpression {
         expression: Box<Expression>,
     },
-    VariableExpression {
-        name: String,
+    Variable {
+        ident: String,
     },
-    AssignmentExpression {
-        name: Token,
-        value: Box<Expression>,
-    },
+    // AssignmentExpression {
+    //     name: Token,
+    //     value: Box<Expression>,
+    // },
     // LogicalExpression {
     //     left: Box<Expression>,
     //     operator: Token,
@@ -54,13 +54,12 @@ pub enum Expression {
     //     keyword: Token,
     //     method: Token,
     // },
-    EndOfFile,
     InvalidExpression,
 }
 impl std::fmt::Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Expression::BinaryExpression {
+            Expression::Binary {
                 left,
                 operator,
                 right,
@@ -68,10 +67,10 @@ impl std::fmt::Display for Expression {
             Expression::Unary { operator, right } => write!(f, "({} {})", operator, right),
             Expression::Literal { value } => write!(f, " {} ", value),
             Expression::GroupingExpression { expression } => write!(f, "G({})", expression),
-            Expression::VariableExpression { name } => write!(f, "{}", name),
-            Expression::AssignmentExpression { name, value } => {
-                write!(f, "({} := {})", name, value)
-            }
+            Expression::Variable { ident } => write!(f, "{}", ident),
+            // Expression::AssignmentExpression { name, value } => {
+            //     write!(f, "({} := {})", name, value)
+            // }
             // Expression::LogicalExpression {
             //     left,
             //     operator,
@@ -93,8 +92,8 @@ impl std::fmt::Display for Expression {
             // } => write!(f, "({}.{}={})", object, name, value),
             // Expression::ThisExpression { keyword } => write!(f, "{}", keyword),
             // Expression::SuperExpression { keyword, method } => write!(f, "{}.{}", keyword, method),
-            Expression::EndOfFile => write!(f, "EOF"),
-            Expression::InvalidExpression => write!(f, "Err!"),
+            // Expression::EndOfFile => write!(f, "EOF"),
+            Expression::InvalidExpression => write!(f, "!Invalid_Expression!"),
         }
     }
 }
