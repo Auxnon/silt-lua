@@ -115,23 +115,37 @@ macro_rules! intr2f {
     };
 }
 
-pub fn execute(global: &mut Environment, statements: Vec<Statement>) -> Vec<SiltError> {
-    let errors: Vec<SiltError> = statements
-        .into_iter()
-        .filter_map(|s| match s {
-            Statement::Expression(exp) => eval_wrap(global, exp),
-            Statement::Assign { ident, value } => {
-                let val = match evaluate(global, value) {
-                    Ok(v) => v,
-                    Err(e) => return Some(e),
-                };
-                global.set(ident, val);
+pub fn execute(scope: &mut Environment, statements: Vec<Statement>) -> Vec<SiltError> {
+    // let
+    let mut errors: Vec<SiltError> = vec![];
+    for s in statements {
+        if let Some(e) = match s {
+            Statement::Expression(exp) => eval_wrap(scope, exp),
+            Statement::Declare { ident, value } => match evaluate(scope, value) {
+                Ok(v) => {
+                    scope.set(ident, v, true);
+                    None
+                }
+                Err(e) => Some(e),
+            },
+            Statement::Block(statements) => {
+                scope.new_scope();
+                // let mut local = Environment::new();
+                // local.create_enclosing(scope);
+                // execute(&mut local, statements);
+                execute(scope, statements);
+                scope.pop_scope();
+                // drop(local);
                 None
             }
-            Statement::Print(exp) => print_statement(global, exp),
+            Statement::Print(exp) => print_statement(scope, exp),
+            Statement::InvalidStatement => None,
             _ => None,
-        })
-        .collect();
+        } {
+            // errors.push(e.clone());
+        };
+    }
+
     errors
 
     // for statement in statements {
@@ -141,7 +155,13 @@ pub fn execute(global: &mut Environment, statements: Vec<Statement>) -> Vec<Silt
     // }
 }
 
+// fn execute_lock(scope: &mut Environment, statements: Vec<Statement>) {
+//     let upper = scope;
+//     statements.for_each(|s| execute(scope))
+// }
+
 fn eval_wrap(global: &mut Environment, exp: Expression) -> Option<SiltError> {
+    //-> Option<SiltError> {
     if let Err(e) = evaluate(global, exp) {
         return Some(e);
     }
@@ -210,6 +230,11 @@ pub fn evaluate(global: &mut Environment, exp: Expression) -> Result<Value, Silt
         // Expression::AssignmentExpression { name, value } => todo!(),
         // Expression::EndOfFile => todo!(),
         Expression::InvalidExpression => todo!(),
+        Expression::Assign { ident, value } => {
+            let val = evaluate(global, *value)?;
+            global.set(ident, val, false);
+            Value::Nil
+        }
     };
 
     Ok(v)

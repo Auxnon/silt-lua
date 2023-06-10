@@ -69,7 +69,11 @@ fn main() {
                 println!("-----------------");
             } else {
                 println!("-----------------");
-                crate::interpreter::execute(&mut global, statements);
+                let errs = crate::interpreter::execute(&mut global, statements);
+                if errs.len() > 0 {
+                    println!("Runtime Errors:");
+                    errs.iter().for_each(|e| println!("{}", e));
+                }
             }
 
             // println!("-----------------");

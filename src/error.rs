@@ -7,9 +7,13 @@ pub enum SiltError {
     UnexpectedCharacter(char),
     UnterminatedString,
     UnterminatedParenthesis(usize, usize),
+    InvalidTokenPlacement(Token),
+    InvalidColonPlacement, // more specific to types and calls
+    ExpectedLocalIdentifier,
+    InvalidAssignment(Token),
+    UnterminatedBlock,
 
     //expression errors
-    InvalidTokenPlacement(Token),
     InvalidExpressionOperator(Operator),
     ExpInvalidBitwise(ErrorTypes),
     ExpOpValueWithValue(ErrorTypes, Operator, ErrorTypes),
@@ -52,10 +56,20 @@ impl std::fmt::Display for SiltError {
             }
             SiltError::ExpInvalidNegation(v) => write!(f, "Cannot negate '{}'", v),
             SiltError::InvalidTokenPlacement(t) => write!(f, "Invalid token placement: {}", t),
+            SiltError::InvalidColonPlacement => {
+                write!(f, "Colon must be followed by type and assigned or a call")
+            }
             SiltError::ExpInvalidBitwise(v) => write!(f, "Cannot bitwise on '{}'", v),
             SiltError::EvalNoInteger(v) => {
                 write!(f, "{} has no direct integer conversion for operation", v)
             }
+            SiltError::ExpectedLocalIdentifier => {
+                write!(f, "Expected identifier following local keyword")
+            }
+            SiltError::InvalidAssignment(t) => {
+                write!(f, "Cannot use assignment operator '{}' on declaration", t)
+            }
+            SiltError::UnterminatedBlock => write!(f, "Unterminated block"),
         }
     }
 }

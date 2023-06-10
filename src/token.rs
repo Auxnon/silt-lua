@@ -19,6 +19,7 @@ pub enum Token {
     ArrowFunction,
     In,
     Local,
+    Type,
 
     Repeat,
     Until,
@@ -53,8 +54,9 @@ pub enum Token {
     MultiplyAssign,
     DivideAssign,
     ModulusAssign,
-    LengthOp, //#
-    Colon,    //:
+    LengthOp,                //#
+    Colon,                   //:
+    ColonIdentifier(String), // :ident (for types and calls)
     OpenParen,
     CloseParen,
     OpenBracket,
@@ -145,6 +147,8 @@ impl Display for Token {
             // Token::EOF => write!(f, "EOF"),
             Token::Call => write!(f, "call"),
             Token::Bang => write!(f, "!"),
+            Token::Type => write!(f, "type"),
+            Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
         }
     }
 }

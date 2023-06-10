@@ -1,3 +1,5 @@
+use std::f32::consts::E;
+
 use crate::{
     token::{Operator, Token},
     value::Value,
@@ -25,10 +27,10 @@ pub enum Expression {
     Variable {
         ident: String,
     },
-    // AssignmentExpression {
-    //     name: Token,
-    //     value: Box<Expression>,
-    // },
+    Assign {
+        ident: String,
+        value: Box<Expression>,
+    },
     // LogicalExpression {
     //     left: Box<Expression>,
     //     operator: Token,
@@ -68,6 +70,7 @@ impl std::fmt::Display for Expression {
             Expression::Literal { value } => write!(f, " {} ", value),
             Expression::GroupingExpression { expression } => write!(f, "G({})", expression),
             Expression::Variable { ident } => write!(f, "{}", ident),
+            Expression::Assign { ident, value } => write!(f, "({} := {})", ident, value),
             // Expression::AssignmentExpression { name, value } => {
             //     write!(f, "({} := {})", name, value)
             // }

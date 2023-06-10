@@ -207,6 +207,27 @@ impl<'a> Lexer {
         let cc = self.source[self.start..self.current - 2].to_string();
         Some(Token::StringLiteral(cc))
     }
+    fn word_eater(&mut self) {
+        while self.current < self.end {
+            match self.peek() {
+                Some(c) => match c {
+                    'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.eat(),
+                    _ => break,
+                },
+                None => break,
+            }
+        }
+    }
+    /** Follow up a colon to determine if an identifer is listed, this may be either a typing or a method determined by context */
+    fn colon_blow(&mut self) -> Token {
+        while let Some(' ' | '\r' | '\t') = self.peek() {
+            self.eat();
+        }
+        self.set_start();
+        self.word_eater();
+        let cc = &self.source[self.start..self.current];
+        Token::ColonIdentifier(cc.to_string())
+    }
 
     pub fn parse(&mut self) -> (Vec<Token>, Vec<Location>) {
         while self.current < self.end {
@@ -219,15 +240,7 @@ impl<'a> Lexer {
             match char {
                 '_' | 'a'..='z' | 'A'..='Z' => {
                     self.eat();
-                    while self.current < self.end {
-                        match self.peek() {
-                            Some(c) => match c {
-                                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.eat(),
-                                _ => break,
-                            },
-                            None => break,
-                        }
-                    }
+                    self.word_eater();
                     let cc = &self.source[self.start..self.current];
                     self.add(match cc {
                         "if" => Token::If,
@@ -368,7 +381,6 @@ impl<'a> Lexer {
                     match self.peek() {
                         Some(c) => match c {
                             '[' => {
-                                // self.eat();
                                 if let Some(t) = self.multi_line_string() {
                                     self.add(t);
                                 }
@@ -398,6 +410,9 @@ impl<'a> Lexer {
                 ':' => {
                     self.eat();
                     self.add(Token::Colon);
+                    // trust me on this, it's easier to parse this way
+                    let t = self.colon_blow();
+                    self.add(t);
                 }
                 '~' => {
                     self.eat();
@@ -432,26 +447,4 @@ impl<'a> Lexer {
             self.locations.drain(..).collect(),
         )
     }
-    // fn add_char(&mut self, c: char) {
-    //     self.current += 1;
-    // }
-
-    // pub fn parse(s:&str){
-    //     let tokens: Vec<Token> =vec![];
-    //     s.chars().for_each(|c|{
-    //         match c{
-    //             'a'..='z'|'A'..='Z'|'_'=>{
-
-    //             }
-    //             '0'..='9'=>{
-
-    //             }
-    //             _=>{
-
-    //             }
-    //         }
-    //     });
-    //     match s{
-    //         "if"=>
-    //     }
 }

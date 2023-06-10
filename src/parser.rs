@@ -18,7 +18,7 @@ pub mod parser {
     macro_rules! op_assign {
         ($self:ident, $ident:ident,$op:ident) => {{
             let value = $self.next_expression();
-            Statement::Assign {
+            Statement::Declare {
                 ident: $ident.clone(),
                 value: Expression::Binary {
                     left: Box::new(Expression::Variable { $ident }),
@@ -133,76 +133,185 @@ pub mod parser {
             let mut statements = vec![];
             while !self.is_end() {
                 // if let Ok(s) = self.statement() {
-                statements.push(self.declaration());
+                statements.push(self.local_declaration());
                 // }
                 // else synchronize
             }
             statements
         }
+        // declare
+        // if var  return declare_staement
+        // return statement
+        // declare_statement
+        // eat identifier
+        // if equal then expresion
+        // otherwise return as nil binary assign
 
-        pub fn declaration(&mut self) -> Statement {
+        fn local_declaration(&mut self) -> Statement {
+            if let Some(&Token::Local) = self.peek() {
+                self.eat();
+                self.declaration(true)
+            } else {
+                self.declaration(false)
+            }
+        }
+
+        fn declaration(&mut self, local: bool) -> Statement {
             // if let Some(&Token::Local) = self.peek() {
             //     self.eat();
 
             if matches!(self.peek(), Some(Token::Identifier(_))) {
                 if let Token::Identifier(ident) = self.eat_out() {
-                    match self.peek() {
-                        Some(&Token::Assign) => Statement::Assign {
-                            ident,
-                            value: self.next_expression(),
-                        },
-                        Some(&Token::AddAssign) => {
-                            op_assign!(self, ident, Add)
+                    if let Some(&Token::Colon) = self.peek() {
+                        // typing or self calling
+                        self.eat();
+                        let token = self.eat_out();
+                        if let Token::ColonIdentifier(target) = token {
+                            // method or type name
+                            // self.eat();
+                            // return self.assign(self.peek(), ident);
+                            if let Some(&Token::OpenParen) = self.peek() {
+                                // self call
+
+                                Statement::InvalidStatement
+                            } else {
+                                // typing
+                                // return self.assign(self.peek(), ident);
+                                Statement::InvalidStatement
+                            }
+                        } else {
+                            self.error(SiltError::InvalidColonPlacement);
+                            Statement::InvalidStatement
                         }
-                        Some(&Token::SubAssign) => {
-                            op_assign!(self, ident, Sub)
-                        }
-                        Some(&Token::MultiplyAssign) => {
-                            op_assign!(self, ident, Multiply)
-                        }
-                        Some(&Token::DivideAssign) => {
-                            op_assign!(self, ident, Divide)
-                        }
-                        Some(&Token::ModulusAssign) => {
-                            op_assign!(self, ident, Modulus)
-                        }
-                        _ => Statement::Assign {
-                            ident,
-                            value: Expression::Literal { value: Value::Nil },
-                        },
+                    } else {
+                        return if local {
+                            self.local_declare(ident)
+                        } else {
+                            self.assign(ident)
+                        };
                     }
                 } else {
                     // yucky
                     panic!("impossible");
                 }
+            } else if local {
+                self.error(SiltError::ExpectedLocalIdentifier);
+                Statement::InvalidStatement
             } else {
                 self.statement()
             }
         }
-        // fn assign(&mut self, ident: String) -> Statement {
-        //     self.eat();
-        //     let value = self.expression();
-        // }
 
-        pub fn statement(&mut self) -> Statement {
-            if let Some(&Token::Print) = self.peek() {
-                Statement::Print(self.next_expression())
-            } else {
-                // don't eat
-                Statement::Expression(self.expression())
+        fn assignment(&mut self) -> Expression {
+            let exp = self.equality();
+            if let Some(&Token::Assign) = self.peek() {
+                // println!("assign");
+                //let ident= current somehow?? use the exp as ident?
+                if let Expression::Variable { ident } = exp {
+                    self.eat();
+                    let value = self.assignment();
+                    return Expression::Assign {
+                        ident,
+                        value: Box::new(value),
+                    };
+                }
+                // self.eat();
+
+                // let value = self.equality();
+                // return Expression::Assign {
+                //     ident,
+                //     value: Box::new(value),
+                // };
+            }
+            exp
+        }
+
+        fn local_declare(&mut self, ident: String) -> Statement {
+            let t = self.peek();
+            // println!("decl");
+            match t {
+                Some(&Token::Assign) => Statement::Declare {
+                    ident,
+                    value: self.next_expression(),
+                },
+                Some(
+                    &Token::AddAssign
+                    | &Token::SubAssign
+                    | &Token::MultiplyAssign
+                    | &Token::DivideAssign
+                    | &Token::ModulusAssign,
+                ) => {
+                    let tt = t.unwrap().clone();
+                    self.error(SiltError::InvalidAssignment(tt));
+                    Statement::InvalidStatement
+                }
+                _ => Statement::Declare {
+                    ident,
+                    value: Expression::Literal { value: Value::Nil },
+                },
             }
         }
 
-        pub fn next_expression(&mut self) -> Expression {
+        fn assign(&mut self, ident: String) -> Statement {
+            match self.peek() {
+                Some(&Token::Assign) => Statement::Declare {
+                    ident,
+                    value: self.next_expression(),
+                },
+                Some(&Token::AddAssign) => {
+                    op_assign!(self, ident, Add)
+                }
+                Some(&Token::SubAssign) => {
+                    op_assign!(self, ident, Sub)
+                }
+                Some(&Token::MultiplyAssign) => {
+                    op_assign!(self, ident, Multiply)
+                }
+                Some(&Token::DivideAssign) => {
+                    op_assign!(self, ident, Divide)
+                }
+                Some(&Token::ModulusAssign) => {
+                    op_assign!(self, ident, Modulus)
+                }
+                _ => Statement::Declare {
+                    ident,
+                    value: Expression::Literal { value: Value::Nil },
+                },
+            }
+        }
+
+        fn statement(&mut self) -> Statement {
+            match self.peek() {
+                Some(&Token::Print) => Statement::Print(self.next_expression()),
+                Some(&Token::Do) => Statement::Block(self.block()),
+                _ => Statement::Expression(self.expression()), // don't eat
+            }
+        }
+
+        fn block(&mut self) -> Vec<Statement> {
+            self.eat();
+            let mut statements = vec![];
+            while !matches!(self.peek(), Some(&Token::End)) {
+                self.eat();
+                statements.push(self.statement());
+            }
+
+            if !matches!(self.eat_out(), Token::End) {
+                self.error(SiltError::UnterminatedBlock);
+            }
+            statements
+        }
+
+        fn next_expression(&mut self) -> Expression {
             self.eat();
             self.expression()
         }
 
-        pub fn expression(&mut self) -> Expression {
-            self.equality()
+        fn expression(&mut self) -> Expression {
+            self.assignment()
         }
 
-        pub fn equality(&mut self) -> Expression {
+        fn equality(&mut self) -> Expression {
             let mut exp = self.comparison();
             while let Some(&Token::Op((Operator::NotEqual | Operator::Equal))) = self.peek() {
                 let operator = Self::de_op(self.eat_out());
