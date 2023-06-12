@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, println};
 
 use crate::value::Value;
 
 pub struct Environment {
     pub variables: Vec<HashMap<String, Value>>,
     depth: usize, // pub enclosing: Option<&'b mut Environment<'a, 'b>>,
+    /** Whether undeclared variables should implicitly define up to the top level like normal lua, or start in immediate scope */
+    implicit_global: bool,
 }
 
 impl Environment {
@@ -12,10 +14,15 @@ impl Environment {
         Environment {
             variables: vec![HashMap::new()],
             depth: 0, // enclosing: None,
+            implicit_global: true,
         }
     }
+
+    /** If we have implicit global then we default implicit declaration to the highest level as lua
+     * does, otherwise we do something nicer and create in local scope if not shadowing anything*/
     pub fn set(&mut self, ident: String, value: Value, declare: bool) {
         if declare {
+            println!(" declare {} at {}", ident, self.depth);
             self.variables[self.depth].insert(ident, value);
         } else {
             if self.depth > 0 {
@@ -26,7 +33,11 @@ impl Environment {
                     }
                 }
             }
-            self.variables[0].insert(ident, value);
+            if self.implicit_global {
+                self.variables[0].insert(ident, value);
+            } else {
+                self.variables[self.depth].insert(ident, value);
+            }
         }
     }
     pub fn get(&self, ident: &str) -> &Value {

@@ -77,6 +77,7 @@ pub enum Token {
     //extra
     Bang, // !
     Class,
+    Global,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +150,7 @@ impl Display for Token {
             Token::Bang => write!(f, "!"),
             Token::Type => write!(f, "type"),
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
+            Token::Global => write!(f, "global"),
         }
     }
 }

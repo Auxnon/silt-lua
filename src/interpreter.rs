@@ -128,6 +128,21 @@ pub fn execute(scope: &mut Environment, statements: Vec<Statement>) -> Vec<SiltE
                 }
                 Err(e) => Some(e),
             },
+            Statement::If {
+                cond,
+                then,
+                else_cond,
+            } => match evaluate(scope, *cond) {
+                Ok(cond) => {
+                    if is_truthy(&cond) {
+                        execute(scope, then);
+                    } else if let Some(else_cond) = else_cond {
+                        execute(scope, else_cond);
+                    }
+                    None
+                }
+                Err(e) => Some(e),
+            },
             Statement::Block(statements) => {
                 scope.new_scope();
                 // let mut local = Environment::new();

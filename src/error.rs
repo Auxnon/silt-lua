@@ -12,6 +12,7 @@ pub enum SiltError {
     ExpectedLocalIdentifier,
     InvalidAssignment(Token),
     UnterminatedBlock,
+    ExpectedThen,
 
     //expression errors
     InvalidExpressionOperator(Operator),
@@ -19,6 +20,8 @@ pub enum SiltError {
     ExpOpValueWithValue(ErrorTypes, Operator, ErrorTypes),
     ExpInvalidNegation(ErrorTypes),
     EarlyEndOfFile,
+
+    // statement errors
 
     //interpreted errors
     EvalNoInteger(ErrorTypes),
@@ -70,6 +73,7 @@ impl std::fmt::Display for SiltError {
                 write!(f, "Cannot use assignment operator '{}' on declaration", t)
             }
             SiltError::UnterminatedBlock => write!(f, "Unterminated block"),
+            SiltError::ExpectedThen => write!(f, "Expected 'then' after if condition"),
         }
     }
 }

@@ -1,12 +1,24 @@
 pub mod parser {
+    use std::{ops::BitOr, println, process::Output, vec};
+
     use crate::{
         error::{ErrorTuple, ErrorTypes, Location, SiltError},
         expression::Expression,
-        statement::Statement,
+        statement::{self, Statement},
         token::{Operator, Token},
         value::Value,
     };
 
+    macro_rules! build_block_until {
+        ($self:ident $($rule:ident)|*) => {{
+            let mut then_branch = vec![];
+            while !matches!($self.peek(), Some(
+                $( &Token::$rule)|*)) {
+                then_branch.push($self.local_declaration());
+            }
+            then_branch
+        }};
+    }
     // macro_rules! val_err {
     //     ($left:ident,$right:ident) => {
     //         return Err(SiltError::ExpAddValueWithValue(
@@ -149,6 +161,7 @@ pub mod parser {
 
         fn local_declaration(&mut self) -> Statement {
             if let Some(&Token::Local) = self.peek() {
+                println!("local");
                 self.eat();
                 self.declaration(true)
             } else {
@@ -280,20 +293,40 @@ pub mod parser {
             }
         }
 
+        //////////////////////////////
+        /// Statements
+        //////////////////////////////
+
         fn statement(&mut self) -> Statement {
+            println!("check statement");
             match self.peek() {
+                Some(&Token::If) => self.if_statement(),
                 Some(&Token::Print) => Statement::Print(self.next_expression()),
                 Some(&Token::Do) => Statement::Block(self.block()),
                 _ => Statement::Expression(self.expression()), // don't eat
             }
         }
 
+        // fn next_block(&mut self, end:W ) -> Vec<Statement>
+        //     where W : Option<<&Token as BitOr<&Token>>::Output> {
+        //     let d = Some(&Token::End | &Token::Else);
+        //     let mut statements = vec![];
+        //     while !matches!(self.peek(), Some(end)) {
+        //         statements.push(self.local_declaration());
+        //     }
+        //
+        //     if !matches!(self.eat_out(), Token::End) {
+        //         self.error(SiltError::UnterminatedBlock);
+        //     }
+        //     statements
+        // }
+
         fn block(&mut self) -> Vec<Statement> {
+            println!("block statement");
             self.eat();
             let mut statements = vec![];
             while !matches!(self.peek(), Some(&Token::End)) {
-                self.eat();
-                statements.push(self.statement());
+                statements.push(self.local_declaration());
             }
 
             if !matches!(self.eat_out(), Token::End) {
@@ -301,8 +334,57 @@ pub mod parser {
             }
             statements
         }
+        fn if_statement(&mut self) -> Statement {
+            println!("if statement");
+            self.eat();
+            let condition = self.expression();
+            if let Some(&Token::Then) = self.peek() {
+                self.eat();
+
+                let then_branch = build_block_until!(self End | Else | ElseIf);
+                match self.peek() {
+                    Some(&Token::Else) => {
+                        self.eat();
+                        let else_branch = build_block_until!(self End);
+
+                        self.eat();
+                        Statement::If {
+                            cond: Box::new(condition),
+                            then: then_branch,
+                            else_cond: Some(else_branch),
+                        }
+                    }
+                    Some(&Token::ElseIf) => {
+                        // self.eat();
+                        let nested = vec![self.if_statement()];
+                        Statement::If {
+                            cond: Box::new(condition),
+                            then: then_branch,
+                            else_cond: Some(nested),
+                        }
+                    }
+                    Some(&Token::End) => {
+                        // println!("we hit end");
+                        self.eat();
+                        Statement::If {
+                            cond: Box::new(condition),
+                            then: then_branch,
+                            else_cond: None,
+                        }
+                    }
+                    _ => {
+                        self.error(SiltError::UnterminatedBlock);
+                        Statement::InvalidStatement
+                    }
+                }
+            } else {
+                self.error(SiltError::ExpectedThen);
+                Statement::InvalidStatement
+            }
+        }
 
         fn next_expression(&mut self) -> Expression {
+            println!("next_expression");
             self.eat();
             self.expression()
         }

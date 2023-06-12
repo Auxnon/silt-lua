@@ -3,10 +3,17 @@ use crate::expression::Expression;
 pub enum Statement {
     Expression(Expression),
     Print(Expression),
-    Declare { ident: String, value: Expression },
+    Declare {
+        ident: String,
+        value: Expression,
+    },
     // Var(Token, Expression),
     Block(Vec<Statement>),
-    // If(Expression, Box<Statement>, Option<Box<Statement>>),
+    If {
+        cond: Box<Expression>,
+        then: Vec<Statement>,
+        else_cond: Option<Vec<Statement>>,
+    },
     // While(Expression, Box<Statement>),
     // Break,
     // Continue,
@@ -23,14 +30,35 @@ impl std::fmt::Display for Statement {
         match self {
             Statement::Expression(expr) => write!(f, "$${}", expr),
             Statement::Print(expr) => write!(f, "$print$ {}", expr),
-            Statement::Declare { ident, value } => write!(f, "$assign$ {} := {}", ident, value),
+            Statement::Declare { ident, value } => write!(f, "$declare$ {} := {}", ident, value),
             Statement::InvalidStatement => write!(f, "!invalid!"),
             Statement::Block(statements) => {
                 let mut s = String::new();
                 for statement in statements {
-                    s.push_str(&format!("|{}\n", statement));
+                    s.push_str(&format!("\n||{}", statement));
                 }
                 write!(f, "$block$ {}", s)
+            }
+            Statement::If {
+                cond,
+                then,
+                else_cond,
+            } => {
+                let mut s = String::new();
+                for statement in then {
+                    s.push_str(&format!("\n||{}", statement));
+                }
+
+                let mut s = format!("$if$ {} then {}", cond, s);
+
+                if let Some(else_cond) = else_cond {
+                    let mut s2 = String::new();
+                    for statement in then {
+                        s2.push_str(&format!("\n||{}", statement));
+                    }
+                    s.push_str(&format!(" else {}", s2));
+                }
+                write!(f, "{}", s)
             }
         }
     }
