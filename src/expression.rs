@@ -31,11 +31,12 @@ pub enum Expression {
         ident: String,
         value: Box<Expression>,
     },
-    // LogicalExpression {
-    //     left: Box<Expression>,
-    //     operator: Token,
-    //     right: Box<Expression>,
-    // },
+    Logical {
+        left: Box<Expression>,
+        operator: Operator,
+        right: Box<Expression>,
+    },
+
     // CallExpression {
     //     callee: Box<Expression>,
     //     arguments: Vec<Expression>,
@@ -62,6 +63,11 @@ impl std::fmt::Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Expression::Binary {
+                left,
+                operator,
+                right,
+            } => write!(f, "({} {} {})", operator, left, right),
+            Expression::Logical {
                 left,
                 operator,
                 right,

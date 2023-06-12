@@ -216,7 +216,7 @@ pub mod parser {
         }
 
         fn assignment(&mut self) -> Expression {
-            let exp = self.equality();
+            let exp = self.logical_or();
             if let Some(&Token::Assign) = self.peek() {
                 // println!("assign");
                 //let ident= current somehow?? use the exp as ident?
@@ -393,9 +393,35 @@ pub mod parser {
             self.assignment()
         }
 
+        fn logical_or(&mut self) -> Expression {
+            let mut exp = self.logical_and();
+            while let Some(&Token::Op(Operator::Or)) = self.peek() {
+                self.eat();
+                let right = self.logical_and();
+                exp = Expression::Logical {
+                    left: Box::new(exp),
+                    operator: Operator::Or,
+                    right: Box::new(right),
+                };
+            }
+            exp
+        }
+        fn logical_and(&mut self) -> Expression {
+            let mut exp = self.equality();
+            while let Some(&Token::Op(Operator::And)) = self.peek() {
+                self.eat();
+                let right = self.equality();
+                exp = Expression::Logical {
+                    left: Box::new(exp),
+                    operator: Operator::And,
+                    right: Box::new(right),
+                };
+            }
+            exp
+        }
         fn equality(&mut self) -> Expression {
             let mut exp = self.comparison();
-            while let Some(&Token::Op((Operator::NotEqual | Operator::Equal))) = self.peek() {
+            while let Some(&Token::Op(Operator::NotEqual | Operator::Equal)) = self.peek() {
                 let operator = Self::de_op(self.eat_out());
                 let right = self.comparison();
                 exp = Expression::Binary {

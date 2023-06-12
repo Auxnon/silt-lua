@@ -27,7 +27,7 @@ fn main() {
     // print(a)
     // "#;
     let source_in = r#"
-    print nil and "hi"
+    print nil and nil or "hi" or nil
     "#;
     let mut global = environment::Environment::new();
     let mut meth = |source: &str| {

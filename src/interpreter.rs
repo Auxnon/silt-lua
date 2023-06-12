@@ -203,6 +203,31 @@ pub fn evaluate(global: &mut Environment, exp: Expression) -> Result<Value, Silt
             let right = evaluate(global, *right)?;
             eval_binary(left, operator, right)?
         }
+        Expression::Logical {
+            left,
+            operator,
+            right,
+        } => {
+            let left = evaluate(global, *left)?;
+            // let right = evaluate(global, *right)?;
+            match operator {
+                Operator::Or => {
+                    if is_truthy(&left) {
+                        left
+                    } else {
+                        evaluate(global, *right)?
+                    }
+                }
+                Operator::And => {
+                    if !is_truthy(&left) {
+                        left
+                    } else {
+                        evaluate(global, *right)?
+                    }
+                }
+                _ => return Err(SiltError::InvalidExpressionOperator(operator)), // impossible?
+            }
+        }
         Expression::Unary { operator, right } => {
             let right = evaluate(global, *right)?;
             match operator {
@@ -270,12 +295,13 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::GreaterThan => Value::Bool(l > r),
             Operator::GreaterThanOrEqual => Value::Bool(l >= r),
             Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             Operator::FloorDivide => Value::Number((l / r).floor()),
             Operator::Exponent => Value::Number(l.powf(*r)),
             Operator::Concat => Value::String(l.to_string() + &r.to_string()),
             Operator::Tilde => todo!(),
+            _ => return Err(SiltError::InvalidExpressionOperator(operator)),
         },
         (Value::Integer(l), Value::Integer(r)) => match operator {
             Operator::Add => Value::Integer(l + r),
@@ -284,8 +310,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::Divide | Operator::FloorDivide => Value::Integer(l / r),
             Operator::Modulus => Value::Integer(l % r),
 
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             Operator::Exponent => int_exp(*l, *r),
             Operator::Equal => Value::Bool(l == r),
             Operator::NotEqual => Value::Bool(l != r),
@@ -294,7 +320,9 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::GreaterThan => Value::Bool(l > r),
             Operator::GreaterThanOrEqual => Value::Bool(l >= r),
             Operator::Concat => Value::String(l.to_string() + &r.to_string()),
-            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
+            Operator::Not | Operator::And | Operator::Or => {
+                return Err(SiltError::InvalidExpressionOperator(operator))
+            }
             Operator::Tilde => todo!(),
         },
         (Value::Number(l), Value::Integer(r)) => match operator {
@@ -305,8 +333,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::FloorDivide => Value::Number((l / intr2f!(r)).floor()),
             Operator::Modulus => Value::Number(l % intr2f!(r)),
             Operator::Exponent => Value::Number(l.powf(intr2f!(r))),
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             Operator::Equal => Value::Bool(*l == intr2f!(r)),
             Operator::NotEqual => Value::Bool(*l != intr2f!(r)),
             Operator::LessThan => Value::Bool(*l < intr2f!(r)),
@@ -314,7 +342,9 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::GreaterThan => Value::Bool(*l > intr2f!(r)),
             Operator::GreaterThanOrEqual => Value::Bool(*l >= intr2f!(r)),
             Operator::Concat => Value::String(l.to_string() + &r.to_string()),
-            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
+            Operator::Not | Operator::And | Operator::Or => {
+                return Err(SiltError::InvalidExpressionOperator(operator))
+            }
             Operator::Tilde => todo!(),
         },
         (Value::Integer(l), Value::Number(r)) => match operator {
@@ -330,11 +360,13 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::LessThanOrEqual => Value::Bool(intr2f!(l) <= *r),
             Operator::GreaterThan => Value::Bool(intr2f!(l) > *r),
             Operator::GreaterThanOrEqual => Value::Bool(intr2f!(l) >= *r),
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             Operator::Exponent => Value::Number(intr2f!(l).powf(*r)),
             Operator::Concat => Value::String(l.to_string() + &r.to_string()),
-            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
+            Operator::Not | Operator::And | Operator::Or => {
+                return Err(SiltError::InvalidExpressionOperator(operator))
+            }
             Operator::Tilde => todo!(),
         },
         (Value::String(l), Value::String(r)) => {
@@ -388,8 +420,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
                 Operator::GreaterThan => Value::Bool(l > r),
                 Operator::GreaterThanOrEqual => Value::Bool(l >= r),
 
-                Operator::And => logical_and(left, right),
-                Operator::Or => logical_or(left, right),
+                // Operator::And => logical_and(left, right),
+                // Operator::Or => logical_or(left, right),
                 Operator::Modulus => str_op_str!(l % r Modulus),
                 Operator::Exponent => {
                     if let Ok(n1) = l.parse::<i64>() {
@@ -419,7 +451,9 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
                     }
                 }
                 Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
-                Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
+                Operator::Not | Operator::And | Operator::Or => {
+                    return Err(SiltError::InvalidExpressionOperator(operator))
+                }
             }
         }
         (Value::String(l), Value::Number(r)) => match operator {
@@ -436,8 +470,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::Divide => {
                 str_op_num!(l / r Divide);
             }
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             Operator::FloorDivide => {
                 if let Ok(n1) = l.parse::<f64>() {
                     Value::Number(n1.powf(*r))
@@ -480,15 +514,17 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
                 ));
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
-            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
+            Operator::Not | Operator::And | Operator::Or => {
+                return Err(SiltError::InvalidExpressionOperator(operator))
+            }
         },
         (Value::String(l), Value::Integer(r)) => match operator {
             Operator::Add => str_op_int!(l + r Add),
             Operator::Sub => str_op_int!(l - r Sub),
             Operator::Multiply => str_op_int!(l * r Multiply),
             Operator::Divide => str_op_int!(l / r Divide),
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             Operator::FloorDivide => {
                 if let Ok(n1) = l.parse::<i64>() {
                     return Ok(Value::Integer(n1 / r));
@@ -536,15 +572,17 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
                 ));
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
-            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
+            Operator::Not | Operator::And | Operator::Or => {
+                return Err(SiltError::InvalidExpressionOperator(operator))
+            }
         },
         (Value::Integer(l), Value::String(r)) => match operator {
             Operator::Add => int_op_str!(l + r Add),
             Operator::Sub => int_op_str!(l - r Sub),
             Operator::Multiply => int_op_str!(l * r Multiply),
             Operator::Divide => int_op_str!(l / r Divide),
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             Operator::FloorDivide => {
                 if let Ok(n1) = r.parse::<i64>() {
                     return Ok(Value::Integer(l / n1));
@@ -586,7 +624,9 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
                 ));
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
-            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
+            Operator::Not | Operator::And | Operator::Or => {
+                return Err(SiltError::InvalidExpressionOperator(operator))
+            }
         },
         (Value::Integer(_), Value::Bool(_))
         | (Value::Number(_), Value::Bool(_))
@@ -598,8 +638,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
         | (Value::Nil, Value::Bool(_)) => match operator {
             Operator::Equal => Value::Bool(false),
             Operator::NotEqual => Value::Bool(true),
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     left.to_error(),
@@ -612,8 +652,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
         (Value::Integer(_) | Value::Number(_) | Value::String(_), Value::Nil) => match operator {
             Operator::Equal => Value::Bool(false),
             Operator::NotEqual => Value::Bool(true),
-            Operator::Or => left,
-            Operator::And => right,
+            // Operator::Or => left,
+            // Operator::And => right,
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     left.to_error(),
@@ -625,8 +665,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
         (Value::Nil, Value::Integer(_) | Value::Number(_) | Value::String(_)) => match operator {
             Operator::Equal => Value::Bool(false),
             Operator::NotEqual => Value::Bool(true),
-            Operator::Or => right,
-            Operator::And => left,
+            // Operator::Or => right,
+            // Operator::And => left,
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     left.to_error(),
@@ -640,8 +680,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
         (Value::Bool(l), Value::Bool(r)) => match operator {
             Operator::Equal => Value::Bool(l == r),
             Operator::NotEqual => Value::Bool(l != r),
-            Operator::And => logical_and(left, right),
-            Operator::Or => logical_or(left, right),
+            // Operator::And => logical_and(left, right),
+            // Operator::Or => logical_or(left, right),
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     left.to_error(),
@@ -653,8 +693,8 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
         (Value::Nil, Value::Nil) => match operator {
             Operator::Equal => Value::Bool(true),
             Operator::NotEqual => Value::Bool(false),
-            Operator::And => Value::Nil,
-            Operator::Or => Value::Nil,
+            // Operator::And => Value::Nil,
+            // Operator::Or => Value::Nil,
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     ErrorTypes::Nil,
