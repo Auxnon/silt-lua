@@ -4,7 +4,7 @@ pub enum Statement {
     Expression(Expression),
     Print(Expression),
     Declare {
-        ident: String,
+        ident: usize,
         value: Expression,
     },
     // Var(Token, Expression),

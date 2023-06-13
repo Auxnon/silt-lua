@@ -2,6 +2,7 @@ pub mod parser {
     use std::{ops::BitOr, println, process::Output, vec};
 
     use crate::{
+        environment::Environment,
         error::{ErrorTuple, ErrorTypes, Location, SiltError},
         expression::Expression,
         statement::{self, Statement},
@@ -40,15 +41,16 @@ pub mod parser {
             }
         }};
     }
-    pub struct Parser {
+    pub struct Parser<'a> {
         pub iterator: std::iter::Peekable<std::vec::IntoIter<Token>>,
         pub locations: Vec<Location>,
         pub current: usize,
         pub errors: Vec<ErrorTuple>,
         pub valid: bool,
+        pub global: &'a mut Environment,
     }
-    impl Parser {
-        pub fn new(t: Vec<Token>, p: Vec<Location>) -> Parser {
+    impl<'a> Parser<'a> {
+        pub fn new(t: Vec<Token>, p: Vec<Location>, global: &'a mut Environment) -> Parser<'a> {
             assert!(p.len() == p.len());
             let ee = t.into_iter().peekable();
             // let tt = t.iter().peekable();
@@ -58,6 +60,7 @@ pub mod parser {
                 current: 0,
                 errors: vec![],
                 valid: true,
+                global,
             }
         }
 
@@ -161,7 +164,7 @@ pub mod parser {
 
         fn local_declaration(&mut self) -> Statement {
             if let Some(&Token::Local) = self.peek() {
-                println!("local");
+                // println!("local");
                 self.eat();
                 self.declaration(true)
             } else {
@@ -174,7 +177,8 @@ pub mod parser {
             //     self.eat();
 
             if matches!(self.peek(), Some(Token::Identifier(_))) {
-                if let Token::Identifier(ident) = self.eat_out() {
+                if let Token::Identifier(ident_str) = self.eat_out() {
+                    let ident = self.global.to_register(&ident_str);
                     if let Some(&Token::Colon) = self.peek() {
                         // typing or self calling
                         self.eat();
@@ -239,7 +243,7 @@ pub mod parser {
             exp
         }
 
-        fn local_declare(&mut self, ident: String) -> Statement {
+        fn local_declare(&mut self, ident: usize) -> Statement {
             let t = self.peek();
             // println!("decl");
             match t {
@@ -265,7 +269,7 @@ pub mod parser {
             }
         }
 
-        fn assign(&mut self, ident: String) -> Statement {
+        fn assign(&mut self, ident: usize) -> Statement {
             match self.peek() {
                 Some(&Token::Assign) => Statement::Declare {
                     ident,
@@ -548,7 +552,9 @@ pub mod parser {
                         Expression::InvalidExpression
                     }
                 }
-                Some(Token::Identifier(ident)) => Expression::Variable { ident },
+                Some(Token::Identifier(ident)) => Expression::Variable {
+                    ident: self.global.to_register(&ident),
+                },
                 // Some(Token::EOF) => Ok(Expression::EndOfFile),
                 Some(Token::Op(o)) => {
                     self.error(SiltError::InvalidExpressionOperator(o));

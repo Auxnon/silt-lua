@@ -25,10 +25,10 @@ pub enum Expression {
         expression: Box<Expression>,
     },
     Variable {
-        ident: String,
+        ident: usize,
     },
     Assign {
-        ident: String,
+        ident: usize,
         value: Box<Expression>,
     },
     Logical {

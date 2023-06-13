@@ -123,7 +123,7 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Vec<Silt
             Statement::Expression(exp) => eval_wrap(scope, exp),
             Statement::Declare { ident, value } => match evaluate(scope, &value) {
                 Ok(v) => {
-                    scope.set(ident, v, true);
+                    scope.set(*ident, v, true);
                     None
                 }
                 Err(e) => Some(e),
@@ -282,7 +282,7 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
         Expression::InvalidExpression => todo!(),
         Expression::Assign { ident, value } => {
             let val = evaluate(global, value)?;
-            global.set(ident, val, false);
+            global.set(*ident, val, false);
             Value::Nil
         }
     };
