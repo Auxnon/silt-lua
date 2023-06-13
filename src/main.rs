@@ -26,12 +26,23 @@ fn main() {
     // end
     // print(a)
     // "#;
+    // let source_in = r#"
+    // a=1
+    // while a < 10_000_00 do
+    //     a = a + 1
+    // end
+    // print a
+    // "#;
+    // fibonaci
     let source_in = r#"
-    a=1
-    while a < 10_000_00 do
-        a = a + 1
+    a=0
+    b=1
+    while a < 10000 do
+        b+=temp
+        print a
+        temp=a
+        a=b
     end
-    print a
     "#;
     let mut global = environment::Environment::new();
     let mut meth = |source: &str| {

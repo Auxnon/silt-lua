@@ -14,6 +14,7 @@ pub enum SiltError {
     UnterminatedBlock,
     ExpectedThen,
     ExpectedDo,
+    ExpectedToken(Token),
 
     //expression errors
     InvalidExpressionOperator(Operator),
@@ -76,6 +77,7 @@ impl std::fmt::Display for SiltError {
             SiltError::UnterminatedBlock => write!(f, "Unterminated block"),
             SiltError::ExpectedThen => write!(f, "Expected 'then' after if condition"),
             SiltError::ExpectedDo => write!(f, "Expected 'do' after while condition"),
+            Self::ExpectedToken(t) => write!(f, "Expected token: {}", t),
         }
     }
 }

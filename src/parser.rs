@@ -41,6 +41,17 @@ pub mod parser {
             }
         }};
     }
+
+    macro_rules! expect_token {
+        ($self:ident $token:ident) => {{
+            if let Some(&Token::$token) = $self.peek() {
+                $self.eat();
+            } else {
+                $self.error(SiltError::ExpectedToken(Token::$token));
+                return Statement::InvalidStatement;
+            }
+        };};
+    }
     pub struct Parser<'a> {
         pub iterator: std::iter::Peekable<std::vec::IntoIter<Token>>,
         pub locations: Vec<Location>,
@@ -306,6 +317,7 @@ pub mod parser {
             match self.peek() {
                 Some(&Token::If) => self.if_statement(),
                 Some(&Token::While) => self.while_statement(),
+                Some(&Token::For) => self.for_statement(),
                 Some(&Token::Print) => Statement::Print(self.next_expression()),
                 Some(&Token::Do) => Statement::Block(self.block()),
                 _ => Statement::Expression(self.expression()), // don't eat
@@ -398,6 +410,40 @@ pub mod parser {
                 self.error(SiltError::ExpectedDo);
                 Statement::InvalidStatement
             }
+        }
+        fn for_statement(&mut self) -> Statement {
+            // Statement::InvalidStatement
+            self.eat();
+            let ident = self.eat_out();
+            if let Token::Identifier(ident_str) = ident {
+                let ident = self.global.to_register(&ident_str);
+                expect_token!(self Assign);
+                let start = self.expression();
+                expect_token!(self Comma);
+                let end = self.expression();
+                let step = if let Some(&Token::Comma) = self.peek() {
+                    self.eat();
+                    Some(self.expression())
+                } else {
+                    None
+                };
+                return if let Some(&Token::Do) = self.peek() {
+                    let block = self.block();
+                    Statement::NumericFor {
+                        ident,
+                        start,
+                        end,
+                        step,
+                        block,
+                    }
+                } else {
+                    self.error(SiltError::ExpectedDo);
+                    Statement::InvalidStatement
+                };
+            } else {
+                self.error(SiltError::ExpectedLocalIdentifier);
+            }
+            Statement::InvalidStatement
         }
 
         fn next_expression(&mut self) -> Expression {

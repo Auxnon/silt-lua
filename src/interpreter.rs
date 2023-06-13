@@ -144,6 +144,7 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Vec<Silt
                 Err(e) => Some(e),
             },
             Statement::While { cond, block } => {
+                scope.new_scope();
                 while let Ok(cond) = evaluate(scope, cond) {
                     if is_truthy(&cond) {
                         execute(scope, &block);
@@ -151,8 +152,44 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Vec<Silt
                         break;
                     }
                 }
+                scope.pop_scope();
                 None
             }
+            Statement::NumericFor {
+                ident,
+                start,
+                end,
+                step,
+                block,
+            } => {
+                // look at this rusty octopus!
+                if let Err(e) = (|| {
+                    let mut start = evaluate(scope, start)?;
+                    let end = evaluate(scope, end)?;
+
+                    let step = match step {
+                        Some(s) => evaluate(scope, s)?,
+                        None => Value::Integer(1),
+                    };
+                    scope.new_scope();
+                    scope.set(*ident, start.clone(), true);
+                    while match eval_binary(&start, &Operator::LessEqual, &end) {
+                        Ok(v) => is_truthy(&v),
+                        _ => false,
+                    } {
+                        execute(scope, block);
+                        start = eval_binary(&start, &Operator::Add, &step)?;
+                        scope.set(*ident, start.clone(), false);
+                    }
+                    scope.pop_scope();
+                    Ok(())
+                })() {
+                    Some(e)
+                } else {
+                    None
+                }
+            }
+
             Statement::Block(statements) => {
                 scope.new_scope();
                 // let mut local = Environment::new();
@@ -211,7 +248,7 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
         } => {
             let left = evaluate(global, left)?;
             let right = evaluate(global, right)?;
-            eval_binary(left, operator, right)?
+            eval_binary(&left, operator, &right)?
         }
         Expression::Logical {
             left,
@@ -290,7 +327,7 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
     Ok(v)
 }
 
-pub fn eval_binary(left: Value, operator: &Operator, right: Value) -> Result<Value, SiltError> {
+pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<Value, SiltError> {
     let val = match (&left, &right) {
         (Value::Number(l), Value::Number(r)) => match operator {
             Operator::Add => Value::Number(l + r),
@@ -455,7 +492,7 @@ pub fn eval_binary(left: Value, operator: &Operator, right: Value) -> Result<Val
                 }
                 Operator::Concat => {
                     if let Value::String(ll) = left {
-                        Value::String(ll + r)
+                        Value::String(ll.to_owned() + r)
                     } else {
                         Value::Nil
                     }
@@ -506,7 +543,7 @@ pub fn eval_binary(left: Value, operator: &Operator, right: Value) -> Result<Val
             }
             Operator::Concat => {
                 if let Value::String(ll) = left {
-                    Value::String(ll + &r.to_string())
+                    Value::String(ll.to_owned() + &r.to_string())
                 } else {
                     Value::Nil
                 }
@@ -564,7 +601,7 @@ pub fn eval_binary(left: Value, operator: &Operator, right: Value) -> Result<Val
             }
             Operator::Concat => {
                 if let Value::String(ll) = left {
-                    Value::String(ll + &r.to_string())
+                    Value::String(ll.to_owned() + &r.to_string())
                 } else {
                     Value::Nil
                 }

@@ -18,6 +18,13 @@ pub enum Statement {
         cond: Box<Expression>,
         block: Vec<Statement>,
     },
+    NumericFor {
+        ident: usize,
+        start: Expression,
+        end: Expression,
+        step: Option<Expression>,
+        block: Vec<Statement>,
+    },
     // Break,
     // Continue,
     // Function(Token, Vec<Token>, Box<Statement>),
@@ -69,6 +76,29 @@ impl std::fmt::Display for Statement {
                     s.push_str(&format!("\n||{}", statement));
                 }
                 write!(f, "$while$ {} {}", cond, s)
+            }
+            Statement::NumericFor {
+                ident,
+                start,
+                end,
+                step,
+                block,
+            } => {
+                let mut s = String::new();
+                for statement in block {
+                    s.push_str(&format!("\n||{}", statement));
+                }
+                write!(
+                    f,
+                    "$for$ {} := {} to {} step {} {}",
+                    ident,
+                    start,
+                    end,
+                    step.as_ref().unwrap_or(&Expression::Literal {
+                        value: crate::value::Value::Integer(1)
+                    }),
+                    s
+                )
             }
         }
     }
