@@ -93,11 +93,16 @@ impl<'a> Lexer {
         self.set_start();
         self.eat();
         let mut is_float = false;
+        let mut strip = false;
         while self.current < self.end {
             match self.peek() {
                 Some(c) => match c {
                     '0'..='9' => {
                         self.eat();
+                    }
+                    '_' => {
+                        self.eat();
+                        strip = true;
                     }
                     '.' => {
                         if is_float {
@@ -118,7 +123,11 @@ impl<'a> Lexer {
         }
         let cc = &self.source[self.start..self.current];
         if is_float {
-            let n = match cc.parse::<f64>() {
+            let n = match if strip {
+                cc.replace("_", "").parse::<f64>()
+            } else {
+                cc.parse::<f64>()
+            } {
                 Ok(n) => n,
                 Err(_) => {
                     self.error(SiltError::NotANumber(cc.to_string()));
@@ -127,7 +136,11 @@ impl<'a> Lexer {
             };
             self.add(Token::Number(n));
         } else {
-            let n = match cc.parse::<i64>() {
+            let n = match if strip {
+                cc.replace("_", "").parse::<i64>()
+            } else {
+                cc.parse::<i64>()
+            } {
                 Ok(n) => n,
                 Err(_) => {
                     self.error(SiltError::NotANumber(cc.to_string()));

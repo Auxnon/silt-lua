@@ -28,7 +28,7 @@ fn main() {
     // "#;
     let source_in = r#"
     a=1
-    while a < 1000000 do
+    while a < 10_000_00 do
         a = a + 1
     end
     print a
@@ -56,7 +56,7 @@ fn main() {
             .iter()
             .for_each(|e| println!("| Err!!{}", e));
 
-        let mut parser = crate::parser::parser::Parser::new(t, p);
+        let mut parser = crate::parser::parser::Parser::new(t, p, &mut global);
         println!("|----------------");
         let statements = parser.parse();
         statements
