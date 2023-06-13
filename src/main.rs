@@ -27,7 +27,11 @@ fn main() {
     // print(a)
     // "#;
     let source_in = r#"
-    print nil and nil or "hi" or nil
+    a=1
+    while a < 1000000 do
+        a = a + 1
+    end
+    print a
     "#;
     let mut global = environment::Environment::new();
     let mut meth = |source: &str| {
@@ -69,7 +73,7 @@ fn main() {
             println!("-----------------");
         } else {
             println!("-----------------");
-            let errs = crate::interpreter::execute(&mut global, statements);
+            let errs = crate::interpreter::execute(&mut global, &statements);
             if errs.len() > 0 {
                 println!("Runtime Errors:");
                 errs.iter().for_each(|e| println!("{}", e));

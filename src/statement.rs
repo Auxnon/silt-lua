@@ -14,7 +14,10 @@ pub enum Statement {
         then: Vec<Statement>,
         else_cond: Option<Vec<Statement>>,
     },
-    // While(Expression, Box<Statement>),
+    While {
+        cond: Box<Expression>,
+        block: Vec<Statement>,
+    },
     // Break,
     // Continue,
     // Function(Token, Vec<Token>, Box<Statement>),
@@ -59,6 +62,13 @@ impl std::fmt::Display for Statement {
                     s.push_str(&format!(" else {}", s2));
                 }
                 write!(f, "{}", s)
+            }
+            Statement::While { cond, block } => {
+                let mut s = String::new();
+                for statement in block {
+                    s.push_str(&format!("\n||{}", statement));
+                }
+                write!(f, "$while$ {} {}", cond, s)
             }
         }
     }

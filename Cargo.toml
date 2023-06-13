@@ -16,3 +16,5 @@ silt=["bang"]
 bang=[]
 
 [dependencies]
+hashbrown = "0.14"
+rustc-hash="1.1.0"

@@ -13,6 +13,7 @@ pub enum SiltError {
     InvalidAssignment(Token),
     UnterminatedBlock,
     ExpectedThen,
+    ExpectedDo,
 
     //expression errors
     InvalidExpressionOperator(Operator),
@@ -74,6 +75,7 @@ impl std::fmt::Display for SiltError {
             }
             SiltError::UnterminatedBlock => write!(f, "Unterminated block"),
             SiltError::ExpectedThen => write!(f, "Expected 'then' after if condition"),
+            SiltError::ExpectedDo => write!(f, "Expected 'do' after while condition"),
         }
     }
 }

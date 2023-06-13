@@ -115,13 +115,13 @@ macro_rules! intr2f {
     };
 }
 
-pub fn execute(scope: &mut Environment, statements: Vec<Statement>) -> Vec<SiltError> {
+pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Vec<SiltError> {
     // let
     let mut errors: Vec<SiltError> = vec![];
     for s in statements {
         if let Some(e) = match s {
             Statement::Expression(exp) => eval_wrap(scope, exp),
-            Statement::Declare { ident, value } => match evaluate(scope, value) {
+            Statement::Declare { ident, value } => match evaluate(scope, &value) {
                 Ok(v) => {
                     scope.set(ident, v, true);
                     None
@@ -132,7 +132,7 @@ pub fn execute(scope: &mut Environment, statements: Vec<Statement>) -> Vec<SiltE
                 cond,
                 then,
                 else_cond,
-            } => match evaluate(scope, *cond) {
+            } => match evaluate(scope, cond) {
                 Ok(cond) => {
                     if is_truthy(&cond) {
                         execute(scope, then);
@@ -143,6 +143,16 @@ pub fn execute(scope: &mut Environment, statements: Vec<Statement>) -> Vec<SiltE
                 }
                 Err(e) => Some(e),
             },
+            Statement::While { cond, block } => {
+                while let Ok(cond) = evaluate(scope, cond) {
+                    if is_truthy(&cond) {
+                        execute(scope, &block);
+                    } else {
+                        break;
+                    }
+                }
+                None
+            }
             Statement::Block(statements) => {
                 scope.new_scope();
                 // let mut local = Environment::new();
@@ -175,7 +185,7 @@ pub fn execute(scope: &mut Environment, statements: Vec<Statement>) -> Vec<SiltE
 //     statements.for_each(|s| execute(scope))
 // }
 
-fn eval_wrap(global: &mut Environment, exp: Expression) -> Option<SiltError> {
+fn eval_wrap(global: &mut Environment, exp: &Expression) -> Option<SiltError> {
     //-> Option<SiltError> {
     if let Err(e) = evaluate(global, exp) {
         return Some(e);
@@ -183,7 +193,7 @@ fn eval_wrap(global: &mut Environment, exp: Expression) -> Option<SiltError> {
     None
 }
 
-fn print_statement(global: &mut Environment, exp: Expression) -> Option<SiltError> {
+fn print_statement(global: &mut Environment, exp: &Expression) -> Option<SiltError> {
     match evaluate(global, exp) {
         Ok(v) => println!("> {}", v),
         Err(e) => return Some(e),
@@ -191,16 +201,16 @@ fn print_statement(global: &mut Environment, exp: Expression) -> Option<SiltErro
     None
 }
 
-pub fn evaluate(global: &mut Environment, exp: Expression) -> Result<Value, SiltError> {
-    let v = match exp {
-        Expression::Literal { value } => value,
+pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, SiltError> {
+    let v: Value = match exp {
+        Expression::Literal { value } => value.clone(),
         Expression::Binary {
             left,
             operator,
             right,
         } => {
-            let left = evaluate(global, *left)?;
-            let right = evaluate(global, *right)?;
+            let left = evaluate(global, left)?;
+            let right = evaluate(global, right)?;
             eval_binary(left, operator, right)?
         }
         Expression::Logical {
@@ -208,28 +218,28 @@ pub fn evaluate(global: &mut Environment, exp: Expression) -> Result<Value, Silt
             operator,
             right,
         } => {
-            let left = evaluate(global, *left)?;
+            let left = evaluate(global, left)?;
             // let right = evaluate(global, *right)?;
             match operator {
-                Operator::Or => {
+                &Operator::Or => {
                     if is_truthy(&left) {
                         left
                     } else {
-                        evaluate(global, *right)?
+                        evaluate(global, right)?
                     }
                 }
-                Operator::And => {
+                &Operator::And => {
                     if !is_truthy(&left) {
                         left
                     } else {
-                        evaluate(global, *right)?
+                        evaluate(global, right)?
                     }
                 }
-                _ => return Err(SiltError::InvalidExpressionOperator(operator)), // impossible?
+                _ => return Err(SiltError::InvalidExpressionOperator(operator.clone())), // impossible?
             }
         }
         Expression::Unary { operator, right } => {
-            let right = evaluate(global, *right)?;
+            let right = evaluate(global, right)?;
             match operator {
                 Operator::Sub => match right {
                     Value::Number(n) => Value::Number(-n),
@@ -252,7 +262,7 @@ pub fn evaluate(global: &mut Environment, exp: Expression) -> Result<Value, Silt
                         return Err(SiltError::ExpInvalidBitwise(v.to_error()));
                     }
                 },
-                _ => return Err(SiltError::InvalidExpressionOperator(operator)),
+                _ => return Err(SiltError::InvalidExpressionOperator(operator.clone())),
             }
         }
         Expression::GroupingExpression { expression } => todo!(),
@@ -271,7 +281,7 @@ pub fn evaluate(global: &mut Environment, exp: Expression) -> Result<Value, Silt
         // Expression::EndOfFile => todo!(),
         Expression::InvalidExpression => todo!(),
         Expression::Assign { ident, value } => {
-            let val = evaluate(global, *value)?;
+            let val = evaluate(global, value)?;
             global.set(ident, val, false);
             Value::Nil
         }
@@ -280,7 +290,7 @@ pub fn evaluate(global: &mut Environment, exp: Expression) -> Result<Value, Silt
     Ok(v)
 }
 
-pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Value, SiltError> {
+pub fn eval_binary(left: Value, operator: &Operator, right: Value) -> Result<Value, SiltError> {
     let val = match (&left, &right) {
         (Value::Number(l), Value::Number(r)) => match operator {
             Operator::Add => Value::Number(l + r),
@@ -290,18 +300,18 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::Modulus => Value::Number(l % r),
             Operator::Equal => Value::Bool(l == r),
             Operator::NotEqual => Value::Bool(l != r),
-            Operator::LessThan => Value::Bool(l < r),
-            Operator::LessThanOrEqual => Value::Bool(l <= r),
-            Operator::GreaterThan => Value::Bool(l > r),
-            Operator::GreaterThanOrEqual => Value::Bool(l >= r),
-            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator)),
+            Operator::Less => Value::Bool(l < r),
+            Operator::LessEqual => Value::Bool(l <= r),
+            Operator::Greater => Value::Bool(l > r),
+            Operator::GreaterEqual => Value::Bool(l >= r),
+            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator.clone())),
             // Operator::And => logical_and(left, right),
             // Operator::Or => logical_or(left, right),
             Operator::FloorDivide => Value::Number((l / r).floor()),
             Operator::Exponent => Value::Number(l.powf(*r)),
             Operator::Concat => Value::String(l.to_string() + &r.to_string()),
             Operator::Tilde => todo!(),
-            _ => return Err(SiltError::InvalidExpressionOperator(operator)),
+            _ => return Err(SiltError::InvalidExpressionOperator(operator.clone())),
         },
         (Value::Integer(l), Value::Integer(r)) => match operator {
             Operator::Add => Value::Integer(l + r),
@@ -315,13 +325,13 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::Exponent => int_exp(*l, *r),
             Operator::Equal => Value::Bool(l == r),
             Operator::NotEqual => Value::Bool(l != r),
-            Operator::LessThan => Value::Bool(l < r),
-            Operator::LessThanOrEqual => Value::Bool(l <= r),
-            Operator::GreaterThan => Value::Bool(l > r),
-            Operator::GreaterThanOrEqual => Value::Bool(l >= r),
+            Operator::Less => Value::Bool(l < r),
+            Operator::LessEqual => Value::Bool(l <= r),
+            Operator::Greater => Value::Bool(l > r),
+            Operator::GreaterEqual => Value::Bool(l >= r),
             Operator::Concat => Value::String(l.to_string() + &r.to_string()),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator))
+                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
             Operator::Tilde => todo!(),
         },
@@ -337,13 +347,13 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             // Operator::Or => logical_or(left, right),
             Operator::Equal => Value::Bool(*l == intr2f!(r)),
             Operator::NotEqual => Value::Bool(*l != intr2f!(r)),
-            Operator::LessThan => Value::Bool(*l < intr2f!(r)),
-            Operator::LessThanOrEqual => Value::Bool(*l <= intr2f!(r)),
-            Operator::GreaterThan => Value::Bool(*l > intr2f!(r)),
-            Operator::GreaterThanOrEqual => Value::Bool(*l >= intr2f!(r)),
+            Operator::Less => Value::Bool(*l < intr2f!(r)),
+            Operator::LessEqual => Value::Bool(*l <= intr2f!(r)),
+            Operator::Greater => Value::Bool(*l > intr2f!(r)),
+            Operator::GreaterEqual => Value::Bool(*l >= intr2f!(r)),
             Operator::Concat => Value::String(l.to_string() + &r.to_string()),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator))
+                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
             Operator::Tilde => todo!(),
         },
@@ -356,16 +366,16 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::Modulus => Value::Number(intr2f!(l) % r),
             Operator::Equal => Value::Bool(intr2f!(l) == *r),
             Operator::NotEqual => Value::Bool(intr2f!(l) != *r),
-            Operator::LessThan => Value::Bool(intr2f!(l) < *r),
-            Operator::LessThanOrEqual => Value::Bool(intr2f!(l) <= *r),
-            Operator::GreaterThan => Value::Bool(intr2f!(l) > *r),
-            Operator::GreaterThanOrEqual => Value::Bool(intr2f!(l) >= *r),
+            Operator::Less => Value::Bool(intr2f!(l) < *r),
+            Operator::LessEqual => Value::Bool(intr2f!(l) <= *r),
+            Operator::Greater => Value::Bool(intr2f!(l) > *r),
+            Operator::GreaterEqual => Value::Bool(intr2f!(l) >= *r),
             // Operator::And => logical_and(left, right),
             // Operator::Or => logical_or(left, right),
             Operator::Exponent => Value::Number(intr2f!(l).powf(*r)),
             Operator::Concat => Value::String(l.to_string() + &r.to_string()),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator))
+                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
             Operator::Tilde => todo!(),
         },
@@ -415,10 +425,10 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
                 }
                 Operator::Equal => Value::Bool(l == r),
                 Operator::NotEqual => Value::Bool(l != r),
-                Operator::LessThan => Value::Bool(l < r),
-                Operator::LessThanOrEqual => Value::Bool(l <= r),
-                Operator::GreaterThan => Value::Bool(l > r),
-                Operator::GreaterThanOrEqual => Value::Bool(l >= r),
+                Operator::Less => Value::Bool(l < r),
+                Operator::LessEqual => Value::Bool(l <= r),
+                Operator::Greater => Value::Bool(l > r),
+                Operator::GreaterEqual => Value::Bool(l >= r),
 
                 // Operator::And => logical_and(left, right),
                 // Operator::Or => logical_or(left, right),
@@ -452,7 +462,7 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
                 }
                 Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
                 Operator::Not | Operator::And | Operator::Or => {
-                    return Err(SiltError::InvalidExpressionOperator(operator))
+                    return Err(SiltError::InvalidExpressionOperator(operator.clone()))
                 }
             }
         }
@@ -503,19 +513,19 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             }
             Operator::Equal => Value::Bool(*l == r.to_string()),
             Operator::NotEqual => Value::Bool(*l != r.to_string()),
-            op @ (Operator::LessThan
-            | Operator::LessThanOrEqual
-            | Operator::GreaterThan
-            | Operator::GreaterThanOrEqual) => {
+            op @ (Operator::Less
+            | Operator::LessEqual
+            | Operator::Greater
+            | Operator::GreaterEqual) => {
                 return Err(SiltError::ExpOpValueWithValue(
                     ErrorTypes::String,
-                    op,
+                    op.clone(),
                     ErrorTypes::Number,
                 ));
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator))
+                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
         },
         (Value::String(l), Value::Integer(r)) => match operator {
@@ -561,19 +571,19 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             }
             Operator::Equal => Value::Bool(*l == r.to_string()),
             Operator::NotEqual => Value::Bool(*l != r.to_string()),
-            op @ (Operator::LessThan
-            | Operator::LessThanOrEqual
-            | Operator::GreaterThan
-            | Operator::GreaterThanOrEqual) => {
+            op @ (Operator::Less
+            | Operator::LessEqual
+            | Operator::Greater
+            | Operator::GreaterEqual) => {
                 return Err(SiltError::ExpOpValueWithValue(
                     ErrorTypes::String,
-                    op,
+                    op.clone(),
                     ErrorTypes::Integer,
                 ));
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator))
+                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
         },
         (Value::Integer(l), Value::String(r)) => match operator {
@@ -613,19 +623,19 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             Operator::Concat => Value::String(l.to_string() + &r),
             Operator::Equal => Value::Bool(l.to_string() == *r),
             Operator::NotEqual => Value::Bool(l.to_string() != *r),
-            op @ (Operator::LessThan
-            | Operator::LessThanOrEqual
-            | Operator::GreaterThan
-            | Operator::GreaterThanOrEqual) => {
+            op @ (Operator::Less
+            | Operator::LessEqual
+            | Operator::Greater
+            | Operator::GreaterEqual) => {
                 return Err(SiltError::ExpOpValueWithValue(
                     ErrorTypes::Integer,
-                    op,
+                    op.clone(),
                     ErrorTypes::String,
                 ));
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator))
+                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
         },
         (Value::Integer(_), Value::Bool(_))
@@ -643,7 +653,7 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     left.to_error(),
-                    op,
+                    op.clone(),
                     right.to_error(),
                 ))
             }
@@ -657,7 +667,7 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     left.to_error(),
-                    op,
+                    op.clone(),
                     right.to_error(),
                 ))
             }
@@ -670,7 +680,7 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     left.to_error(),
-                    op,
+                    op.clone(),
                     right.to_error(),
                 ))
             }
@@ -685,7 +695,7 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     left.to_error(),
-                    op,
+                    op.clone(),
                     right.to_error(),
                 ))
             }
@@ -698,7 +708,7 @@ pub fn eval_binary(left: Value, operator: Operator, right: Value) -> Result<Valu
             op => {
                 return Err(SiltError::ExpOpValueWithValue(
                     ErrorTypes::Nil,
-                    op,
+                    op.clone(),
                     ErrorTypes::Nil,
                 ))
             }

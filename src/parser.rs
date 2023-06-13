@@ -11,12 +11,12 @@ pub mod parser {
 
     macro_rules! build_block_until {
         ($self:ident $($rule:ident)|*) => {{
-            let mut then_branch = vec![];
+            let mut statements = vec![];
             while !matches!($self.peek(), Some(
                 $( &Token::$rule)|*)) {
-                then_branch.push($self.local_declaration());
+                    statements.push($self.local_declaration());
             }
-            then_branch
+            statements
         }};
     }
     // macro_rules! val_err {
@@ -301,6 +301,7 @@ pub mod parser {
             println!("check statement");
             match self.peek() {
                 Some(&Token::If) => self.if_statement(),
+                Some(&Token::While) => self.while_statement(),
                 Some(&Token::Print) => Statement::Print(self.next_expression()),
                 Some(&Token::Do) => Statement::Block(self.block()),
                 _ => Statement::Expression(self.expression()), // don't eat
@@ -321,13 +322,10 @@ pub mod parser {
         //     statements
         // }
 
+        /** eat token, collect statements until hitting end, error if no end hit */
         fn block(&mut self) -> Vec<Statement> {
-            println!("block statement");
             self.eat();
-            let mut statements = vec![];
-            while !matches!(self.peek(), Some(&Token::End)) {
-                statements.push(self.local_declaration());
-            }
+            let statements = build_block_until!(self End);
 
             if !matches!(self.eat_out(), Token::End) {
                 self.error(SiltError::UnterminatedBlock);
@@ -379,6 +377,21 @@ pub mod parser {
                 }
             } else {
                 self.error(SiltError::ExpectedThen);
+                Statement::InvalidStatement
+            }
+        }
+
+        fn while_statement(&mut self) -> Statement {
+            self.eat();
+            let cond = self.expression();
+            if let Some(&Token::Do) = self.peek() {
+                let block = self.block();
+                Statement::While {
+                    cond: Box::new(cond),
+                    block,
+                }
+            } else {
+                self.error(SiltError::ExpectedDo);
                 Statement::InvalidStatement
             }
         }
@@ -437,10 +450,7 @@ pub mod parser {
             let mut exp = self.term();
 
             while let Some(&Token::Op(
-                Operator::LessThan
-                | Operator::LessThanOrEqual
-                | Operator::GreaterThan
-                | Operator::GreaterThanOrEqual,
+                Operator::Less | Operator::LessEqual | Operator::Greater | Operator::GreaterEqual,
             )) = self.peek()
             {
                 let operator = Self::de_op(self.eat_out());

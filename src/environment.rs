@@ -1,4 +1,7 @@
-use std::{collections::HashMap, println};
+// use rustc_hash::FxHashMap as HashMap;
+// use hashbrown::HashMap;
+use std::{collections::HashMap, vec};
+// use std::println;
 
 use crate::value::Value;
 
@@ -12,7 +15,7 @@ pub struct Environment {
 impl Environment {
     pub fn new() -> Self {
         Environment {
-            variables: vec![HashMap::new()],
+            variables: vec![HashMap::default()],
             depth: 0, // enclosing: None,
             implicit_global: true,
         }
@@ -63,7 +66,7 @@ impl Environment {
         &Value::Nil
     }
     pub fn new_scope(&mut self) {
-        self.variables.push(HashMap::new());
+        self.variables.push(HashMap::default());
         self.depth += 1;
     }
     pub fn pop_scope(&mut self) {

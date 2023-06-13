@@ -96,10 +96,10 @@ pub enum Operator {
     Concat,
     Equal,
     NotEqual,
-    LessThan,
-    LessThanOrEqual,
-    GreaterThan,
-    GreaterThanOrEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 }
 
 impl Display for Token {
@@ -171,10 +171,10 @@ impl Display for Operator {
             Operator::Concat => write!(f, ".."),
             Operator::Equal => write!(f, "=="),
             Operator::NotEqual => write!(f, "~="),
-            Operator::LessThan => write!(f, "<"),
-            Operator::LessThanOrEqual => write!(f, "<="),
-            Operator::GreaterThan => write!(f, ">"),
-            Operator::GreaterThanOrEqual => write!(f, ">="),
+            Operator::Less => write!(f, "<"),
+            Operator::LessEqual => write!(f, "<="),
+            Operator::Greater => write!(f, ">"),
+            Operator::GreaterEqual => write!(f, ">="),
             Operator::Tilde => write!(f, "~"),
         }
     }

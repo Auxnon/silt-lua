@@ -376,6 +376,26 @@ impl<'a> Lexer {
                         self.add(t);
                     }
                 }
+                '<' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            self.add(Token::Op(Operator::LessEqual));
+                        }
+                        _ => self.add(Token::Op(Operator::Less)),
+                    };
+                }
+                '>' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('=') => {
+                            self.eat();
+                            self.add(Token::Op(Operator::GreaterEqual));
+                        }
+                        _ => self.add(Token::Op(Operator::Greater)),
+                    };
+                }
                 '[' => {
                     self.eat();
                     match self.peek() {

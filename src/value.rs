@@ -39,3 +39,16 @@ impl Value {
         }
     }
 }
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        match self {
+            Value::Integer(i) => Value::Integer(*i),
+            Value::Number(n) => Value::Number(*n),
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Nil => Value::Nil,
+            Value::String(s) => Value::String(s.clone()),
+            Value::Infinity(b) => Value::Infinity(*b),
+        }
+    }
+}
