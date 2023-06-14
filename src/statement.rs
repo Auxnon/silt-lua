@@ -1,11 +1,11 @@
 use crate::expression::Expression;
 
 pub enum Statement {
-    Expression(Expression),
-    Print(Expression),
+    Expression(Box<Expression>),
+    Print(Box<Expression>),
     Declare {
         ident: usize,
-        value: Expression,
+        value: Box<Expression>,
     },
     // Var(Token, Expression),
     Block(Vec<Statement>),
@@ -20,9 +20,9 @@ pub enum Statement {
     },
     NumericFor {
         ident: usize,
-        start: Expression,
-        end: Expression,
-        step: Option<Expression>,
+        start: Box<Expression>,
+        end: Box<Expression>,
+        step: Option<Box<Expression>>,
         block: Vec<Statement>,
     },
     // Break,
@@ -90,14 +90,14 @@ impl std::fmt::Display for Statement {
                 }
                 write!(
                     f,
-                    "$for$ {} := {} to {} step {} {}",
+                    "$for$ {} := {} to {} step {}",
                     ident,
                     start,
                     end,
-                    step.as_ref().unwrap_or(&Expression::Literal {
-                        value: crate::value::Value::Integer(1)
-                    }),
-                    s
+                    match step {
+                        Some(step) => format!("{}", step),
+                        None => format!("1"),
+                    }
                 )
             }
         }

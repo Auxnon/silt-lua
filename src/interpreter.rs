@@ -312,6 +312,7 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
                 Value::String(s) => Value::String(s.clone()),
                 Value::Nil => Value::Nil,
                 Value::Infinity(f) => Value::Infinity(*f),
+                Value::NativeFunction(f) => Value::NativeFunction(*f),
             }
         }
         // Expression::AssignmentExpression { name, value } => todo!(),
@@ -321,6 +322,30 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
             let val = evaluate(global, value)?;
             global.set(*ident, val, false);
             Value::Nil
+        }
+        Expression::Call {
+            callee,
+            args,
+            location,
+        } => {
+            let callee = evaluate(global, callee)?;
+            let strict = global.is_strict();
+
+            let mut args = args
+                .iter()
+                .map(|a| evaluate(global, a))
+                .collect::<Result<Vec<Value>, SiltError>>()?;
+
+            if strict {
+                // TODO args.len() == function.arity
+            }
+            match callee {
+                // Value::Function(f) => f.call(global, args),
+                Value::NativeFunction(f) => f(global, args),
+                _ => {
+                    return Err(SiltError::NotCallable(callee.to_string()));
+                }
+            }
         }
     };
 
@@ -346,7 +371,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             // Operator::Or => logical_or(left, right),
             Operator::FloorDivide => Value::Number((l / r).floor()),
             Operator::Exponent => Value::Number(l.powf(*r)),
-            Operator::Concat => Value::String(l.to_string() + &r.to_string()),
+            Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
             Operator::Tilde => todo!(),
             _ => return Err(SiltError::InvalidExpressionOperator(operator.clone())),
         },
@@ -366,7 +391,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             Operator::LessEqual => Value::Bool(l <= r),
             Operator::Greater => Value::Bool(l > r),
             Operator::GreaterEqual => Value::Bool(l >= r),
-            Operator::Concat => Value::String(l.to_string() + &r.to_string()),
+            Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
             Operator::Not | Operator::And | Operator::Or => {
                 return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
@@ -388,7 +413,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             Operator::LessEqual => Value::Bool(*l <= intr2f!(r)),
             Operator::Greater => Value::Bool(*l > intr2f!(r)),
             Operator::GreaterEqual => Value::Bool(*l >= intr2f!(r)),
-            Operator::Concat => Value::String(l.to_string() + &r.to_string()),
+            Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
             Operator::Not | Operator::And | Operator::Or => {
                 return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
@@ -410,7 +435,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             // Operator::And => logical_and(left, right),
             // Operator::Or => logical_or(left, right),
             Operator::Exponent => Value::Number(intr2f!(l).powf(*r)),
-            Operator::Concat => Value::String(l.to_string() + &r.to_string()),
+            Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
             Operator::Not | Operator::And | Operator::Or => {
                 return Err(SiltError::InvalidExpressionOperator(operator.clone()))
             }
@@ -492,7 +517,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
                 }
                 Operator::Concat => {
                     if let Value::String(ll) = left {
-                        Value::String(ll.to_owned() + r)
+                        Value::String(((**ll).to_owned() + &**r).into_boxed_str())
                     } else {
                         Value::Nil
                     }
@@ -543,13 +568,13 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             }
             Operator::Concat => {
                 if let Value::String(ll) = left {
-                    Value::String(ll.to_owned() + &r.to_string())
+                    Value::String(((**ll).to_owned() + &r.to_string()).into())
                 } else {
                     Value::Nil
                 }
             }
-            Operator::Equal => Value::Bool(*l == r.to_string()),
-            Operator::NotEqual => Value::Bool(*l != r.to_string()),
+            Operator::Equal => Value::Bool(**l == r.to_string()),
+            Operator::NotEqual => Value::Bool(**l != r.to_string()),
             op @ (Operator::Less
             | Operator::LessEqual
             | Operator::Greater
@@ -601,13 +626,13 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             }
             Operator::Concat => {
                 if let Value::String(ll) = left {
-                    Value::String(ll.to_owned() + &r.to_string())
+                    Value::String(((**ll).to_owned() + &r.to_string()).into())
                 } else {
                     Value::Nil
                 }
             }
-            Operator::Equal => Value::Bool(*l == r.to_string()),
-            Operator::NotEqual => Value::Bool(*l != r.to_string()),
+            Operator::Equal => Value::Bool(**l == r.to_string()),
+            Operator::NotEqual => Value::Bool(**l != r.to_string()),
             op @ (Operator::Less
             | Operator::LessEqual
             | Operator::Greater
@@ -657,9 +682,9 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
                     ErrorTypes::String,
                 ));
             }
-            Operator::Concat => Value::String(l.to_string() + &r),
-            Operator::Equal => Value::Bool(l.to_string() == *r),
-            Operator::NotEqual => Value::Bool(l.to_string() != *r),
+            Operator::Concat => Value::String((l.to_string() + &r).into()),
+            Operator::Equal => Value::Bool(l.to_string() == **r),
+            Operator::NotEqual => Value::Bool(l.to_string() != **r),
             op @ (Operator::Less
             | Operator::LessEqual
             | Operator::Greater
@@ -761,7 +786,9 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
         (Value::Infinity(_), Value::Infinity(_)) => todo!(),
         (Value::Infinity(_), Value::String(_)) => todo!(),
         (Value::String(_), Value::Infinity(_)) => todo!(),
-        // _=>Value::Nil,
+        (Value::NativeFunction(_), _) | (_, Value::NativeFunction(_)) => {
+            return Err(SiltError::InvalidExpressionOperator(operator.clone()))
+        } // _=>Value::Nil,
     };
     Ok(val)
 }

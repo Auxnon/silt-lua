@@ -1,11 +1,11 @@
 pub mod parser {
-    use std::{ops::BitOr, println, process::Output, vec};
+    use std::{println, vec};
 
     use crate::{
         environment::Environment,
-        error::{ErrorTuple, ErrorTypes, Location, SiltError},
+        error::{ErrorTuple, Location, SiltError},
         expression::Expression,
-        statement::{self, Statement},
+        statement::Statement,
         token::{Operator, Token},
         value::Value,
     };
@@ -20,6 +20,12 @@ pub mod parser {
             statements
         }};
     }
+
+    macro_rules! devout {
+        ($self:ident $message:literal) => {
+            println!("-> {}: {:?}", $message, $self.peek().unwrap_or(&Token::Nil));
+        };
+    }
     // macro_rules! val_err {
     //     ($left:ident,$right:ident) => {
     //         return Err(SiltError::ExpAddValueWithValue(
@@ -28,20 +34,36 @@ pub mod parser {
     //         ));
     //     };
     // }
+    // macro_rules! op_assign {
+    //     ($self:ident, $ident:ident,$op:ident) => {{
+    //         let value = $self.next_expression();
+    //         Statement::Declare {
+    //             ident: $ident.clone(),
+    //             value: Expression::Binary {
+    //                 left: Box::new(Expression::Variable { $ident }),
+    //                 operator: Operator::$op,
+    //                 right: Box::new(value),
+    //             },
+    //         }
+    //     }};
+    // }
+
     macro_rules! op_assign {
         ($self:ident, $ident:ident,$op:ident) => {{
-            let value = $self.next_expression();
-            Statement::Declare {
-                ident: $ident.clone(),
-                value: Expression::Binary {
-                    left: Box::new(Expression::Variable { $ident }),
-                    operator: Operator::$op,
-                    right: Box::new(value),
-                },
+            let value = $self.expression();
+            let bin = Expression::Binary {
+                left: Box::new(Expression::Variable { $ident }),
+                operator: Operator::$op,
+                right: Box::new(value),
+            };
+            Expression::Assign {
+                ident: $ident,
+                value: Box::new(bin),
             }
         }};
     }
 
+    /** error if missing, eat if present */
     macro_rules! expect_token {
         ($self:ident $token:ident) => {{
             if let Some(&Token::$token) = $self.peek() {
@@ -51,7 +73,15 @@ pub mod parser {
                 return Statement::InvalidStatement;
             }
         };};
+        ($self:ident, $token:ident, $custom_error:expr) => {{
+            if let Some(&Token::$token) = $self.peek() {
+                $self.eat();
+            } else {
+                return Err($custom_error);
+            }
+        };};
     }
+
     pub struct Parser<'a> {
         pub iterator: std::iter::Peekable<std::vec::IntoIter<Token>>,
         pub locations: Vec<Location>,
@@ -120,9 +150,9 @@ pub mod parser {
 
         // fn next_statement(&self) -> bool {}
 
-        pub fn eat(&mut self) {
+        pub fn eat(&mut self) -> Option<Token> {
             self.current += 1;
-            self.iterator.next();
+            self.iterator.next()
             // println!(
             //     "{}",
             //     match self.iterator.next() {
@@ -184,65 +214,98 @@ pub mod parser {
         }
 
         fn declaration(&mut self, local: bool) -> Statement {
+            println!("-> declaration");
             // if let Some(&Token::Local) = self.peek() {
             //     self.eat();
 
-            if matches!(self.peek(), Some(Token::Identifier(_))) {
-                if let Token::Identifier(ident_str) = self.eat_out() {
-                    let ident = self.global.to_register(&ident_str);
-                    if let Some(&Token::Colon) = self.peek() {
-                        // typing or self calling
-                        self.eat();
-                        let token = self.eat_out();
-                        if let Token::ColonIdentifier(target) = token {
-                            // method or type name
-                            // self.eat();
-                            // return self.assign(self.peek(), ident);
-                            if let Some(&Token::OpenParen) = self.peek() {
-                                // self call
-
-                                Statement::InvalidStatement
-                            } else {
-                                // typing
-                                // return self.assign(self.peek(), ident);
-                                Statement::InvalidStatement
-                            }
-                        } else {
-                            self.error(SiltError::InvalidColonPlacement);
-                            Statement::InvalidStatement
-                        }
-                    } else {
-                        return if local {
-                            self.local_declare(ident)
-                        } else {
-                            self.assign(ident)
-                        };
-                    }
+            if local {
+                if let Some(Token::Identifier(ident)) = self.eat() {
+                    let ident = self.global.to_register(&ident);
+                    // if let Some(&Token::Assign) = self.peek(){
+                    //     self.eat();
+                    //     let value = self.assignment();
+                    //     return Statement::Declare {
+                    //         ident,
+                    //         value: Box::new(value),
+                    //     };
+                    // }else{
+                    //     return Statement::Declare {
+                    //         ident,
+                    //         value: Box::new(Expression::Literal { value: Value::Nil }),
+                    //     };
+                    // }
+                    self.local_declare(ident)
                 } else {
-                    // yucky
-                    panic!("impossible");
+                    self.error(SiltError::ExpectedLocalIdentifier);
+                    Statement::InvalidStatement
                 }
-            } else if local {
-                self.error(SiltError::ExpectedLocalIdentifier);
-                Statement::InvalidStatement
             } else {
                 self.statement()
             }
+            // if matches!(self.peek(), Some(Token::Identifier(_))) {
+            //     if let Token::Identifier(ident_str) = self.eat_out() {
+            //         let ident = self.global.to_register(&ident_str);
+            //         if let Some(&Token::Colon) = self.peek() {
+            //             // typing or self calling
+            //             self.eat();
+            //             let token = self.eat_out();
+            //             if let Token::ColonIdentifier(target) = token {
+            //                 // method or type name
+            //                 // self.eat();
+            //                 // return self.assign(self.peek(), ident);
+            //                 if let Some(&Token::OpenParen) = self.peek() {
+            //                     // self call
+
+            //                     Statement::InvalidStatement
+            //                 } else {
+            //                     // typing
+            //                     // return self.assign(self.peek(), ident);
+            //                     Statement::InvalidStatement
+            //                 }
+            //             } else {
+            //                 self.error(SiltError::InvalidColonPlacement);
+            //                 Statement::InvalidStatement
+            //             }
+            //         } else {
+            //             return if local {
+            //                 self.local_declare(ident)
+            //             } else {
+            //                 self.assign(ident)
+            //             };
+            //         }
+            //     } else {
+            //         // yucky
+            //         panic!("impossible");
+            //     }
+            // } else if local {
+            //     self.error(SiltError::ExpectedLocalIdentifier);
+            //     Statement::InvalidStatement
+            // } else {
+            //     self.statement()
+            // }
         }
 
         fn assignment(&mut self) -> Expression {
+            devout!(self "assignment");
             let exp = self.logical_or();
-            if let Some(&Token::Assign) = self.peek() {
+            if let Some(
+                &Token::Assign
+                | &Token::AddAssign
+                | &Token::SubAssign
+                | &Token::MultiplyAssign
+                | &Token::DivideAssign
+                | &Token::ModulusAssign,
+            ) = self.peek()
+            {
                 // println!("assign");
                 //let ident= current somehow?? use the exp as ident?
-                if let Expression::Variable { ident } = exp {
-                    self.eat();
-                    let value = self.assignment();
-                    return Expression::Assign {
-                        ident,
-                        value: Box::new(value),
-                    };
-                }
+                return if let Expression::Variable { ident } = exp {
+                    self.assigner(ident)
+                } else {
+                    let t = self.peek().unwrap().clone();
+                    self.error(SiltError::InvalidAssignment(t));
+                    Expression::Literal { value: Value::Nil }
+                };
                 // self.eat();
 
                 // let value = self.equality();
@@ -260,7 +323,7 @@ pub mod parser {
             match t {
                 Some(&Token::Assign) => Statement::Declare {
                     ident,
-                    value: self.next_expression(),
+                    value: Box::new(self.next_expression()),
                 },
                 Some(
                     &Token::AddAssign
@@ -275,52 +338,79 @@ pub mod parser {
                 }
                 _ => Statement::Declare {
                     ident,
-                    value: Expression::Literal { value: Value::Nil },
+                    value: Box::new(Expression::Literal { value: Value::Nil }),
                 },
             }
         }
 
-        fn assign(&mut self, ident: usize) -> Statement {
-            match self.peek() {
-                Some(&Token::Assign) => Statement::Declare {
+        fn assigner(&mut self, ident: usize) -> Expression {
+            println!("-> assign {}", ident);
+            let tok = self.eat_out();
+
+            println!("-> assign token {}", tok);
+            match tok {
+                Token::Assign => Expression::Assign {
                     ident,
-                    value: self.next_expression(),
+                    value: Box::new(self.expression()),
                 },
-                Some(&Token::AddAssign) => {
+                Token::AddAssign => {
                     op_assign!(self, ident, Add)
                 }
-                Some(&Token::SubAssign) => {
+                Token::SubAssign => {
                     op_assign!(self, ident, Sub)
                 }
-                Some(&Token::MultiplyAssign) => {
+                Token::MultiplyAssign => {
                     op_assign!(self, ident, Multiply)
                 }
-                Some(&Token::DivideAssign) => {
+                Token::DivideAssign => {
                     op_assign!(self, ident, Divide)
                 }
-                Some(&Token::ModulusAssign) => {
+                Token::ModulusAssign => {
                     op_assign!(self, ident, Modulus)
                 }
-                _ => Statement::Declare {
-                    ident,
-                    value: Expression::Literal { value: Value::Nil },
-                },
+                _ => panic!("impossible"), //Statement::Expression(Expression::Variable {ident})
             }
         }
+
+        // fn assign(&mut self, ident: usize) -> Statement {
+        //     println!("-> assign {}", ident);
+        //     match self.peek() {
+        //         Some(&Token::Assign) => Statement::Declare {
+        //             ident,
+        //             value: Box::new(self.next_expression()),
+        //         },
+        //         Some(&Token::AddAssign) => {
+        //             op_assign!(self, ident, Add)
+        //         }
+        //         Some(&Token::SubAssign) => {
+        //             op_assign!(self, ident, Sub)
+        //         }
+        //         Some(&Token::MultiplyAssign) => {
+        //             op_assign!(self, ident, Multiply)
+        //         }
+        //         Some(&Token::DivideAssign) => {
+        //             op_assign!(self, ident, Divide)
+        //         }
+        //         Some(&Token::ModulusAssign) => {
+        //             op_assign!(self, ident, Modulus)
+        //         }
+        //         _ => self.statement(), //Statement::Expression(Expression::Variable {ident})
+        //     }
+        // }
 
         //////////////////////////////
         /// Statements
         //////////////////////////////
 
         fn statement(&mut self) -> Statement {
-            println!("check statement");
+            devout!(self "statement");
             match self.peek() {
                 Some(&Token::If) => self.if_statement(),
                 Some(&Token::While) => self.while_statement(),
                 Some(&Token::For) => self.for_statement(),
-                Some(&Token::Print) => Statement::Print(self.next_expression()),
+                Some(&Token::Print) => Statement::Print(Box::new(self.next_expression())),
                 Some(&Token::Do) => Statement::Block(self.block()),
-                _ => Statement::Expression(self.expression()), // don't eat
+                _ => Statement::Expression(Box::new(self.expression())), // don't eat
             }
         }
 
@@ -349,7 +439,7 @@ pub mod parser {
             statements
         }
         fn if_statement(&mut self) -> Statement {
-            println!("if statement");
+            // println!("if statement");
             self.eat();
             let condition = self.expression();
             if let Some(&Token::Then) = self.peek() {
@@ -378,7 +468,6 @@ pub mod parser {
                         }
                     }
                     Some(&Token::End) => {
-                        // println!("we hit end");
                         self.eat();
                         Statement::If {
                             cond: Box::new(condition),
@@ -411,6 +500,7 @@ pub mod parser {
                 Statement::InvalidStatement
             }
         }
+
         fn for_statement(&mut self) -> Statement {
             // Statement::InvalidStatement
             self.eat();
@@ -418,12 +508,12 @@ pub mod parser {
             if let Token::Identifier(ident_str) = ident {
                 let ident = self.global.to_register(&ident_str);
                 expect_token!(self Assign);
-                let start = self.expression();
+                let start = Box::new(self.expression());
                 expect_token!(self Comma);
-                let end = self.expression();
+                let end = Box::new(self.expression());
                 let step = if let Some(&Token::Comma) = self.peek() {
                     self.eat();
-                    Some(self.expression())
+                    Some(Box::new(self.expression()))
                 } else {
                     None
                 };
@@ -453,6 +543,7 @@ pub mod parser {
         }
 
         fn expression(&mut self) -> Expression {
+            devout!(self "expression");
             self.assignment()
         }
 
@@ -469,6 +560,7 @@ pub mod parser {
             }
             exp
         }
+
         fn logical_and(&mut self) -> Expression {
             let mut exp = self.equality();
             while let Some(&Token::Op(Operator::And)) = self.peek() {
@@ -482,6 +574,7 @@ pub mod parser {
             }
             exp
         }
+
         fn equality(&mut self) -> Expression {
             let mut exp = self.comparison();
             while let Some(&Token::Op(Operator::NotEqual | Operator::Equal)) = self.peek() {
@@ -516,7 +609,9 @@ pub mod parser {
 
         fn term(&mut self) -> Expression {
             let mut exp = self.factor();
-            while let Some(&Token::Op(Operator::Add | Operator::Sub)) = self.peek() {
+            while let Some(&Token::Op(Operator::Add | Operator::Sub | Operator::Concat)) =
+                self.peek()
+            {
                 let operator = Self::de_op(self.eat_out());
                 let right = self.factor();
                 exp = Expression::Binary {
@@ -554,16 +649,59 @@ pub mod parser {
                     right: Box::new(right),
                 }
             } else {
-                self.primary()
+                self.call()
             }
         }
 
+        fn call(&mut self) -> Expression {
+            let mut exp = self.primary();
+            while let Some(&Token::OpenParen) = self.peek() {
+                devout!(self "call");
+                //TODO while(true) with break but also calls the finishCall func?
+                let start = self.locations[self.current];
+                match self.arguments(start) {
+                    Ok(args) => {
+                        exp = Expression::Call {
+                            callee: Box::new(exp),
+                            args,
+                            location: start,
+                        }
+                    }
+                    Err(e) => {
+                        self.error(e);
+                        return Expression::InvalidExpression;
+                    }
+                }
+            }
+            exp
+        }
+
+        fn arguments(&mut self, start: Location) -> Result<Vec<Expression>, SiltError> {
+            self.eat();
+            let mut args = vec![];
+            while !matches!(self.peek(), Some(&Token::CloseParen)) {
+                args.push(self.expression());
+                if let Some(&Token::Comma) = self.peek() {
+                    self.eat();
+                }
+            }
+            devout!(self "arguments");
+
+            expect_token!(
+                self,
+                CloseParen,
+                SiltError::UnterminatedParenthesis(start.0, start.1)
+            );
+
+            Ok(args)
+        }
         fn primary(&mut self) -> Expression {
             // Err(code) => {
             //     println!("Error Heere: {} :{}", code, self.current);
             //     self.error(code);
             //     Expression::InvalidExpression
             // }
+            devout!(self "primary");
 
             let t = self.next();
             // errors will 1 ahead, use error_last

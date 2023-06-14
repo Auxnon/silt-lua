@@ -6,7 +6,7 @@ pub enum Token {
     // TODO temporary
     Print,
 
-    Identifier(String),
+    Identifier(Box<str>),
     Break,
     Do,
     If,
@@ -54,9 +54,9 @@ pub enum Token {
     MultiplyAssign,
     DivideAssign,
     ModulusAssign,
-    LengthOp,                //#
-    Colon,                   //:
-    ColonIdentifier(String), // :ident (for types and calls)
+    LengthOp,                  //#
+    Colon,                     //:
+    ColonIdentifier(Box<str>), // :ident (for types and calls)
     OpenParen,
     CloseParen,
     OpenBracket,
@@ -68,7 +68,7 @@ pub enum Token {
     Nil,
     Number(f64),
     Integer(i64),
-    StringLiteral(String),
+    StringLiteral(Box<str>),
     True,
     False,
 
@@ -78,6 +78,7 @@ pub enum Token {
     Bang, // !
     Class,
     Global,
+    Flag(Flag),
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +101,20 @@ pub enum Operator {
     LessEqual,
     Greater,
     GreaterEqual,
+}
+
+#[derive(Debug, Clone)]
+pub enum Flag {
+    Strict,
+    Local,
+}
+impl Display for Flag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Flag::Strict => write!(f, "strict"),
+            Flag::Local => write!(f, "local"),
+        }
+    }
 }
 
 impl Display for Token {
@@ -151,6 +166,7 @@ impl Display for Token {
             Token::Type => write!(f, "type"),
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
             Token::Global => write!(f, "global"),
+            Token::Flag(ref flag) => write!(f, "flag({})", flag),
         }
     }
 }

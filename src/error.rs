@@ -27,6 +27,7 @@ pub enum SiltError {
 
     //interpreted errors
     EvalNoInteger(ErrorTypes),
+    NotCallable(String),
 }
 pub enum ErrorTypes {
     String,
@@ -36,6 +37,7 @@ pub enum ErrorTypes {
     Bool,
     Nil,
     Infinity,
+    NativeFunction,
 }
 
 pub type Location = (usize, usize);
@@ -78,6 +80,7 @@ impl std::fmt::Display for SiltError {
             SiltError::ExpectedThen => write!(f, "Expected 'then' after if condition"),
             SiltError::ExpectedDo => write!(f, "Expected 'do' after while condition"),
             Self::ExpectedToken(t) => write!(f, "Expected token: {}", t),
+            Self::NotCallable(s) => write!(f, "Value '{}' is not callable", s),
         }
     }
 }
@@ -91,6 +94,7 @@ impl std::fmt::Display for ErrorTypes {
             ErrorTypes::Bool => write!(f, "bool"),
             ErrorTypes::Nil => write!(f, "nil"),
             ErrorTypes::Infinity => write!(f, "infinity"),
+            ErrorTypes::NativeFunction => write!(f, "native_function"),
         }
     }
 }

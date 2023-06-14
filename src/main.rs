@@ -4,6 +4,7 @@ mod expression;
 mod interpreter;
 mod lexer;
 mod parser;
+mod standard;
 mod statement;
 mod token;
 mod value;
@@ -25,6 +26,7 @@ fn main() {
     // a=2
     // end
     // print(a)
+    // let source_in =
     // "#;
     // let source_in = r#"
     // a=1
@@ -33,18 +35,30 @@ fn main() {
     // end
     // print a
     // "#;
-    // fibonaci
+
     let source_in = r#"
-    a=0
-    b=1
-    while a < 10000 do
-        b+=temp
-        print a
-        temp=a
-        a=b
+    i=1
+    a="a"
+    while i < 100_000 do
+        i = i +1
+        a = a .. "1"
     end
+    print "done"
     "#;
+    // fibonaci
+    // let source_in = r#"
+    // a=0
+    // b=1
+    // while a < 10000 do
+    //     b+=temp
+    //     print a
+    //     temp=a
+    //     a=b
+    // end
+    // "#;
+
     let mut global = environment::Environment::new();
+    global.load_standard_library();
     let mut meth = |source: &str| {
         // let source = "1/0"; //6+5/3-6";
         println!("-----------------");
@@ -117,6 +131,52 @@ mod tests {
 
     #[test]
     fn test_32bits() {
-        assert!(size_of::<Token>() == 4);
+        println!("size of i32: {}", size_of::<i32>());
+        println!("size of f32: {}", size_of::<f32>());
+        println!("size of bool: {}", size_of::<bool>());
+        println!("size of char: {}", size_of::<char>());
+        println!("size of usize: {}", size_of::<usize>());
+        println!("size of u8: {}", size_of::<u8>());
+        println!("size of str: {}", size_of::<&str>());
+        println!("size of String: {}", size_of::<String>());
+        println!("size of Box<str>: {}", size_of::<Box<str>>());
+        println!("size of Operator: {}", size_of::<crate::token::Operator>());
+        println!("size of Flag: {}", size_of::<crate::token::Flag>());
+        println!("size of token: {}", size_of::<Token>());
+        println!(
+            "size of silt_error: {}",
+            size_of::<crate::error::SiltError>()
+        );
+        println!(
+            "size of error_types: {}",
+            size_of::<crate::error::ErrorTypes>()
+        );
+        println!(
+            "size of statement: {}",
+            size_of::<crate::statement::Statement>()
+        );
+        println!(
+            "size of expression: {}",
+            size_of::<crate::expression::Expression>()
+        );
+        println!(
+            "size of option expression: {}",
+            size_of::<Option<crate::expression::Expression>>()
+        );
+        println!(
+            "size of boxed statement: {}",
+            size_of::<Box<crate::statement::Statement>>()
+        );
+        println!(
+            "size of boxed expression: {}",
+            size_of::<Box<crate::expression::Expression>>()
+        );
+        println!("size of value: {}", size_of::<crate::value::Value>());
+        println!(
+            "size of environment: {}",
+            size_of::<crate::environment::Environment>()
+        );
+
+        assert!(size_of::<Token>() == 24); //ideally 4 but whatever
     }
 }

@@ -1,4 +1,4 @@
-use crate::error::ErrorTypes;
+use crate::{environment::Environment, error::ErrorTypes};
 
 pub enum Value {
     Integer(i64),
@@ -8,10 +8,12 @@ pub enum Value {
     /** true for negative */
     Infinity(bool),
     // Bool(bool),
-    String(String),
+    String(Box<str>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
     // Func(fn(Vec<Value>) -> Value),
+    NativeFunction(fn(&mut Environment, Vec<Value>) -> Value),
+    // UserData
 }
 
 impl std::fmt::Display for Value {
@@ -23,6 +25,7 @@ impl std::fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Infinity(_) => write!(f, "inf"),
+            Value::NativeFunction(_) => write!(f, "native_function"),
         }
     }
 }
@@ -36,6 +39,7 @@ impl Value {
             Value::Nil => ErrorTypes::Nil,
             Value::String(_) => ErrorTypes::String,
             Value::Infinity(_) => ErrorTypes::Infinity,
+            Value::NativeFunction(_) => ErrorTypes::NativeFunction,
         }
     }
 }
@@ -49,6 +53,7 @@ impl Clone for Value {
             Value::Nil => Value::Nil,
             Value::String(s) => Value::String(s.clone()),
             Value::Infinity(b) => Value::Infinity(*b),
+            Value::NativeFunction(f) => Value::NativeFunction(*f),
         }
     }
 }

@@ -10,9 +10,11 @@ pub struct Environment {
     depth: usize, // pub enclosing: Option<&'b mut Environment<'a, 'b>>,
     /** Whether undeclared variables should implicitly define up to the top level like normal lua, or start in immediate scope */
     implicit_global: bool,
+    strict: bool,
     free_registers: Vec<usize>,
     next_register: usize,
     map: HashMap<String, usize>,
+    // meta_table: HashMap<usize, usize>, // key, met
 }
 
 impl Environment {
@@ -21,10 +23,16 @@ impl Environment {
             variables: vec![HashMap::default()],
             depth: 0, // enclosing: None,
             implicit_global: true,
+            strict: false,
             free_registers: vec![],
             next_register: 0,
             map: HashMap::default(),
         }
+    }
+
+    pub fn load_standard_library(&mut self) {
+        let u = self.to_register("clock");
+        self.set(u, Value::NativeFunction(crate::standard::clock), true);
     }
 
     /** If we have implicit global then we default implicit declaration to the highest level as lua
@@ -65,6 +73,7 @@ impl Environment {
             }
         } else {
             if let Some(val) = self.variables[0].get(ident) {
+                // println!("got");
                 return val;
             }
         }
@@ -98,9 +107,13 @@ impl Environment {
             *reg
         } else {
             let reg = self.get_register();
+            // println!("to_register {} @ {}", name, reg);
             self.map.insert(name.to_string(), reg);
             reg
         }
+    }
+    pub fn is_strict(&self) -> bool {
+        self.strict
     }
     // pub fn create_enclosing(&mut self, parent: &'a mut Environment<'a, 'b>) {
     //     self.enclosing = Some(parent);

@@ -1,6 +1,7 @@
 use std::f32::consts::E;
 
 use crate::{
+    error::Location,
     token::{Operator, Token},
     value::Value,
 };
@@ -37,10 +38,11 @@ pub enum Expression {
         right: Box<Expression>,
     },
 
-    // CallExpression {
-    //     callee: Box<Expression>,
-    //     arguments: Vec<Expression>,
-    // },
+    Call {
+        callee: Box<Expression>,
+        args: Vec<Expression>,
+        location: Location,
+    },
     // GetExpression {
     //     object: Box<Expression>,
     //     name: Token,
@@ -77,6 +79,18 @@ impl std::fmt::Display for Expression {
             Expression::GroupingExpression { expression } => write!(f, "G({})", expression),
             Expression::Variable { ident } => write!(f, "{}", ident),
             Expression::Assign { ident, value } => write!(f, "({} := {})", ident, value),
+            Expression::Call {
+                callee,
+                args: arguments,
+                ..
+            } => {
+                let mut s = format!("({}(", callee);
+                for arg in arguments {
+                    s.push_str(&format!("{},", arg));
+                }
+                s.push_str("))");
+                write!(f, "{}", s)
+            }
             // Expression::AssignmentExpression { name, value } => {
             //     write!(f, "({} := {})", name, value)
             // }

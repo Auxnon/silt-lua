@@ -1,6 +1,6 @@
 use crate::{
     error::{ErrorTuple, Location, SiltError},
-    token::{Operator, Token},
+    token::{Flag, Operator, Token},
 };
 
 pub struct Lexer {
@@ -186,7 +186,7 @@ impl<'a> Lexer {
             }
         }
         let cc = self.source[self.start..self.current - 1].to_string();
-        Some(Token::StringLiteral(cc))
+        Some(Token::StringLiteral(cc.into_boxed_str()))
     }
     fn multi_line_string(&mut self) -> Option<Token> {
         self.column_start = self.column;
@@ -218,7 +218,7 @@ impl<'a> Lexer {
             }
         }
         let cc = self.source[self.start..self.current - 2].to_string();
-        Some(Token::StringLiteral(cc))
+        Some(Token::StringLiteral(cc.into_boxed_str()))
     }
     fn word_eater(&mut self) {
         while self.current < self.end {
@@ -226,6 +226,32 @@ impl<'a> Lexer {
                 Some(c) => match c {
                     'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.eat(),
                     _ => break,
+                },
+                None => break,
+            }
+        }
+    }
+    fn get_flags(&mut self) {
+        // let mut words = vec![];
+        self.set_start();
+        while self.current < self.end {
+            match self.eat_out() {
+                Some(c) => match c {
+                    'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.eat(),
+                    '\n' => {
+                        self.new_line();
+                        break;
+                    }
+                    _ => {
+                        let cc = &self.source[self.start..self.current];
+                        match cc.to_lowercase().as_str() {
+                            "strict" => self.add(Token::Flag(Flag::Strict)),
+                            "local" => self.add(Token::Flag(Flag::Local)),
+                            _ => {}
+                        }
+                        // words.push(cc.to_string());
+                        self.set_start();
+                    }
                 },
                 None => break,
             }
@@ -239,7 +265,7 @@ impl<'a> Lexer {
         self.set_start();
         self.word_eater();
         let cc = &self.source[self.start..self.current];
-        Token::ColonIdentifier(cc.to_string())
+        Token::ColonIdentifier(cc.into())
     }
 
     pub fn parse(&mut self) -> (Vec<Token>, Vec<Location>) {
@@ -279,7 +305,7 @@ impl<'a> Lexer {
                         "do" => Token::Do,
                         "class" => Token::Class,
                         "print" => Token::Print,
-                        _ => Token::Identifier(cc.to_string()),
+                        _ => Token::Identifier(cc.into()),
                     });
                 }
                 '0'..='9' => self.number(),
@@ -315,10 +341,15 @@ impl<'a> Lexer {
                     match self.peek() {
                         Some('-') => {
                             self.eat();
-                            while self.current < self.end {
-                                if let Some('\n') = self.eat_out() {
-                                    self.new_line();
-                                    break;
+                            if let Some('!') = self.peek() {
+                                self.eat();
+                                self.get_flags();
+                            } else {
+                                while self.current < self.end {
+                                    if let Some('\n') = self.eat_out() {
+                                        self.new_line();
+                                        break;
+                                    }
                                 }
                             }
                         }
