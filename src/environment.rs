@@ -29,18 +29,36 @@ impl Environment {
             map: HashMap::default(),
         }
     }
+    
+    pub fn new_with_std() -> Self {
+        let mut env = Environment::new();
+        env.load_standard_library();
+        env
+    }
 
     pub fn load_standard_library(&mut self) {
         let u = self.to_register("clock");
-        self.set(u, Value::NativeFunction(crate::standard::clock), true);
+        self.set(
+            u,
+            Value::NativeFunction(crate::standard::clock),
+            true,
+            false,
+        );
+    }
+
+    pub fn declare_local(&mut self, ident: usize, value: Value) {
+        self.set(ident, value, true, true);
+    }
+    pub fn assign_local(&mut self, ident: usize, value: Value) {
+        self.set(ident, value, false, true);
     }
 
     /** If we have implicit global then we default implicit declaration to the highest level as lua
      * does, otherwise we do something nicer and create in local scope if not shadowing anything*/
-    pub fn set(&mut self, ident: usize, value: Value, declare: bool) {
+    pub fn set(&mut self, ident: usize, value: Value, declare: bool, local: bool) {
         if declare {
             // println!(" declare {} at {}", ident, self.depth);
-            self.variables[self.depth].insert(ident, value);
+            self.variables[if local { self.depth } else { 0 }].insert(ident, value);
         } else {
             if self.depth > 0 {
                 for vars in self.variables.iter_mut().rev() {

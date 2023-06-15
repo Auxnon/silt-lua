@@ -89,10 +89,15 @@ impl<'a> Lexer {
     fn get_sofar(&self) -> String {
         self.source[self.start..self.current].to_string()
     }
-    fn number(&mut self) {
-        self.set_start();
+    fn number(&mut self, prefix_dot: bool) {
+        if prefix_dot {
+            self.start = self.current - 1;
+            self.column_start = self.column - 1;
+        } else {
+            self.set_start();
+        }
         self.eat();
-        let mut is_float = false;
+        let mut is_float = prefix_dot;
         let mut strip = false;
         while self.current < self.end {
             match self.peek() {
@@ -291,6 +296,8 @@ impl<'a> Lexer {
                         "function" => Token::Function,
                         "in" => Token::In,
                         "local" => Token::Local,
+                        #[cfg(feature = "global")]
+                        "global" => Token::Global,
                         "nil" => Token::Nil,
                         "not" => Token::Op(Operator::Not),
                         "or" => Token::Op(Operator::Or),
@@ -308,12 +315,15 @@ impl<'a> Lexer {
                         _ => Token::Identifier(cc.into()),
                     });
                 }
-                '0'..='9' => self.number(),
-                '.' => match self.peek() {
-                    Some('0'..='9') => self.number(),
-                    Some('.') => self.eat_eat_add(Token::Op(Operator::Concat)),
-                    _ => self.eat_add(Token::Call),
-                },
+                '0'..='9' => self.number(false),
+                '.' => {
+                    self.eat();
+                    match self.peek() {
+                        Some('0'..='9') => self.number(true),
+                        Some('.') => self.eat_add(Token::Op(Operator::Concat)),
+                        _ => self.add(Token::Call),
+                    }
+                }
                 '=' => {
                     self.eat();
                     let t = match self.peek() {

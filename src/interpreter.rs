@@ -1,7 +1,10 @@
+use std::{borrow::Borrow, f32::consts::E};
+
 use crate::{
     environment::Environment,
-    error::{ErrorTypes, SiltError},
+    error::{ErrorTuple, ErrorTypes, Location, SiltError},
     expression::Expression,
+    function::Function,
     statement::Statement,
     token::Operator,
     value::Value,
@@ -115,45 +118,56 @@ macro_rules! intr2f {
     };
 }
 
-pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Vec<SiltError> {
+macro_rules! err_tuple {
+    ($err:expr, $loc:expr ) => {{
+        Err(ErrorTuple {
+            code: $err,
+            location: $loc,
+        })
+    }};
+}
+pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<Value, ErrorTuple> {
     // let
-    let mut errors: Vec<SiltError> = vec![];
+    // let mut errors: Vec<SiltError> = vec![];
+    let mut res = Value::Nil;
     for s in statements {
-        if let Some(e) = match s {
-            Statement::Expression(exp) => eval_wrap(scope, exp),
-            Statement::Declare { ident, value } => match evaluate(scope, &value) {
-                Ok(v) => {
-                    scope.set(*ident, v, true);
-                    None
-                }
-                Err(e) => Some(e),
-            },
+        res = match s {
+            Statement::Expression(exp) => evaluate(scope, exp)?,
+            Statement::Declare {
+                ident,
+                local,
+                value,
+            } => {
+                let v = evaluate(scope, &value)?;
+
+                scope.set(*ident, v, true, *local);
+                Value::Nil
+            }
             Statement::If {
                 cond,
                 then,
                 else_cond,
-            } => match evaluate(scope, cond) {
-                Ok(cond) => {
-                    if is_truthy(&cond) {
-                        execute(scope, then);
-                    } else if let Some(else_cond) = else_cond {
-                        execute(scope, else_cond);
-                    }
-                    None
+            } => {
+                let cond = evaluate(scope, cond)?;
+                if is_truthy(&cond) {
+                    execute(scope, then)?
+                } else if let Some(else_cond) = else_cond {
+                    execute(scope, else_cond)?
+                } else {
+                    Value::Nil
                 }
-                Err(e) => Some(e),
-            },
+            }
             Statement::While { cond, block } => {
                 scope.new_scope();
                 while let Ok(cond) = evaluate(scope, cond) {
                     if is_truthy(&cond) {
-                        execute(scope, &block);
+                        execute(scope, &block)?;
                     } else {
                         break;
                     }
                 }
                 scope.pop_scope();
-                None
+                Value::Nil
             }
             Statement::NumericFor {
                 ident,
@@ -162,32 +176,30 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Vec<Silt
                 step,
                 block,
             } => {
-                // look at this rusty octopus!
-                if let Err(e) = (|| {
-                    let mut start = evaluate(scope, start)?;
-                    let end = evaluate(scope, end)?;
+                let mut start = evaluate(scope, start)?;
+                let end = evaluate(scope, end)?;
 
-                    let step = match step {
-                        Some(s) => evaluate(scope, s)?,
-                        None => Value::Integer(1),
+                let step = match step {
+                    Some(s) => evaluate(scope, s)?,
+                    None => Value::Integer(1),
+                };
+                scope.new_scope();
+                scope.declare_local(*ident, start.clone());
+                while match eval_binary(&start, &Operator::LessEqual, &end) {
+                    Ok(v) => is_truthy(&v),
+                    _ => false,
+                } {
+                    execute(scope, block);
+                    start = match eval_binary(&start, &Operator::Add, &step) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return err_tuple!(SiltError::ExpInvalidOperator(Operator::Add), (0, 0))
+                        }
                     };
-                    scope.new_scope();
-                    scope.set(*ident, start.clone(), true);
-                    while match eval_binary(&start, &Operator::LessEqual, &end) {
-                        Ok(v) => is_truthy(&v),
-                        _ => false,
-                    } {
-                        execute(scope, block);
-                        start = eval_binary(&start, &Operator::Add, &step)?;
-                        scope.set(*ident, start.clone(), false);
-                    }
-                    scope.pop_scope();
-                    Ok(())
-                })() {
-                    Some(e)
-                } else {
-                    None
+                    scope.assign_local(*ident, start.clone());
                 }
+                scope.pop_scope();
+                Value::Nil
             }
 
             Statement::Block(statements) => {
@@ -195,20 +207,19 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Vec<Silt
                 // let mut local = Environment::new();
                 // local.create_enclosing(scope);
                 // execute(&mut local, statements);
-                execute(scope, statements);
+                let v = execute(scope, statements)?;
                 scope.pop_scope();
                 // drop(local);
-                None
+                v
             }
-            Statement::Print(exp) => print_statement(scope, exp),
-            Statement::InvalidStatement => None,
-            _ => None,
-        } {
-            // errors.push(e.clone());
+            Statement::Print(exp) => print_statement(scope, exp)?,
+            Statement::InvalidStatement => return err_tuple!(SiltError::ExpInvalid, (0, 0)),
+            _ => Value::Nil,
         };
     }
+    Ok(res)
 
-    errors
+    // errors
 
     // for statement in statements {
     //     match statement {
@@ -222,38 +233,45 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Vec<Silt
 //     statements.for_each(|s| execute(scope))
 // }
 
-fn eval_wrap(global: &mut Environment, exp: &Expression) -> Option<SiltError> {
-    //-> Option<SiltError> {
-    if let Err(e) = evaluate(global, exp) {
-        return Some(e);
-    }
-    None
-}
+// fn eval_wrap(global: &mut Environment, exp: &Expression) -> Option<SiltError> {
+//     //-> Option<SiltError> {
+//     if let Err(e) = evaluate(global, exp) {
+//         return Some(e);
+//     }
+//     None
+// }
 
-fn print_statement(global: &mut Environment, exp: &Expression) -> Option<SiltError> {
+fn print_statement(global: &mut Environment, exp: &Expression) -> Result<Value, ErrorTuple> {
     match evaluate(global, exp) {
-        Ok(v) => println!("> {}", v),
-        Err(e) => return Some(e),
+        Ok(v) => {
+            println!("> {}", v);
+            Ok(Value::Nil)
+        }
+        Err(e) => Err(e),
     }
-    None
 }
 
-pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, SiltError> {
+pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, ErrorTuple> {
     let v: Value = match exp {
-        Expression::Literal { value } => value.clone(),
+        Expression::Literal { value, location } => value.clone(),
         Expression::Binary {
             left,
             operator,
             right,
+            location,
         } => {
             let left = evaluate(global, left)?;
             let right = evaluate(global, right)?;
-            eval_binary(&left, operator, &right)?
+            match eval_binary(&left, operator, &right) {
+                Ok(v) => v,
+                Err(e) => return err_tuple!(e, *location),
+            }
         }
         Expression::Logical {
             left,
             operator,
             right,
+            location,
         } => {
             let left = evaluate(global, left)?;
             // let right = evaluate(global, *right)?;
@@ -272,17 +290,21 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
                         evaluate(global, right)?
                     }
                 }
-                _ => return Err(SiltError::InvalidExpressionOperator(operator.clone())), // impossible?
+                _ => return err_tuple!(SiltError::ExpInvalidOperator(operator.clone()), *location), // impossible?
             }
         }
-        Expression::Unary { operator, right } => {
+        Expression::Unary {
+            operator,
+            right,
+            location,
+        } => {
             let right = evaluate(global, right)?;
             match operator {
                 Operator::Sub => match right {
                     Value::Number(n) => Value::Number(-n),
                     Value::Integer(i) => Value::Integer(-i),
                     v => {
-                        return Err(SiltError::ExpInvalidNegation(v.to_error()));
+                        return err_tuple!(SiltError::ExpInvalidNegation(v.to_error()), *location);
                     }
                 },
                 Operator::Not => Value::Bool(is_truthy(&right)),
@@ -292,18 +314,22 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
                         if n.fract() == 0.0 {
                             Value::Integer(!(n as i64))
                         } else {
-                            return Err(SiltError::EvalNoInteger(right.to_error()));
+                            return err_tuple!(
+                                SiltError::EvalNoInteger(right.to_error()),
+                                *location
+                            );
                         }
                     }
-                    v => {
-                        return Err(SiltError::ExpInvalidBitwise(v.to_error()));
-                    }
+                    v => return err_tuple!(SiltError::ExpInvalidBitwise(v.to_error()), *location),
                 },
-                _ => return Err(SiltError::InvalidExpressionOperator(operator.clone())),
+                _ => return err_tuple!(SiltError::ExpInvalidOperator(operator.clone()), *location),
             }
         }
-        Expression::GroupingExpression { expression } => todo!(),
-        Expression::Variable { ident } => {
+        Expression::GroupingExpression {
+            expression,
+            location,
+        } => todo!(),
+        Expression::Variable { ident, location } => {
             let v = global.get(&ident);
             match v {
                 Value::Number(n) => Value::Number(*n),
@@ -313,16 +339,22 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
                 Value::Nil => Value::Nil,
                 Value::Infinity(f) => Value::Infinity(*f),
                 Value::NativeFunction(f) => Value::NativeFunction(*f),
+                Value::Function(f) => Value::Function(f.clone()),
             }
         }
         // Expression::AssignmentExpression { name, value } => todo!(),
         // Expression::EndOfFile => todo!(),
         Expression::InvalidExpression => todo!(),
-        Expression::Assign { ident, value } => {
+        Expression::Assign {
+            ident,
+            value,
+            location,
+        } => {
             let val = evaluate(global, value)?;
-            global.set(*ident, val, false);
+            global.declare_local(*ident, val);
             Value::Nil
         }
+        Expression::Function(f, location) => Value::Function(f.clone()),
         Expression::Call {
             callee,
             args,
@@ -334,16 +366,40 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Sil
             let mut args = args
                 .iter()
                 .map(|a| evaluate(global, a))
-                .collect::<Result<Vec<Value>, SiltError>>()?;
+                .collect::<Result<Vec<Value>, ErrorTuple>>()?;
 
             if strict {
                 // TODO args.len() == function.arity
             }
             match callee {
-                // Value::Function(f) => f.call(global, args),
+                Value::Function(f) => {
+                    global.new_scope();
+                    let ff: &Function = f.borrow();
+                    // ff.call(global, args);
+                    ff.params.iter().enumerate().for_each(|(i, p)| {
+                        let ident = global.to_register(p);
+                        global.declare_local(
+                            ident,
+                            match args.get(i) {
+                                Some(v) => v.clone(),
+                                None => Value::Nil,
+                            },
+                        );
+                    });
+                    match execute(global, &ff.body) {
+                        Ok(v) => {
+                            global.pop_scope();
+                            return Ok(v);
+                        }
+                        Err(e) => {
+                            global.pop_scope();
+                            return Err(e);
+                        }
+                    }
+                }
                 Value::NativeFunction(f) => f(global, args),
                 _ => {
-                    return Err(SiltError::NotCallable(callee.to_string()));
+                    return err_tuple!(SiltError::NotCallable(callee.to_string()), *location);
                 }
             }
         }
@@ -366,14 +422,14 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             Operator::LessEqual => Value::Bool(l <= r),
             Operator::Greater => Value::Bool(l > r),
             Operator::GreaterEqual => Value::Bool(l >= r),
-            Operator::Not => return Err(SiltError::InvalidExpressionOperator(operator.clone())),
+            Operator::Not => return Err(SiltError::ExpInvalidOperator(operator.clone())),
             // Operator::And => logical_and(left, right),
             // Operator::Or => logical_or(left, right),
             Operator::FloorDivide => Value::Number((l / r).floor()),
             Operator::Exponent => Value::Number(l.powf(*r)),
             Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
             Operator::Tilde => todo!(),
-            _ => return Err(SiltError::InvalidExpressionOperator(operator.clone())),
+            _ => return Err(SiltError::ExpInvalidOperator(operator.clone())),
         },
         (Value::Integer(l), Value::Integer(r)) => match operator {
             Operator::Add => Value::Integer(l + r),
@@ -393,7 +449,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             Operator::GreaterEqual => Value::Bool(l >= r),
             Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
+                return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
             Operator::Tilde => todo!(),
         },
@@ -415,7 +471,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             Operator::GreaterEqual => Value::Bool(*l >= intr2f!(r)),
             Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
+                return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
             Operator::Tilde => todo!(),
         },
@@ -437,7 +493,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             Operator::Exponent => Value::Number(intr2f!(l).powf(*r)),
             Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
+                return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
             Operator::Tilde => todo!(),
         },
@@ -524,7 +580,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
                 }
                 Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
                 Operator::Not | Operator::And | Operator::Or => {
-                    return Err(SiltError::InvalidExpressionOperator(operator.clone()))
+                    return Err(SiltError::ExpInvalidOperator(operator.clone()))
                 }
             }
         }
@@ -587,7 +643,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
+                return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
         },
         (Value::String(l), Value::Integer(r)) => match operator {
@@ -645,7 +701,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
+                return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
         },
         (Value::Integer(l), Value::String(r)) => match operator {
@@ -697,7 +753,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             }
             Operator::Tilde => return Err(SiltError::ExpInvalidBitwise(ErrorTypes::String)),
             Operator::Not | Operator::And | Operator::Or => {
-                return Err(SiltError::InvalidExpressionOperator(operator.clone()))
+                return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
         },
         (Value::Integer(_), Value::Bool(_))
@@ -786,9 +842,10 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
         (Value::Infinity(_), Value::Infinity(_)) => todo!(),
         (Value::Infinity(_), Value::String(_)) => todo!(),
         (Value::String(_), Value::Infinity(_)) => todo!(),
-        (Value::NativeFunction(_), _) | (_, Value::NativeFunction(_)) => {
-            return Err(SiltError::InvalidExpressionOperator(operator.clone()))
-        } // _=>Value::Nil,
+        (Value::NativeFunction(_), _)
+        | (_, Value::NativeFunction(_))
+        | (Value::Function(_), _)
+        | (_, Value::Function(_)) => return Err(SiltError::ExpInvalidOperator(operator.clone())), // _=>Value::Nil,
     };
     Ok(val)
 }

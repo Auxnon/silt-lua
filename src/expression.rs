@@ -1,7 +1,9 @@
-use std::f32::consts::E;
+use std::{f32::consts::E, rc::Rc};
 
 use crate::{
     error::Location,
+    function::Function,
+    statement::Statement,
     token::{Operator, Token},
     value::Value,
 };
@@ -11,31 +13,38 @@ pub enum Expression {
         left: Box<Expression>,
         operator: Operator,
         right: Box<Expression>,
+        location: Location,
     },
     Unary {
         operator: Operator,
         right: Box<Expression>,
+        location: Location,
     },
     // Primary {
     //     literal: Token,
     // },
     Literal {
         value: Value,
+        location: Location,
     },
     GroupingExpression {
         expression: Box<Expression>,
+        location: Location,
     },
     Variable {
         ident: usize,
+        location: Location,
     },
     Assign {
         ident: usize,
         value: Box<Expression>,
+        location: Location,
     },
     Logical {
         left: Box<Expression>,
         operator: Operator,
         right: Box<Expression>,
+        location: Location,
     },
 
     Call {
@@ -43,6 +52,7 @@ pub enum Expression {
         args: Vec<Expression>,
         location: Location,
     },
+    Function(Rc<Function>, Location),
     // GetExpression {
     //     object: Box<Expression>,
     //     name: Token,
@@ -68,17 +78,30 @@ impl std::fmt::Display for Expression {
                 left,
                 operator,
                 right,
+                location,
             } => write!(f, "({} {} {})", operator, left, right),
             Expression::Logical {
                 left,
                 operator,
                 right,
+                location,
             } => write!(f, "({} {} {})", operator, left, right),
-            Expression::Unary { operator, right } => write!(f, "({} {})", operator, right),
-            Expression::Literal { value } => write!(f, " {} ", value),
-            Expression::GroupingExpression { expression } => write!(f, "G({})", expression),
-            Expression::Variable { ident } => write!(f, "{}", ident),
-            Expression::Assign { ident, value } => write!(f, "({} := {})", ident, value),
+            Expression::Unary {
+                operator,
+                right,
+                location,
+            } => write!(f, "({} {})", operator, right),
+            Expression::Literal { value, location } => write!(f, " {} ", value),
+            Expression::GroupingExpression {
+                expression,
+                location,
+            } => write!(f, "G({})", expression),
+            Expression::Variable { ident, location } => write!(f, "{}", ident),
+            Expression::Assign {
+                ident,
+                value,
+                location,
+            } => write!(f, "({} := {})", ident, value),
             Expression::Call {
                 callee,
                 args: arguments,
@@ -91,6 +114,20 @@ impl std::fmt::Display for Expression {
                 s.push_str("))");
                 write!(f, "{}", s)
             }
+            Expression::Function(_, _) => write!(f, "function"),
+
+            // Expression::Function { params, block } => {
+            //     let mut s = format!("(fn(");
+            //     for param in params {
+            //         s.push_str(&format!("{},", param));
+            //     }
+            //     s.push_str(") {");
+            //     for statement in block {
+            //         s.push_str(&format!("\n||{}", statement));
+            //     }
+            //     s.push_str("})");
+            //     write!(f, "{}", s)
+            // }
             // Expression::AssignmentExpression { name, value } => {
             //     write!(f, "({} := {})", name, value)
             // }

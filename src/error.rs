@@ -17,11 +17,12 @@ pub enum SiltError {
     ExpectedToken(Token),
 
     //expression errors
-    InvalidExpressionOperator(Operator),
+    ExpInvalidOperator(Operator),
     ExpInvalidBitwise(ErrorTypes),
     ExpOpValueWithValue(ErrorTypes, Operator, ErrorTypes),
     ExpInvalidNegation(ErrorTypes),
     EarlyEndOfFile,
+    ExpInvalid,
 
     // statement errors
 
@@ -38,6 +39,7 @@ pub enum ErrorTypes {
     Nil,
     Infinity,
     NativeFunction,
+    Function,
 }
 
 pub type Location = (usize, usize);
@@ -56,7 +58,7 @@ impl std::fmt::Display for SiltError {
                     x, y
                 )
             }
-            SiltError::InvalidExpressionOperator(t) => write!(f, "Invalid expression token: {}", t),
+            SiltError::ExpInvalidOperator(t) => write!(f, "Invalid expression token: {}", t),
             SiltError::EarlyEndOfFile => write!(f, "File ended early"),
             SiltError::ExpOpValueWithValue(v1, op, v2) => {
                 write!(f, "Cannot {} '{}' and '{}'", op, v1, v2)
@@ -81,6 +83,7 @@ impl std::fmt::Display for SiltError {
             SiltError::ExpectedDo => write!(f, "Expected 'do' after while condition"),
             Self::ExpectedToken(t) => write!(f, "Expected token: {}", t),
             Self::NotCallable(s) => write!(f, "Value '{}' is not callable", s),
+            Self::ExpInvalid => write!(f, "Invalid expression"),
         }
     }
 }
@@ -95,6 +98,7 @@ impl std::fmt::Display for ErrorTypes {
             ErrorTypes::Nil => write!(f, "nil"),
             ErrorTypes::Infinity => write!(f, "infinity"),
             ErrorTypes::NativeFunction => write!(f, "native_function"),
+            ErrorTypes::Function => write!(f, "function"),
         }
     }
 }

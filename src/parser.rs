@@ -5,6 +5,7 @@ pub mod parser {
         environment::Environment,
         error::{ErrorTuple, Location, SiltError},
         expression::Expression,
+        function::Function,
         statement::Statement,
         token::{Operator, Token},
         value::Value,
@@ -15,7 +16,7 @@ pub mod parser {
             let mut statements = vec![];
             while !matches!($self.peek(), Some(
                 $( &Token::$rule)|*)) {
-                    statements.push($self.local_declaration());
+                    statements.push($self.declaration());
             }
             statements
         }};
@@ -23,6 +24,7 @@ pub mod parser {
 
     macro_rules! devout {
         ($self:ident $message:literal) => {
+            #[cfg(feature = "dev-out")]
             println!("-> {}: {:?}", $message, $self.peek().unwrap_or(&Token::Nil));
         };
     }
@@ -52,13 +54,18 @@ pub mod parser {
         ($self:ident, $ident:ident,$op:ident) => {{
             let value = $self.expression();
             let bin = Expression::Binary {
-                left: Box::new(Expression::Variable { $ident }),
+                left: Box::new(Expression::Variable {
+                    $ident,
+                    location: $self.get_last_loc(),
+                }),
                 operator: Operator::$op,
                 right: Box::new(value),
+                location: $self.get_last_loc(),
             };
             Expression::Assign {
                 ident: $ident,
                 value: Box::new(bin),
+                location: $self.get_last_loc(),
             }
         }};
     }
@@ -170,7 +177,6 @@ pub mod parser {
         /** only use after peek */
         pub fn eat_out(&mut self) -> Token {
             self.current += 1;
-            // println!(" eat out pos {}", self.current);
             self.iterator.next().unwrap()
         }
 
@@ -185,11 +191,32 @@ pub mod parser {
             }
         }
 
+        // fn get_last_loc(&self) -> Location {
+        //     self.locations[self.current - 1]
+        // }
+        fn get_loc(&self) -> Location {
+            println!(
+                "get index {} is loc {}:{}",
+                self.current, self.locations[self.current].0, self.locations[self.current].1
+            );
+            self.locations[self.current]
+        }
+
+        fn get_last_loc(&self) -> Location {
+            println!(
+                "get index {} is loc {}:{}",
+                self.current - 1,
+                self.locations[self.current - 1].0,
+                self.locations[self.current - 1].1
+            );
+            self.locations[self.current - 1]
+        }
+
         pub fn parse(&mut self) -> Vec<Statement> {
             let mut statements = vec![];
             while !self.is_end() {
                 // if let Ok(s) = self.statement() {
-                statements.push(self.local_declaration());
+                statements.push(self.declaration());
                 // }
                 // else synchronize
             }
@@ -203,86 +230,77 @@ pub mod parser {
         // if equal then expresion
         // otherwise return as nil binary assign
 
-        fn local_declaration(&mut self) -> Statement {
-            if let Some(&Token::Local) = self.peek() {
-                // println!("local");
-                self.eat();
-                self.declaration(true)
-            } else {
-                self.declaration(false)
-            }
-        }
-
-        fn declaration(&mut self, local: bool) -> Statement {
-            println!("-> declaration");
+        fn declaration(&mut self) -> Statement {
+            devout!(self "declaration");
             // if let Some(&Token::Local) = self.peek() {
             //     self.eat();
-
-            if local {
-                if let Some(Token::Identifier(ident)) = self.eat() {
-                    let ident = self.global.to_register(&ident);
-                    // if let Some(&Token::Assign) = self.peek(){
-                    //     self.eat();
-                    //     let value = self.assignment();
-                    //     return Statement::Declare {
-                    //         ident,
-                    //         value: Box::new(value),
-                    //     };
-                    // }else{
-                    //     return Statement::Declare {
-                    //         ident,
-                    //         value: Box::new(Expression::Literal { value: Value::Nil }),
-                    //     };
-                    // }
-                    self.local_declare(ident)
-                } else {
-                    self.error(SiltError::ExpectedLocalIdentifier);
-                    Statement::InvalidStatement
-                }
-            } else {
-                self.statement()
+            match self.peek() {
+                Some(&Token::Local) => self.declaration_scope(true, false),
+                Some(&Token::Global) => self.declaration_scope(false, false),
+                Some(&Token::Function) => self.define_function(true, None),
+                _ => self.statement(),
             }
-            // if matches!(self.peek(), Some(Token::Identifier(_))) {
-            //     if let Token::Identifier(ident_str) = self.eat_out() {
-            //         let ident = self.global.to_register(&ident_str);
-            //         if let Some(&Token::Colon) = self.peek() {
-            //             // typing or self calling
-            //             self.eat();
-            //             let token = self.eat_out();
-            //             if let Token::ColonIdentifier(target) = token {
-            //                 // method or type name
-            //                 // self.eat();
-            //                 // return self.assign(self.peek(), ident);
-            //                 if let Some(&Token::OpenParen) = self.peek() {
-            //                     // self call
 
-            //                     Statement::InvalidStatement
-            //                 } else {
-            //                     // typing
-            //                     // return self.assign(self.peek(), ident);
-            //                     Statement::InvalidStatement
-            //                 }
-            //             } else {
-            //                 self.error(SiltError::InvalidColonPlacement);
-            //                 Statement::InvalidStatement
-            //             }
-            //         } else {
-            //             return if local {
-            //                 self.local_declare(ident)
-            //             } else {
-            //                 self.assign(ident)
-            //             };
-            //         }
+            // if let Some(&Token::Local | &Token::Global) = self.peek() {
+            //     let scope = self.eat_out();
+            //     if let Some(Token::Identifier(ident)) = self.eat() {
+            //         let ident = self.global.to_register(&ident);
+
             //     } else {
-            //         // yucky
-            //         panic!("impossible");
+            //         self.error(SiltError::ExpectedLocalIdentifier);
+            //         Statement::InvalidStatement
             //     }
-            // } else if local {
-            //     self.error(SiltError::ExpectedLocalIdentifier);
-            //     Statement::InvalidStatement
             // } else {
             //     self.statement()
             // }
+        }
+
+        fn declaration_scope(&mut self, local: bool, already_function: bool) -> Statement {
+            self.eat();
+            match self.eat_out() {
+                Token::Identifier(ident) => {
+                    let ident = self.global.to_register(&ident);
+                    self.typing(ident, local)
+                }
+                Token::Function => {
+                    if !already_function {
+                        self.define_function(local, None)
+                    } else {
+                        self.error(SiltError::ExpectedLocalIdentifier);
+                        Statement::InvalidStatement
+                    }
+                }
+                _ => {
+                    self.error(SiltError::ExpectedLocalIdentifier);
+                    Statement::InvalidStatement
+                }
+            }
+        }
+
+        fn typing(&mut self, ident: usize, local: bool) -> Statement {
+            if let Some(&Token::Colon) = self.peek() {
+                // typing or self calling
+                self.eat();
+                let token = self.eat_out();
+                if let Token::ColonIdentifier(target) = token {
+                    // method or type name
+                    // if let Some(&Token::OpenParen) = self.peek() {
+                    //     // self call
+
+                    //     Statement::InvalidStatement
+                    // } else {
+                    //     // typing
+                    //     // return self.assign(self.peek(), ident);
+                    //     Statement::InvalidStatement
+                    // }
+                    self.define_declaration(ident, local)
+                } else {
+                    self.error(SiltError::InvalidColonPlacement);
+                    Statement::InvalidStatement
+                }
+            } else {
+                self.define_declaration(ident, local)
+            }
         }
 
         fn assignment(&mut self) -> Expression {
@@ -297,34 +315,30 @@ pub mod parser {
                 | &Token::ModulusAssign,
             ) = self.peek()
             {
-                // println!("assign");
                 //let ident= current somehow?? use the exp as ident?
-                return if let Expression::Variable { ident } = exp {
+                return if let Expression::Variable { ident, location } = exp {
                     self.assigner(ident)
                 } else {
                     let t = self.peek().unwrap().clone();
                     self.error(SiltError::InvalidAssignment(t));
-                    Expression::Literal { value: Value::Nil }
+                    Expression::Literal {
+                        value: Value::Nil,
+                        location: self.get_last_loc(),
+                    }
                 };
-                // self.eat();
-
-                // let value = self.equality();
-                // return Expression::Assign {
-                //     ident,
-                //     value: Box::new(value),
-                // };
             }
             exp
         }
 
-        fn local_declare(&mut self, ident: usize) -> Statement {
+        fn define_declaration(&mut self, ident: usize, local: bool) -> Statement {
             let t = self.peek();
-            // println!("decl");
             match t {
                 Some(&Token::Assign) => Statement::Declare {
                     ident,
+                    local,
                     value: Box::new(self.next_expression()),
                 },
+                // we can't increment what doesn't exist yet, like what are you even doing?
                 Some(
                     &Token::AddAssign
                     | &Token::SubAssign
@@ -338,20 +352,58 @@ pub mod parser {
                 }
                 _ => Statement::Declare {
                     ident,
-                    value: Box::new(Expression::Literal { value: Value::Nil }),
+                    local,
+                    value: Box::new(Expression::Literal {
+                        value: Value::Nil,
+                        location: self.get_last_loc(),
+                    }),
                 },
             }
         }
 
+        fn define_function(&mut self, local: bool, pre_ident: Option<usize>) -> Statement {
+            self.eat();
+            let location = self.get_last_loc();
+            if let Token::Identifier(ident) = self.eat_out() {
+                let ident = self.global.to_register(&ident);
+                let mut params = vec![];
+
+                expect_token!(self OpenParen);
+                if let Some(&Token::CloseParen) = self.peek() {
+                    self.eat();
+                } else {
+                    while let Token::Identifier(ident) = self.eat_out() {
+                        params.push(ident.into_string());
+                        if let Some(&Token::Comma) = self.peek() {
+                            self.eat();
+                        } else {
+                            break;
+                        }
+                    }
+                    // TODO specific terminating paren error
+                    expect_token!(self CloseParen);
+                }
+                let block = self.block();
+                let func = Function::new(params, block);
+                return Statement::Declare {
+                    ident,
+                    local,
+                    value: Box::new(Expression::Function(std::rc::Rc::new(func), location)),
+                };
+            }
+            self.error(SiltError::ExpectedLocalIdentifier);
+            Statement::InvalidStatement
+        }
+
         fn assigner(&mut self, ident: usize) -> Expression {
-            println!("-> assign {}", ident);
             let tok = self.eat_out();
 
-            println!("-> assign token {}", tok);
+            let location = self.get_last_loc();
             match tok {
                 Token::Assign => Expression::Assign {
                     ident,
                     value: Box::new(self.expression()),
+                    location,
                 },
                 Token::AddAssign => {
                     op_assign!(self, ident, Add)
@@ -409,7 +461,7 @@ pub mod parser {
                 Some(&Token::While) => self.while_statement(),
                 Some(&Token::For) => self.for_statement(),
                 Some(&Token::Print) => Statement::Print(Box::new(self.next_expression())),
-                Some(&Token::Do) => Statement::Block(self.block()),
+                Some(&Token::Do) => Statement::Block(self.eat_block()),
                 _ => Statement::Expression(Box::new(self.expression())), // don't eat
             }
         }
@@ -429,8 +481,13 @@ pub mod parser {
         // }
 
         /** eat token, collect statements until hitting end, error if no end hit */
-        fn block(&mut self) -> Vec<Statement> {
+        fn eat_block(&mut self) -> Vec<Statement> {
             self.eat();
+            self.block()
+        }
+
+        /** collect statements until hitting end, error if no end hit */
+        fn block(&mut self) -> Vec<Statement> {
             let statements = build_block_until!(self End);
 
             if !matches!(self.eat_out(), Token::End) {
@@ -438,8 +495,8 @@ pub mod parser {
             }
             statements
         }
+
         fn if_statement(&mut self) -> Statement {
-            // println!("if statement");
             self.eat();
             let condition = self.expression();
             if let Some(&Token::Then) = self.peek() {
@@ -490,7 +547,7 @@ pub mod parser {
             self.eat();
             let cond = self.expression();
             if let Some(&Token::Do) = self.peek() {
-                let block = self.block();
+                let block = self.eat_block();
                 Statement::While {
                     cond: Box::new(cond),
                     block,
@@ -518,7 +575,7 @@ pub mod parser {
                     None
                 };
                 return if let Some(&Token::Do) = self.peek() {
-                    let block = self.block();
+                    let block = self.eat_block();
                     Statement::NumericFor {
                         ident,
                         start,
@@ -537,7 +594,6 @@ pub mod parser {
         }
 
         fn next_expression(&mut self) -> Expression {
-            println!("next_expression");
             self.eat();
             self.expression()
         }
@@ -556,6 +612,7 @@ pub mod parser {
                     left: Box::new(exp),
                     operator: Operator::Or,
                     right: Box::new(right),
+                    location: self.get_last_loc(),
                 };
             }
             exp
@@ -570,6 +627,7 @@ pub mod parser {
                     left: Box::new(exp),
                     operator: Operator::And,
                     right: Box::new(right),
+                    location: self.get_last_loc(),
                 };
             }
             exp
@@ -579,11 +637,13 @@ pub mod parser {
             let mut exp = self.comparison();
             while let Some(&Token::Op(Operator::NotEqual | Operator::Equal)) = self.peek() {
                 let operator = Self::de_op(self.eat_out());
+                let location = self.get_last_loc();
                 let right = self.comparison();
                 exp = Expression::Binary {
                     left: Box::new(exp),
                     operator,
                     right: Box::new(right),
+                    location,
                 };
             }
             exp
@@ -597,11 +657,13 @@ pub mod parser {
             )) = self.peek()
             {
                 let operator = Self::de_op(self.eat_out());
+                let location = self.get_last_loc();
                 let right = self.term();
                 exp = Expression::Binary {
                     left: Box::new(exp),
                     operator,
                     right: Box::new(right),
+                    location,
                 };
             }
             exp
@@ -613,11 +675,13 @@ pub mod parser {
                 self.peek()
             {
                 let operator = Self::de_op(self.eat_out());
+                let location = self.get_last_loc();
                 let right = self.factor();
                 exp = Expression::Binary {
                     left: Box::new(exp),
                     operator,
                     right: Box::new(right),
+                    location,
                 };
             }
             exp
@@ -630,10 +694,12 @@ pub mod parser {
             {
                 let operator = Self::de_op(self.eat_out());
                 let right = self.unary();
+                let location = self.get_last_loc();
                 exp = Expression::Binary {
                     left: Box::new(exp),
                     operator,
                     right: Box::new(right),
+                    location,
                 };
             }
             exp
@@ -643,10 +709,12 @@ pub mod parser {
         pub fn unary(&mut self) -> Expression {
             if let Some(&Token::Op(Operator::Sub | Operator::Not | Operator::Tilde)) = self.peek() {
                 let operator = Self::de_op(self.eat_out());
+                let location = self.get_last_loc();
                 let right = self.unary();
                 Expression::Unary {
                     operator,
                     right: Box::new(right),
+                    location,
                 }
             } else {
                 self.call()
@@ -658,7 +726,7 @@ pub mod parser {
             while let Some(&Token::OpenParen) = self.peek() {
                 devout!(self "call");
                 //TODO while(true) with break but also calls the finishCall func?
-                let start = self.locations[self.current];
+                let start = self.get_loc();
                 match self.arguments(start) {
                     Ok(args) => {
                         exp = Expression::Call {
@@ -704,32 +772,42 @@ pub mod parser {
             devout!(self "primary");
 
             let t = self.next();
+            let location = self.get_last_loc();
             // errors will 1 ahead, use error_last
             match t {
                 Some(Token::Number(n)) => Expression::Literal {
                     value: Value::Number(n),
+                    location,
                 },
                 Some(Token::StringLiteral(s)) => Expression::Literal {
                     value: Value::String(s),
+                    location,
                 },
                 Some(Token::Integer(i)) => Expression::Literal {
                     value: Value::Integer(i),
+                    location,
                 },
                 Some(Token::True) => Expression::Literal {
                     value: Value::Bool(true),
+                    location,
                 },
                 Some(Token::False) => Expression::Literal {
                     value: Value::Bool(false),
+                    location,
                 },
-                Some(Token::Nil) => Expression::Literal { value: Value::Nil },
+                Some(Token::Nil) => Expression::Literal {
+                    value: Value::Nil,
+                    location,
+                },
 
                 Some(Token::OpenParen) => {
-                    let start = self.locations[self.current - 1]; // we're ahead normally, in this func we're ahead by 2 as we already ate, yummers
+                    let start = self.get_last_loc(); // we're ahead normally, in this func we're ahead by 2 as we already ate, yummers
                     let exp = self.expression();
                     if let Some(Token::CloseParen) = self.peek() {
                         self.eat();
                         Expression::GroupingExpression {
                             expression: Box::new(exp),
+                            location: start,
                         }
                     } else {
                         self.error(SiltError::UnterminatedParenthesis(start.0, start.1));
@@ -738,10 +816,11 @@ pub mod parser {
                 }
                 Some(Token::Identifier(ident)) => Expression::Variable {
                     ident: self.global.to_register(&ident),
+                    location,
                 },
                 // Some(Token::EOF) => Ok(Expression::EndOfFile),
                 Some(Token::Op(o)) => {
-                    self.error(SiltError::InvalidExpressionOperator(o));
+                    self.error(SiltError::ExpInvalidOperator(o));
                     Expression::InvalidExpression
                 }
                 Some(tt) => {

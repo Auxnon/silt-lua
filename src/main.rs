@@ -1,12 +1,14 @@
 mod environment;
 mod error;
 mod expression;
+mod function;
 mod interpreter;
 mod lexer;
 mod parser;
 mod standard;
 mod statement;
 mod token;
+mod userdata;
 mod value;
 fn main() {
     // println!("Hello, world!");
@@ -36,15 +38,35 @@ fn main() {
     // print a
     // "#;
 
+    //benchmark
+    // let source_in = r#"
+    // start=clock()
+    // i=1
+    // a="a"
+    // while i < 100_000 do
+    //     i = i +1
+    //     a = a .. "1"
+    // end
+    // elapsed=clock()-start
+    // print "done"
+    // print elapsed
+    // elapsed
+    // "#;
+
     let source_in = r#"
-    i=1
-    a="a"
-    while i < 100_000 do
-        i = i +1
-        a = a .. "1"
-    end
-    print "done"
+
+    n=1
+    function b(h) print 'b'..n n=h print 'c'..n end
+
+    function a() print 'e'..n n=3 print 'f'..n b(10) print 'g'..n end
+
+    print 'a'..n
+    b(9)
+    print 'd'..n
+    a()
+    print 'h'.. n
     "#;
+
     // fibonaci
     // let source_in = r#"
     // a=0
@@ -59,29 +81,40 @@ fn main() {
 
     let mut global = environment::Environment::new();
     global.load_standard_library();
-    let mut meth = |source: &str| {
-        // let source = "1/0"; //6+5/3-6";
+
+    cli(source_in, &mut global);
+    println!(">");
+
+    while (true) {
+        let mut line = String::new();
+        if let Ok(_) = std::io::stdin().read_line(&mut line) {
+            let s = line.trim();
+            match cli(s, &mut global) {
+                value::Value::Nil => {}
+                v => println!("{}", v),
+            }
+            println!(">");
+        }
+    }
+}
+
+fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
+    println!("-----------------");
+    let mut lexer = lexer::Lexer::new(source.to_owned());
+    let (t, p) = lexer.parse();
+    t.iter().enumerate().for_each(|(i, t)| {
+        let p = p.get(i).unwrap_or(&(0, 0));
+        println!("|{}:{}| {}", p.0, p.1, t)
+    });
+
+    let errs = lexer.get_errors();
+    if errs.len() > 0 {
+        println!("|----------------");
+        println!("Lexer Errors:");
+        errs.iter().for_each(|e| println!("| {}", e));
         println!("-----------------");
-
-        let mut lexer = lexer::Lexer::new(source.to_owned());
-        // println!("step 1");
-        let (t, p) = lexer.parse();
-        // println!("step 2");
-        t.iter().enumerate().for_each(|(i, t)| {
-            let p = p.get(i).unwrap_or(&(0, 0));
-            println!("|{}:{}| {}", p.0, p.1, t)
-        });
-
-        // match lexer.get_error() {
-        //     Some(s) => println!("ERROR {}", s),
-        //     None => println!("No error"),
-        // }
-        lexer
-            .get_errors()
-            .iter()
-            .for_each(|e| println!("| Err!!{}", e));
-
-        let mut parser = crate::parser::parser::Parser::new(t, p, &mut global);
+    } else {
+        let mut parser = crate::parser::parser::Parser::new(t, p, global);
         println!("|----------------");
         let statements = parser.parse();
         statements
@@ -98,41 +131,42 @@ fn main() {
             println!("-----------------");
         } else {
             println!("-----------------");
-            let errs = crate::interpreter::execute(&mut global, &statements);
-            if errs.len() > 0 {
-                println!("Runtime Errors:");
-                errs.iter().for_each(|e| println!("{}", e));
+            let res = crate::interpreter::execute(global, &statements);
+            match res {
+                Ok(v) => {
+                    println!("");
+                    return v;
+                }
+                Err(e) => {
+                    println!("| Runtime Errors:");
+                    println!("| {}", e);
+                    println!("-----------------");
+                }
             }
         }
-
-        // println!("-----------------");
-        // match val {
-        //     Ok(v) => println!("{}", v),
-        //     Err(e) => println!("Error: {}", e),
-        // }
-        // println!("-----------------");
-        println!("");
-    };
-    meth(source_in);
-
-    while (true) {
-        let mut line = String::new();
-        if let Ok(_) = std::io::stdin().read_line(&mut line) {
-            let s = line.trim();
-            meth(s);
-        }
     }
+
+    // println!("-----------------");
+    // match val {
+    //     Ok(v) => println!("{}", v),
+    //     Err(e) => println!("Error: {}", e),
+    // }
+    // println!("-----------------");
+    println!("");
+    value::Value::Nil
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::token::Token;
+    use crate::{parser, token::Token};
     use std::mem::size_of;
 
     #[test]
     fn test_32bits() {
         println!("size of i32: {}", size_of::<i32>());
+        println!("size of i64: {}", size_of::<i64>());
         println!("size of f32: {}", size_of::<f32>());
+        println!("size of f64: {}", size_of::<f64>());
         println!("size of bool: {}", size_of::<bool>());
         println!("size of char: {}", size_of::<char>());
         println!("size of usize: {}", size_of::<usize>());
@@ -171,6 +205,24 @@ mod tests {
             "size of boxed expression: {}",
             size_of::<Box<crate::expression::Expression>>()
         );
+        println!(
+            "size of vec expression: {}",
+            size_of::<Vec<crate::expression::Expression>>()
+        );
+        println!(
+            "size of native function: {}",
+            size_of::<
+                fn(
+                    &mut crate::environment::Environment,
+                    Vec<crate::value::Value>,
+                ) -> crate::value::Value,
+            >()
+        );
+        //Rc<Function>
+        println!(
+            "size of function: {}",
+            size_of::<std::rc::Rc<crate::function::Function>>()
+        );
         println!("size of value: {}", size_of::<crate::value::Value>());
         println!(
             "size of environment: {}",
@@ -178,5 +230,32 @@ mod tests {
         );
 
         assert!(size_of::<Token>() == 24); //ideally 4 but whatever
+    }
+
+    #[test]
+    fn speed() {
+        let source_in = r#"
+    start=clock()
+    i=1
+    a="a"
+    while i < 100_000 do
+        i = i +1
+        a = a .. "1"
+    end
+    elapsed=clock()-start
+    print "done"
+    print "elapsed: "..elapsed
+    elapsed
+    "#;
+        let n = if let crate::value::Value::Number(n) = crate::cli(
+            source_in,
+            &mut crate::environment::Environment::new_with_std(),
+        ) {
+            println!("{} seconds", n);
+            n
+        } else {
+            999999.
+        };
+        assert!(n < 2.12)
     }
 }

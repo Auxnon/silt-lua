@@ -1,4 +1,8 @@
-use crate::{environment::Environment, error::ErrorTypes};
+use std::rc::Rc;
+
+use crate::{
+    environment::Environment, error::ErrorTypes, function::Function, statement::Statement,
+};
 
 pub enum Value {
     Integer(i64),
@@ -11,7 +15,9 @@ pub enum Value {
     String(Box<str>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
-    // Func(fn(Vec<Value>) -> Value),
+    Function(Rc<Function>), // closure: Environment,
+
+    // Func(fn(Vec<Value>) -> Value)
     NativeFunction(fn(&mut Environment, Vec<Value>) -> Value),
     // UserData
 }
@@ -26,6 +32,7 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Infinity(_) => write!(f, "inf"),
             Value::NativeFunction(_) => write!(f, "native_function"),
+            Value::Function { .. } => write!(f, "function"),
         }
     }
 }
@@ -40,6 +47,7 @@ impl Value {
             Value::String(_) => ErrorTypes::String,
             Value::Infinity(_) => ErrorTypes::Infinity,
             Value::NativeFunction(_) => ErrorTypes::NativeFunction,
+            Value::Function { .. } => ErrorTypes::Function,
         }
     }
 }
@@ -54,6 +62,8 @@ impl Clone for Value {
             Value::String(s) => Value::String(s.clone()),
             Value::Infinity(b) => Value::Infinity(*b),
             Value::NativeFunction(f) => Value::NativeFunction(*f),
+            // TODO: implement this
+            Value::Function(r) => Value::Function(Rc::clone(r)),
         }
     }
 }

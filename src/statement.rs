@@ -5,6 +5,7 @@ pub enum Statement {
     Print(Box<Expression>),
     Declare {
         ident: usize,
+        local: bool,
         value: Box<Expression>,
     },
     // Var(Token, Expression),
@@ -27,6 +28,12 @@ pub enum Statement {
     },
     // Break,
     // Continue,
+    // Function {
+    //     ident: usize,
+    //     local: bool,
+    //     args: Vec<usize>,
+    //     block: Vec<Statement>,
+    // },
     // Function(Token, Vec<Token>, Box<Statement>),
     // Return(Token, Option<Expression>),
     // Class(Token, Option<Expression>, Vec<Statement>),
@@ -40,7 +47,17 @@ impl std::fmt::Display for Statement {
         match self {
             Statement::Expression(expr) => write!(f, "$${}", expr),
             Statement::Print(expr) => write!(f, "$print$ {}", expr),
-            Statement::Declare { ident, value } => write!(f, "$declare$ {} := {}", ident, value),
+            Statement::Declare {
+                ident,
+                local,
+                value,
+            } => write!(
+                f,
+                "$declare$ {} {} := {}",
+                if *local { "local" } else { "global" },
+                ident,
+                value
+            ),
             Statement::InvalidStatement => write!(f, "!invalid!"),
             Statement::Block(statements) => {
                 let mut s = String::new();
@@ -99,7 +116,24 @@ impl std::fmt::Display for Statement {
                         None => format!("1"),
                     }
                 )
-            }
+            } // Statement::Function {
+              //     ident,
+              //     local,
+              //     args,
+              //     block,
+              // } => {
+              //     let mut s = String::new();
+              //     for statement in block {
+              //         s.push_str(&format!("\n||{}", statement));
+              //     }
+              //     write!(
+              //         f,
+              //         "$function$ {} {} {}",
+              //         if *local { "local" } else { "global" },
+              //         ident,
+              //         s
+              //     )
+              // }
         }
     }
 }
