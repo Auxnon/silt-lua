@@ -311,7 +311,7 @@ impl<'a> Lexer {
                         "break" => Token::Break,
                         "do" => Token::Do,
                         "class" => Token::Class,
-                        "print" => Token::Print,
+                        "sprint" => Token::Print,
                         _ => Token::Identifier(cc.into()),
                     });
                 }
@@ -506,7 +506,7 @@ impl<'a> Lexer {
                             self.eat();
                             self.add(Token::Op(Operator::NotEqual));
                         }
-                        _ => self.add(Token::Bang),
+                        _ => self.add(Token::Op(Operator::Not)),
                     };
                 }
                 cw => {

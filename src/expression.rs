@@ -52,7 +52,10 @@ pub enum Expression {
         args: Vec<Expression>,
         location: Location,
     },
-    Function(Rc<Function>, Location),
+    Function {
+        value: Rc<Function>,
+        location: Location,
+    },
     // GetExpression {
     //     object: Box<Expression>,
     //     name: Token,
@@ -114,7 +117,9 @@ impl std::fmt::Display for Expression {
                 s.push_str("))");
                 write!(f, "{}", s)
             }
-            Expression::Function(_, _) => write!(f, "function"),
+            Expression::Function { value, .. } => write!(f, "function"),
+
+            // Expression::Function(_, _) => write!(f, "function"),
 
             // Expression::Function { params, block } => {
             //     let mut s = format!("(fn(");

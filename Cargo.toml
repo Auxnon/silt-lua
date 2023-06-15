@@ -12,9 +12,10 @@ panic ="abort"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default=["silt"]
-silt=["bang","global"]
+silt=["bang","global","implicit-return"]
 bang=[]
 global=[]
+implicit-return=[]
 dev-out=[]
 
 [dependencies]

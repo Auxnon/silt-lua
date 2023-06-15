@@ -1,4 +1,10 @@
-use crate::{environment::Environment, statement::Statement, value::Value};
+use std::rc::Rc;
+
+use crate::{
+    environment::{Environment, Scope},
+    statement::Statement,
+    value::Value,
+};
 
 trait Callable {
     fn call(&self, global: &mut Environment, args: Vec<Value>) -> Value;
@@ -12,6 +18,17 @@ pub struct Function {
 impl Function {
     pub fn new(params: Vec<String>, body: Vec<Statement>) -> Self {
         Self { params, body }
+    }
+}
+
+pub struct ScopedFunction {
+    pub func: Rc<Function>,
+    pub scope: Vec<Scope>,
+}
+
+impl ScopedFunction {
+    pub fn new(scope: Vec<Scope>, func: Rc<Function>) -> Self {
+        Self { func, scope }
     }
 }
 

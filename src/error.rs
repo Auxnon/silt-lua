@@ -1,4 +1,7 @@
-use crate::token::{Operator, Token};
+use crate::{
+    token::{Operator, Token},
+    value::Value,
+};
 
 pub enum SiltError {
     //parse errors
@@ -29,6 +32,7 @@ pub enum SiltError {
     //interpreted errors
     EvalNoInteger(ErrorTypes),
     NotCallable(String),
+    Return(Value),
 }
 pub enum ErrorTypes {
     String,
@@ -47,6 +51,7 @@ pub type Location = (usize, usize);
 impl std::fmt::Display for SiltError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Return(v) => write!(f, "~Return {}~", v),
             SiltError::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
             SiltError::NotANumber(s) => write!(f, "Not a number: {}", s),
             SiltError::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),

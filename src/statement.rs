@@ -26,6 +26,7 @@ pub enum Statement {
         step: Option<Box<Expression>>,
         block: Vec<Statement>,
     },
+    Return(Box<Expression>),
     // Break,
     // Continue,
     // Function {
@@ -39,6 +40,7 @@ pub enum Statement {
     // Class(Token, Option<Expression>, Vec<Statement>),
     // Import(Token, Option<Token>),
     // EOF,
+    Skip,
     InvalidStatement,
 }
 
@@ -46,7 +48,9 @@ impl std::fmt::Display for Statement {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Statement::Expression(expr) => write!(f, "$${}", expr),
+            Statement::Skip => write!(f, ";"),
             Statement::Print(expr) => write!(f, "$print$ {}", expr),
+            Self::Return(expr) => write!(f, "$return$ {}", expr),
             Statement::Declare {
                 ident,
                 local,

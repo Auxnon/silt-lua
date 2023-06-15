@@ -8,3 +8,11 @@ pub fn clock(_: &mut Environment, _: Vec<Value>) -> Value {
             .as_secs_f64(),
     )
 }
+
+pub fn print(_: &mut Environment, args: Vec<Value>) -> Value {
+    for arg in args {
+        print!("> {}", arg);
+    }
+    println!();
+    Value::Nil
+}

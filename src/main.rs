@@ -1,3 +1,5 @@
+use core::panic;
+
 mod environment;
 mod error;
 mod expression;
@@ -53,19 +55,40 @@ fn main() {
     // elapsed
     // "#;
 
+    // func test
+    // let source_in = r#"
+
+    // n=1
+    // function b(h) print 'b'..n n=h print 'c'..n end
+
+    // function a() print 'e'..n  n=3 print 'f'..n b(10) print 'g'..n end
+
+    // print 'a'..n
+    // b(9)
+    // print 'd'..n
+    // a()
+    // print 'h'.. n
+    // "#;
+
     let source_in = r#"
+    function create_counter()
+    local count = 0
+    return function()
+        count = count + 1
+        print(count)
+        return count
+    end
+end
 
-    n=1
-    function b(h) print 'b'..n n=h print 'c'..n end
+local counter = create_counter()
+counter()
+counter()
 
-    function a() print 'e'..n n=3 print 'f'..n b(10) print 'g'..n end
+        "#;
+    //     let source_in = r#"
+    // "#;
 
-    print 'a'..n
-    b(9)
-    print 'd'..n
-    a()
-    print 'h'.. n
-    "#;
+    // panic!("test");
 
     // fibonaci
     // let source_in = r#"
@@ -83,9 +106,14 @@ fn main() {
     global.load_standard_library();
 
     cli(source_in, &mut global);
+
+    match cli(source_in, &mut global) {
+        value::Value::Nil => {}
+        v => println!("{}", v),
+    }
     println!(">");
 
-    while (true) {
+    loop {
         let mut line = String::new();
         if let Ok(_) = std::io::stdin().read_line(&mut line) {
             let s = line.trim();
@@ -244,7 +272,7 @@ mod tests {
     end
     elapsed=clock()-start
     print "done"
-    print "elapsed: "..elapsed
+    print ("elapsed: "..elapsed)
     elapsed
     "#;
         let n = if let crate::value::Value::Number(n) = crate::cli(
@@ -257,5 +285,35 @@ mod tests {
             999999.
         };
         assert!(n < 2.12)
+    }
+
+    #[test]
+    fn fib() {
+        let source_in = r#"
+        start=clock() 
+        function fib(n)
+        if n <= 1 then
+          return n
+        else
+        return fib(n-1) + fib(n-2)
+        end
+      end
+      
+      for i = 1, 25 do
+          print(i..":"..fib(i))
+      end
+      elapsed=clock()-start
+      elapsed
+    "#;
+        let n = if let crate::value::Value::Number(n) = crate::cli(
+            source_in,
+            &mut crate::environment::Environment::new_with_std(),
+        ) {
+            println!("{} seconds", n);
+            n
+        } else {
+            999999.
+        };
+        assert!(n < 3.4)
     }
 }

@@ -4,7 +4,7 @@ use crate::{
     environment::Environment,
     error::{ErrorTuple, ErrorTypes, Location, SiltError},
     expression::Expression,
-    function::Function,
+    function::{Function, ScopedFunction},
     statement::Statement,
     token::Operator,
     value::Value,
@@ -126,7 +126,21 @@ macro_rules! err_tuple {
         })
     }};
 }
+
+/** Execute statements within an environment, cleans up return values */
 pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<Value, ErrorTuple> {
+    match _execute(scope, statements) {
+        Ok(v)
+        | Err(ErrorTuple {
+            code: SiltError::Return(v),
+            location: _,
+        }) => Ok(v),
+        Err(e) => Err(e),
+    }
+}
+
+/** private execution function */
+fn _execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<Value, ErrorTuple> {
     // let
     // let mut errors: Vec<SiltError> = vec![];
     let mut res = Value::Nil;
@@ -150,9 +164,9 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<V
             } => {
                 let cond = evaluate(scope, cond)?;
                 if is_truthy(&cond) {
-                    execute(scope, then)?
+                    _execute(scope, then)?
                 } else if let Some(else_cond) = else_cond {
-                    execute(scope, else_cond)?
+                    _execute(scope, else_cond)?
                 } else {
                     Value::Nil
                 }
@@ -161,7 +175,7 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<V
                 scope.new_scope();
                 while let Ok(cond) = evaluate(scope, cond) {
                     if is_truthy(&cond) {
-                        execute(scope, &block)?;
+                        _execute(scope, &block)?;
                     } else {
                         break;
                     }
@@ -176,7 +190,7 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<V
                 step,
                 block,
             } => {
-                let mut start = evaluate(scope, start)?;
+                let mut iterated = evaluate(scope, start)?;
                 let end = evaluate(scope, end)?;
 
                 let step = match step {
@@ -184,22 +198,29 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<V
                     None => Value::Integer(1),
                 };
                 scope.new_scope();
-                scope.declare_local(*ident, start.clone());
-                while match eval_binary(&start, &Operator::LessEqual, &end) {
+                scope.declare_local(*ident, iterated.clone());
+                while match eval_binary(&iterated, &Operator::LessEqual, &end) {
                     Ok(v) => is_truthy(&v),
                     _ => false,
                 } {
-                    execute(scope, block);
-                    start = match eval_binary(&start, &Operator::Add, &step) {
+                    _execute(scope, block)?;
+                    // println!("start: {}, step: {}", iterated, step);
+                    iterated = match eval_binary(&iterated, &Operator::Add, &step) {
                         Ok(v) => v,
-                        Err(e) => {
-                            return err_tuple!(SiltError::ExpInvalidOperator(Operator::Add), (0, 0))
-                        }
+                        Err(e) => return err_tuple!(e, (0, 0)), // TODO location
                     };
-                    scope.assign_local(*ident, start.clone());
+                    // println!("after start: {}, step: {}", iterated.clone(), step);
+                    scope.assign_local(*ident, iterated.clone());
                 }
                 scope.pop_scope();
-                Value::Nil
+                #[cfg(feature = "implicit-return")]
+                {
+                    iterated
+                }
+                #[cfg(not(feature = "implicit-return"))]
+                {
+                    Value::Nil
+                }
             }
 
             Statement::Block(statements) => {
@@ -207,17 +228,36 @@ pub fn execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<V
                 // let mut local = Environment::new();
                 // local.create_enclosing(scope);
                 // execute(&mut local, statements);
-                let v = execute(scope, statements)?;
+                let v = _execute(scope, statements)?;
                 scope.pop_scope();
                 // drop(local);
                 v
             }
             Statement::Print(exp) => print_statement(scope, exp)?,
             Statement::InvalidStatement => return err_tuple!(SiltError::ExpInvalid, (0, 0)),
-            _ => Value::Nil,
+            Statement::Return(exp) => match evaluate(scope, exp) {
+                Ok(v) => {
+                    return Err(ErrorTuple {
+                        code: SiltError::Return(v),
+                        location: (0, 0),
+                    })
+                }
+                Err(e) => return Err(e),
+            },
+            Statement::Skip => Value::Nil,
+            // _ => Value::Nil,
         };
     }
-    Ok(res)
+
+    #[cfg(not(feature = "implicit-return"))]
+    {
+        Ok(Value::Nil)
+    }
+
+    #[cfg(feature = "implicit-return")]
+    {
+        Ok(res)
+    }
 
     // errors
 
@@ -307,7 +347,7 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Err
                         return err_tuple!(SiltError::ExpInvalidNegation(v.to_error()), *location);
                     }
                 },
-                Operator::Not => Value::Bool(is_truthy(&right)),
+                Operator::Not => Value::Bool(!is_truthy(&right)),
                 Operator::Tilde => match right {
                     Value::Integer(i) => Value::Integer(!i),
                     Value::Number(n) => {
@@ -331,16 +371,17 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Err
         } => todo!(),
         Expression::Variable { ident, location } => {
             let v = global.get(&ident);
-            match v {
-                Value::Number(n) => Value::Number(*n),
-                Value::Integer(i) => Value::Integer(*i),
-                Value::Bool(b) => Value::Bool(*b),
-                Value::String(s) => Value::String(s.clone()),
-                Value::Nil => Value::Nil,
-                Value::Infinity(f) => Value::Infinity(*f),
-                Value::NativeFunction(f) => Value::NativeFunction(*f),
-                Value::Function(f) => Value::Function(f.clone()),
-            }
+            v
+            // match v {
+            //     Value::Number(n) => Value::Number(*n),
+            //     Value::Integer(i) => Value::Integer(*i),
+            //     Value::Bool(b) => Value::Bool(*b),
+            //     Value::String(s) => Value::String(s.clone()),
+            //     Value::Nil => Value::Nil,
+            //     Value::Infinity(f) => Value::Infinity(*f),
+            //     Value::NativeFunction(f) => Value::NativeFunction(*f),
+            //     Value::Function(f) => Value::Function(f.clone()),
+            // }
         }
         // Expression::AssignmentExpression { name, value } => todo!(),
         // Expression::EndOfFile => todo!(),
@@ -351,10 +392,14 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Err
             location,
         } => {
             let val = evaluate(global, value)?;
-            global.declare_local(*ident, val);
+            global.assign_local(*ident, val);
             Value::Nil
         }
-        Expression::Function(f, location) => Value::Function(f.clone()),
+        Expression::Function { value, location } => {
+            let scoped = ScopedFunction::new(global.get_current_scope(), value.clone());
+            Value::Function(std::rc::Rc::new(scoped))
+        }
+
         Expression::Call {
             callee,
             args,
@@ -373,10 +418,11 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Err
             }
             match callee {
                 Value::Function(f) => {
+                    let temp_scope = global.swap_scope(&f.scope);
                     global.new_scope();
-                    let ff: &Function = f.borrow();
+                    let ff: &ScopedFunction = f.borrow();
                     // ff.call(global, args);
-                    ff.params.iter().enumerate().for_each(|(i, p)| {
+                    ff.func.params.iter().enumerate().for_each(|(i, p)| {
                         let ident = global.to_register(p);
                         global.declare_local(
                             ident,
@@ -386,13 +432,18 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Err
                             },
                         );
                     });
-                    match execute(global, &ff.body) {
-                        Ok(v) => {
+                    match _execute(global, &ff.func.body) {
+                        Ok(v)
+                        | Err(ErrorTuple {
+                            code: SiltError::Return(v),
+                            location: _,
+                        }) => {
+                            // we can accept special error return type and pass normally
                             global.pop_scope();
-                            return Ok(v);
+                            global.replace_scope(temp_scope);
+                            v
                         }
                         Err(e) => {
-                            global.pop_scope();
                             return Err(e);
                         }
                     }

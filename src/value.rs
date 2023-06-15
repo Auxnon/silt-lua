@@ -1,7 +1,10 @@
 use std::rc::Rc;
 
 use crate::{
-    environment::Environment, error::ErrorTypes, function::Function, statement::Statement,
+    environment::Environment,
+    error::ErrorTypes,
+    function::{Function, ScopedFunction},
+    statement::Statement,
 };
 
 pub enum Value {
@@ -15,7 +18,7 @@ pub enum Value {
     String(Box<str>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
-    Function(Rc<Function>), // closure: Environment,
+    Function(Rc<ScopedFunction>), // closure: Environment,
 
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(fn(&mut Environment, Vec<Value>) -> Value),
