@@ -1,11 +1,6 @@
 use std::rc::Rc;
 
-use crate::{
-    environment::Environment,
-    error::ErrorTypes,
-    function::{Function, ScopedFunction},
-    statement::Statement,
-};
+use crate::{environment::Environment, error::ErrorTypes, function::ScopedFunction};
 
 pub enum Value {
     Integer(i64),

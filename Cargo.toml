@@ -21,3 +21,4 @@ dev-out=[]
 [dependencies]
 hashbrown = "0.14"
 rustc-hash="1.1.0"
+ahash="0.8.3"

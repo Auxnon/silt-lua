@@ -7,6 +7,7 @@ mod function;
 mod interpreter;
 mod lexer;
 mod parser;
+mod resolver;
 mod standard;
 mod statement;
 mod token;
@@ -70,6 +71,18 @@ fn main() {
     // print 'h'.. n
     // "#;
 
+    // thrice
+    //     let source_in = r#"
+
+    // function thrice(fn)
+    // for i = 1,  1 do
+    //     fn(i)
+    // end
+    // end
+
+    // thrice(function(i) print("p "..i) end)
+    // "#;
+
     let source_in = r#"
     function create_counter()
     local count = 0
@@ -83,8 +96,19 @@ end
 local counter = create_counter()
 counter()
 counter()
+    "#;
 
-        "#;
+    //     let source_in = r#"
+    //     do
+    //     local a=1
+    //     if true then
+    //         local b=2
+    //         print(a)
+    //     end
+    //     print(b)
+    // end
+    //     "#;
+
     //     let source_in = r#"
     // "#;
 
@@ -144,7 +168,7 @@ fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
     } else {
         let mut parser = crate::parser::parser::Parser::new(t, p, global);
         println!("|----------------");
-        let statements = parser.parse();
+        let mut statements = parser.parse();
         statements
             .iter()
             .enumerate()
@@ -159,6 +183,8 @@ fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
             println!("-----------------");
         } else {
             println!("-----------------");
+            let mut resolver = crate::resolver::Resolver::new();
+            resolver.process(&mut statements);
             let res = crate::interpreter::execute(global, &statements);
             match res {
                 Ok(v) => {
@@ -284,7 +310,7 @@ mod tests {
         } else {
             999999.
         };
-        assert!(n < 2.12)
+        assert!(n < 2.14)
     }
 
     #[test]

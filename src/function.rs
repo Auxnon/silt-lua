@@ -11,12 +11,12 @@ trait Callable {
 }
 
 pub struct Function {
-    pub params: Vec<String>,
+    pub params: Vec<usize>,
     pub body: Vec<Statement>,
 }
 
 impl Function {
-    pub fn new(params: Vec<String>, body: Vec<Statement>) -> Self {
+    pub fn new(params: Vec<usize>, body: Vec<Statement>) -> Self {
         Self { params, body }
     }
 }

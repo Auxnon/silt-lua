@@ -150,7 +150,7 @@ fn _execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<Valu
             Statement::Declare {
                 ident,
                 local,
-                value,
+                expr: value,
             } => {
                 let v = evaluate(scope, &value)?;
 
@@ -162,6 +162,7 @@ fn _execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<Valu
                 then,
                 else_cond,
             } => {
+                // TODO IF should be scoped, but we don't have a way to scope elseif without it being double scoped from our dumb shortcut of nesting it in the else
                 let cond = evaluate(scope, cond)?;
                 if is_truthy(&cond) {
                     _execute(scope, then)?
@@ -198,19 +199,31 @@ fn _execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<Valu
                     None => Value::Integer(1),
                 };
                 scope.new_scope();
-                scope.declare_local(*ident, iterated.clone());
-                while match eval_binary(&iterated, &Operator::LessEqual, &end) {
-                    Ok(v) => is_truthy(&v),
-                    _ => false,
+                scope.set_in_scope(*ident, iterated.clone());
+
+                while {
+                    match eval_binary(&iterated, &Operator::LessEqual, &end) {
+                        Ok(v) => {
+                            // if is_truthy(&v) {
+                            //     true
+                            // } else {
+                            //     false
+                            // }
+                            is_truthy(&v)
+                        }
+                        _ => false,
+                    }
                 } {
                     _execute(scope, block)?;
-                    // println!("start: {}, step: {}", iterated, step);
+
                     iterated = match eval_binary(&iterated, &Operator::Add, &step) {
                         Ok(v) => v,
                         Err(e) => return err_tuple!(e, (0, 0)), // TODO location
                     };
+                    scope.set_in_scope(*ident, iterated.clone());
+
                     // println!("after start: {}, step: {}", iterated.clone(), step);
-                    scope.assign_local(*ident, iterated.clone());
+                    // println!("start: {}, step: {}", iterated, step);
                 }
                 scope.pop_scope();
                 #[cfg(feature = "implicit-return")]
@@ -258,14 +271,6 @@ fn _execute(scope: &mut Environment, statements: &Vec<Statement>) -> Result<Valu
     {
         Ok(res)
     }
-
-    // errors
-
-    // for statement in statements {
-    //     match statement {
-
-    //     }
-    // }
 }
 
 // fn execute_lock(scope: &mut Environment, statements: Vec<Statement>) {
@@ -370,6 +375,7 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Err
             location,
         } => todo!(),
         Expression::Variable { ident, location } => {
+            // lookup_variable(global, *ident, *location)?
             let v = global.get(&ident);
             v
             // match v {
@@ -422,10 +428,9 @@ pub fn evaluate(global: &mut Environment, exp: &Expression) -> Result<Value, Err
                     global.new_scope();
                     let ff: &ScopedFunction = f.borrow();
                     // ff.call(global, args);
-                    ff.func.params.iter().enumerate().for_each(|(i, p)| {
-                        let ident = global.to_register(p);
-                        global.declare_local(
-                            ident,
+                    ff.func.params.iter().enumerate().for_each(|(i, param)| {
+                        global.set_in_scope(
+                            *param,
                             match args.get(i) {
                                 Some(v) => v.clone(),
                                 None => Value::Nil,

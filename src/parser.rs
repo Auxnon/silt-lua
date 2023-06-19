@@ -4,7 +4,7 @@ pub mod parser {
     use crate::{
         environment::Environment,
         error::{ErrorTuple, Location, SiltError},
-        expression::Expression,
+        expression::{Expression, Ident},
         function::Function,
         statement::Statement,
         token::{Operator, Token},
@@ -274,7 +274,7 @@ pub mod parser {
             self.eat();
             match self.eat_out() {
                 Token::Identifier(ident) => {
-                    let ident = self.global.to_register(&ident);
+                    let ident = (self.global.to_register(&ident), 0);
                     self.typing(ident, local)
                 }
                 Token::Function => {
@@ -292,7 +292,7 @@ pub mod parser {
             }
         }
 
-        fn typing(&mut self, ident: usize, local: bool) -> Statement {
+        fn typing(&mut self, ident: Ident, local: bool) -> Statement {
             if let Some(&Token::Colon) = self.peek() {
                 // typing or self calling
                 self.eat();
@@ -345,13 +345,13 @@ pub mod parser {
             exp
         }
 
-        fn define_declaration(&mut self, ident: usize, local: bool) -> Statement {
+        fn define_declaration(&mut self, ident: Ident, local: bool) -> Statement {
             let t = self.peek();
             match t {
                 Some(&Token::Assign) => Statement::Declare {
                     ident,
                     local,
-                    value: Box::new(self.next_expression()),
+                    expr: Box::new(self.next_expression()),
                 },
                 // we can't increment what doesn't exist yet, like what are you even doing?
                 Some(
@@ -368,7 +368,7 @@ pub mod parser {
                 _ => Statement::Declare {
                     ident,
                     local,
-                    value: Box::new(Expression::Literal {
+                    expr: Box::new(Expression::Literal {
                         value: Value::Nil,
                         location: self.get_last_loc(),
                     }),
@@ -380,12 +380,12 @@ pub mod parser {
             // self.eat(); // parser callers have already eaten token, they're full! lol
             let location = self.get_last_loc();
             if let Token::Identifier(ident) = self.eat_out() {
-                let ident = self.global.to_register(&ident);
+                let ident = (self.global.to_register(&ident), 0);
                 let func = self.function_expression(location);
                 return Statement::Declare {
                     ident,
                     local,
-                    value: Box::new(func),
+                    expr: Box::new(func),
                 };
             }
             self.error(SiltError::ExpectedLocalIdentifier);
@@ -401,7 +401,8 @@ pub mod parser {
                 self.eat();
             } else {
                 while let Token::Identifier(ident) = self.eat_out() {
-                    params.push(ident.into_string());
+                    let ident = self.global.to_register(&ident);
+                    params.push(ident);
                     if let Some(&Token::Comma) = self.peek() {
                         self.eat();
                     } else {
@@ -419,7 +420,7 @@ pub mod parser {
             }
         }
 
-        fn assigner(&mut self, ident: usize) -> Expression {
+        fn assigner(&mut self, ident: Ident) -> Expression {
             let tok = self.eat_out();
 
             let location = self.get_last_loc();
@@ -774,7 +775,7 @@ pub mod parser {
                 let location = self.get_loc();
                 self.eat();
                 let params = if let Expression::Variable { ident, location } = exp {
-                    vec![self.global.from_register(ident).to_string()]
+                    vec![ident.0]
                 } else {
                     vec![]
                 };
@@ -902,7 +903,7 @@ pub mod parser {
                     }
                 }
                 Some(Token::Identifier(ident)) => Expression::Variable {
-                    ident: self.global.to_register(&ident),
+                    ident: (self.global.to_register(&ident), 0),
                     location,
                 },
                 Some(Token::Function) => self.function_expression(location),

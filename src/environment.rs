@@ -1,11 +1,12 @@
 // use rustc_hash::FxHashMap as HashMap;
-use hashbrown::HashMap;
-use std::{cell::RefCell, rc::Rc, vec};
+// use hashbrown::HashMap;
+use ahash::{AHasher, RandomState};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, vec};
 // use std::println;
 
-use crate::value::Value;
+use crate::{expression::Ident, value::Value};
 
-pub type Scope = Rc<RefCell<HashMap<usize, Value>>>;
+pub type Scope = Rc<RefCell<HashMap<usize, Value, RandomState>>>;
 
 pub struct Environment {
     pub variables: Vec<Scope>,
@@ -16,6 +17,7 @@ pub struct Environment {
     free_registers: Vec<usize>,
     next_register: usize,
     map: HashMap<String, usize>,
+    // local_table: HashMap<usize, usize>,
     // meta_table: HashMap<usize, usize>, // key
 }
 
@@ -49,59 +51,62 @@ impl Environment {
         func: fn(&mut Environment, Vec<Value>) -> Value,
     ) -> usize {
         let u = self.to_register(name);
-        self.declare_global(u, Value::NativeFunction(func));
+        self.declare_global((u, 0), Value::NativeFunction(func));
         u
     }
 
-    pub fn declare_global(&mut self, ident: usize, value: Value) {
+    pub fn declare_global(&mut self, ident: Ident, value: Value) {
         self.set(ident, value, true, false);
     }
 
-    pub fn declare_local(&mut self, ident: usize, value: Value) {
+    pub fn declare_local(&mut self, ident: Ident, value: Value) {
         self.set(ident, value, true, true);
     }
+    pub fn set_in_scope(&mut self, ident: usize, value: Value) {
+        self.variables[self.depth].borrow_mut().insert(ident, value);
+    }
 
-    pub fn assign_local(&mut self, ident: usize, value: Value) {
+    pub fn assign_local(&mut self, ident: Ident, value: Value) {
         self.set(ident, value, false, true);
     }
 
     /** If we have implicit global then we default implicit declaration to the highest level as lua
      * does, otherwise we do something nicer and create in local scope if not shadowing anything*/
-    pub fn set(&mut self, ident: usize, value: Value, declare: bool, local: bool) {
-        if declare {
-            self.variables[if local { self.depth } else { 0 }]
-                .borrow_mut()
-                .insert(ident, value);
-        } else {
-            // println!(
-            //     "assign {} to {} (current depth {})",
-            //     value, ident, self.depth
-            // );
-            // check if exists
-            if self.depth > 0 {
-                // for vars in self.variables.iter_mut().rev() {
-                //     if let Some(val) = vars.get_mut(&ident) {
-                //         *val = value;
-                //         return;
-                //     }
-                // }
-                for i in (0..=self.depth).rev() {
-                    if let Some(val) = self.variables[i].borrow_mut().get_mut(&ident) {
-                        *val = value;
-                        return;
-                    }
-                }
-            }
-            // implicit declaration as we were unable to find an existing variable
-            if self.implicit_global {
-                self.variables[0].borrow_mut().insert(ident, value);
-            } else {
-                self.variables[self.depth].borrow_mut().insert(ident, value);
-            }
-        }
+    pub fn set(&mut self, ident: Ident, value: Value, declare: bool, local: bool) {
+        // if declare {
+        //     self.variables[if local { self.depth } else { 0 }].insert(ident, value);
+        // } else {
+        //     // println!(
+        //     //     "assign {} to {} (current depth {})",
+        //     //     value, ident, self.depth
+        //     // );
+        //     // check if exists
+        //     if self.depth > 0 {
+        //         // for vars in self.variables.iter_mut().rev() {
+        //         //     if let Some(val) = vars.get_mut(&ident) {
+        //         //         *val = value;
+        //         //         return;
+        //         //     }
+        //         // }
+        //         for i in (0..=self.depth).rev() {
+        //             if let Some(val) = self.variables[i].get_mut(&ident) {
+        //                 *val = value;
+        //                 return;
+        //             }
+        //         }
+        //     }
+        //     // implicit declaration as we were unable to find an existing variable
+        //     if self.implicit_global {
+        //         self.variables[0].insert(ident, value);
+        //     } else {
+        //         self.variables[self.depth].insert(ident, value);
+        //     }
+        // }
+
+        self.variables[ident.1].borrow_mut().insert(ident.0, value);
     }
 
-    pub fn get(&self, ident: &usize) -> Value {
+    pub fn get(&self, ident: &Ident) -> Value {
         // match self.variables.get(ident) {
         //     Some(v) => v.clone(),
         //     None => match &self.enclosing {
@@ -109,21 +114,33 @@ impl Environment {
         //         None => &Value::Nil,
         //     },
         // }
-        if self.depth > 0 {
-            for vars in self.variables.iter().rev() {
-                if let Some(val) = vars.borrow().get(ident) {
-                    return val.clone();
-                }
-            }
+        if let Some(val) = self.variables[ident.1].borrow().get(&ident.0) {
+            val.clone()
         } else {
-            if let Some(val) = self.variables[0].borrow().get(ident) {
-                // println!("got");
-                return val.clone();
-            }
+            Value::Nil
         }
+
+        // if self.depth > 0 {
+        //     for vars in self.variables.iter().rev() {
+        //         if let Some(val) = vars.get(ident) {
+        //             return val.clone();
+        //         }
+        //     }
+        // } else {
+        //     if let Some(val) = self.variables[0].get(ident) {
+        //         // println!("got");
+        //         return val.clone();
+        //     }
+        // }
         // vars.get(ident)
-        Value::Nil
     }
+
+    // pub fn get_at(&self, ident: &usize, depth: usize) -> Value {
+    //     if let Some(val) = self.variables[depth].borrow().get(ident) {
+    //         return val.clone();
+    //     }
+    //     Value::Nil
+    // }
 
     pub fn new_scope(&mut self) {
         self.variables
@@ -157,6 +174,7 @@ impl Environment {
             .collect()
     }
 
+    ///////////////////////////
     pub fn swap_scope(&mut self, scope: &Vec<Scope>) -> Vec<Scope> {
         let temp_scope = self.variables.drain(0..=self.depth).collect::<Vec<_>>();
         self.variables.extend(scope.iter().rev().cloned());
@@ -167,7 +185,12 @@ impl Environment {
         self.variables = scope;
         self.depth = self.variables.len() - 1;
     }
+    ///////////////////////////
 
+    pub fn resolve_local(&mut self, ident: usize, depth: usize) {
+        // TODO use the expression as a key? the expr as key should point to a the depth
+        // self.local_table.insert(ident, depth);
+    }
     fn free_register(&mut self, reg: usize) {
         self.free_registers.push(reg);
     }

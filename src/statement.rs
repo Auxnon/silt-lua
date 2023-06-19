@@ -1,12 +1,13 @@
-use crate::expression::Expression;
+use crate::expression::{Expression, Ident};
 
+#[derive(Clone)]
 pub enum Statement {
     Expression(Box<Expression>),
     Print(Box<Expression>),
     Declare {
-        ident: usize,
+        ident: Ident,
         local: bool,
-        value: Box<Expression>,
+        expr: Box<Expression>,
     },
     // Var(Token, Expression),
     Block(Vec<Statement>),
@@ -20,6 +21,7 @@ pub enum Statement {
         block: Vec<Statement>,
     },
     NumericFor {
+        /** no need to track variable depth */
         ident: usize,
         start: Box<Expression>,
         end: Box<Expression>,
@@ -54,12 +56,13 @@ impl std::fmt::Display for Statement {
             Statement::Declare {
                 ident,
                 local,
-                value,
+                expr: value,
             } => write!(
                 f,
-                "$declare$ {} {} := {}",
+                "$declare$ {} {}:{} := {}",
                 if *local { "local" } else { "global" },
-                ident,
+                ident.0,
+                ident.1,
                 value
             ),
             Statement::InvalidStatement => write!(f, "!invalid!"),
