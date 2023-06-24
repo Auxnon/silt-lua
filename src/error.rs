@@ -36,6 +36,12 @@ pub enum SiltError {
     EvalNoInteger(ErrorTypes),
     NotCallable(String),
     Return(Value),
+
+    //vm
+    VmCompileError,
+    VmRuntimeError,
+
+    Unknown,
 }
 pub enum ErrorTypes {
     String,
@@ -92,6 +98,9 @@ impl std::fmt::Display for SiltError {
             Self::ExpectedToken(t) => write!(f, "Expected token: {}", t),
             Self::NotCallable(s) => write!(f, "Value '{}' is not callable", s),
             Self::ExpInvalid => write!(f, "Invalid expression"),
+            Self::VmCompileError => write!(f, "Error compiling chunk"),
+            Self::VmRuntimeError => write!(f, "Runtime error for chunk"),
+            Self::Unknown => write!(f, "Unknown error"),
             // Self::ResReadInOwnInit => write!(f, "Cannot read variable in its own initializer"),
         }
     }

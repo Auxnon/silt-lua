@@ -483,7 +483,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             // Operator::Or => logical_or(left, right),
             Operator::FloorDivide => Value::Number((l / r).floor()),
             Operator::Exponent => Value::Number(l.powf(*r)),
-            Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
+            Operator::Concat => Value::String(Box::new(l.to_string() + &r.to_string())),
             Operator::Tilde => todo!(),
             _ => return Err(SiltError::ExpInvalidOperator(operator.clone())),
         },
@@ -503,7 +503,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             Operator::LessEqual => Value::Bool(l <= r),
             Operator::Greater => Value::Bool(l > r),
             Operator::GreaterEqual => Value::Bool(l >= r),
-            Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
+            Operator::Concat => Value::String(Box::new(l.to_string() + &r.to_string())),
             Operator::Not | Operator::And | Operator::Or => {
                 return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
@@ -525,7 +525,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             Operator::LessEqual => Value::Bool(*l <= intr2f!(r)),
             Operator::Greater => Value::Bool(*l > intr2f!(r)),
             Operator::GreaterEqual => Value::Bool(*l >= intr2f!(r)),
-            Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
+            Operator::Concat => Value::String(Box::new(l.to_string() + &r.to_string())),
             Operator::Not | Operator::And | Operator::Or => {
                 return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
@@ -547,7 +547,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
             // Operator::And => logical_and(left, right),
             // Operator::Or => logical_or(left, right),
             Operator::Exponent => Value::Number(intr2f!(l).powf(*r)),
-            Operator::Concat => Value::String((l.to_string() + &r.to_string()).into_boxed_str()),
+            Operator::Concat => Value::String(Box::new(l.to_string() + &r.to_string())),
             Operator::Not | Operator::And | Operator::Or => {
                 return Err(SiltError::ExpInvalidOperator(operator.clone()))
             }
@@ -629,7 +629,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
                 }
                 Operator::Concat => {
                     if let Value::String(ll) = left {
-                        Value::String(((**ll).to_owned() + &**r).into_boxed_str())
+                        Value::String(Box::new((**ll).to_owned() + &**r))
                     } else {
                         Value::Nil
                     }

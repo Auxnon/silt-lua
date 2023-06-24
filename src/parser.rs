@@ -28,27 +28,6 @@ pub mod parser {
             println!("-> {}: {:?}", $message, $self.peek().unwrap_or(&Token::Nil));
         };
     }
-    // macro_rules! val_err {
-    //     ($left:ident,$right:ident) => {
-    //         return Err(SiltError::ExpAddValueWithValue(
-    //             Value::String($left),
-    //             Value::String($right),
-    //         ));
-    //     };
-    // }
-    // macro_rules! op_assign {
-    //     ($self:ident, $ident:ident,$op:ident) => {{
-    //         let value = $self.next_expression();
-    //         Statement::Declare {
-    //             ident: $ident.clone(),
-    //             value: Expression::Binary {
-    //                 left: Box::new(Expression::Variable { $ident }),
-    //                 operator: Operator::$op,
-    //                 right: Box::new(value),
-    //             },
-    //         }
-    //     }};
-    // }
 
     macro_rules! op_assign {
         ($self:ident, $ident:ident,$op:ident) => {{
@@ -815,8 +794,9 @@ pub mod parser {
                     devout!(self "call");
                     let start = self.get_loc();
                     if let Some(Token::StringLiteral(s)) = self.eat() {
+                        let ss = Box::new(s.to_string());
                         let args = vec![Expression::Literal {
-                            value: Value::String(s),
+                            value: Value::String(ss),
                             location: start,
                         }];
                         exp = Expression::Call {
@@ -868,7 +848,7 @@ pub mod parser {
                     location,
                 },
                 Some(Token::StringLiteral(s)) => Expression::Literal {
-                    value: Value::String(s),
+                    value: Value::String(Box::new(s.to_string())),
                     location,
                 },
                 Some(Token::Integer(i)) => Expression::Literal {

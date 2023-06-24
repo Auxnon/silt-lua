@@ -1,5 +1,11 @@
 use core::panic;
+use std::vec;
 
+use crate::{chunk::Chunk, compiler::compiler::Compiler, lexer::TokenResult, vm::VM};
+
+mod chunk;
+mod code;
+mod compiler;
 mod environment;
 mod error;
 mod expression;
@@ -13,6 +19,7 @@ mod statement;
 mod token;
 mod userdata;
 mod value;
+mod vm;
 fn main() {
     // println!("Hello, world!");
     // let source = r#"
@@ -83,20 +90,32 @@ fn main() {
     // thrice(function(i) print("p "..i) end)
     // "#;
 
-    let source_in = r#"
-    function create_counter()
-    local count = 0
-    return function()
-        count = count + 1
-        print(count)
-        return count
-    end
-end
+    //     let source_in = r#"
+    //     function create_counter()
+    //     local count = 0
+    //     return function()
+    //         count = count + 1
+    //         print(count)
+    //         return count
+    //     end
+    // end
 
-local counter = create_counter()
-counter()
-counter()
-    "#;
+    // local counter = create_counter()
+    // counter()
+    // counter()
+    //     "#;
+    // let source_in = r#"
+    // function echo(n)
+    // print("x"..n)
+    // return 2
+    // end
+
+    // echo(2)
+    // print("y"..2)
+
+    // --print(echo(echo(1)+echo(2)) + echo(echo(4)+echo(5)) )
+    // "#;
+    let source_in = r#" 4*-6*(3 * 7 + 5) + 2 * 9"#;
 
     //     let source_in = r#"
     //     do
@@ -129,44 +148,60 @@ counter()
     let mut global = environment::Environment::new();
     global.load_standard_library();
 
-    cli(source_in, &mut global);
+    // cli(source_in, &mut global);
 
-    match cli(source_in, &mut global) {
-        value::Value::Nil => {}
-        v => println!("{}", v),
-    }
-    println!(">");
+    // match cli(source_in, &mut global) {
+    //     value::Value::Nil => {}
+    //     v => println!("{}", v),
+    // }
+    // println!(">");
 
-    loop {
-        let mut line = String::new();
-        if let Ok(_) = std::io::stdin().read_line(&mut line) {
-            let s = line.trim();
-            match cli(s, &mut global) {
-                value::Value::Nil => {}
-                v => println!("{}", v),
-            }
-            println!(">");
-        }
+    // loop {
+    //     let mut line = String::new();
+    //     if let Ok(_) = std::io::stdin().read_line(&mut line) {
+    //         let s = line.trim();
+    //         match cli(s, &mut global) {
+    //             value::Value::Nil => {}
+    //             v => println!("{}", v),
+    //         }
+    //         println!(">");
+    //     }
+    // }
+
+    let mut compiler = Compiler::new();
+    let c = compiler.compile(source_in.to_string(), &mut global);
+
+    c.print_chunk();
+    println!("-----------------");
+    let mut vm = VM::new();
+    if let Err(e) = vm.interpret(&c) {
+        println!("{}", e);
     }
 }
 
 fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
     println!("-----------------");
     let mut lexer = lexer::Lexer::new(source.to_owned());
-    let (t, p) = lexer.parse();
-    t.iter().enumerate().for_each(|(i, t)| {
-        let p = p.get(i).unwrap_or(&(0, 0));
-        println!("|{}:{}| {}", p.0, p.1, t)
+    let mut t: Vec<TokenResult> = lexer.collect();
+    let mut erronious = false;
+    let mut tokens = vec![];
+    let mut locations = vec![];
+    t.drain(..).enumerate().for_each(|(i, res)| match res {
+        Ok(t) => {
+            let p = t.1;
+            println!("|{}:{}| {}", p.0, p.1, t.0);
+
+            tokens.push(t.0);
+            locations.push(t.1);
+        }
+        Err(e) => {
+            erronious = true;
+            println!("|!! {}", e)
+        }
     });
 
-    let errs = lexer.get_errors();
-    if errs.len() > 0 {
-        println!("|----------------");
-        println!("Lexer Errors:");
-        errs.iter().for_each(|e| println!("| {}", e));
-        println!("-----------------");
-    } else {
-        let mut parser = crate::parser::parser::Parser::new(t, p, global);
+    if !erronious {
+        let mut parser = crate::parser::parser::Parser::new(tokens, locations, global);
         println!("|----------------");
         let mut statements = parser.parse();
         statements
@@ -212,8 +247,15 @@ fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
 
 #[cfg(test)]
 mod tests {
-    use crate::{parser, token::Token};
-    use std::mem::size_of;
+    use crate::{
+        chunk::Chunk,
+        code::{self, OpCode},
+        parser,
+        token::Token,
+        value::Value,
+        vm::VM,
+    };
+    use std::{mem::size_of, println};
 
     #[test]
     fn test_32bits() {
@@ -228,7 +270,9 @@ mod tests {
         println!("size of str: {}", size_of::<&str>());
         println!("size of String: {}", size_of::<String>());
         println!("size of Box<str>: {}", size_of::<Box<str>>());
+        println!("size of boxed<Strinv> {}", size_of::<Box<String>>());
         println!("size of Operator: {}", size_of::<crate::token::Operator>());
+        println!("size of Tester: {}", size_of::<crate::code::Tester>());
         println!("size of Flag: {}", size_of::<crate::token::Flag>());
         println!("size of token: {}", size_of::<Token>());
         println!(
@@ -278,12 +322,14 @@ mod tests {
             size_of::<std::rc::Rc<crate::function::Function>>()
         );
         println!("size of value: {}", size_of::<crate::value::Value>());
+        println!("size of OpCode: {}", size_of::<crate::code::OpCode>());
         println!(
             "size of environment: {}",
             size_of::<crate::environment::Environment>()
         );
 
-        assert!(size_of::<Token>() == 24); //ideally 4 but whatever
+        assert!(size_of::<Token>() == 24);
+        assert!(size_of::<crate::code::OpCode>() == 4);
     }
 
     #[test]
@@ -341,5 +387,41 @@ mod tests {
             999999.
         };
         assert!(n < 3.4)
+    }
+    #[test]
+    fn chunk() {
+        let mut c = Chunk::new();
+        // c.write_code(
+        //     OpCode::LITERAL {
+        //         dest: 8,
+        //         literal: 8,
+        //     },
+        //     (1, 0),
+        // );
+        c.write_value(Value::Number(1.2), (1, 1));
+        c.write_value(Value::Number(3.4), (1, 2));
+        c.write_code(OpCode::ADD, (1, 3));
+        c.write_value(Value::Number(9.2), (1, 4));
+        c.write_code(OpCode::DIVIDE, (1, 5));
+        c.write_code(OpCode::NEGATE, (1, 1));
+        c.write_code(OpCode::RETURN, (1, 3));
+        c.print_chunk();
+        println!("-----------------");
+        let mut vm = VM::new();
+        if let Err(e) = vm.interpret(&c) {
+            println!("{}", e);
+        }
+    }
+    #[test]
+    fn pointer() {
+        let x = vec![1, 2, 4];
+        let x_ptr = x.as_ptr();
+
+        unsafe {
+            for i in 0..x.len() {
+                println!("{}", *x_ptr);
+                assert_eq!(*x_ptr.add(i), 1 << i);
+            }
+        }
     }
 }

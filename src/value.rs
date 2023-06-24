@@ -3,14 +3,14 @@ use std::rc::Rc;
 use crate::{environment::Environment, error::ErrorTypes, function::ScopedFunction};
 
 pub enum Value {
+    Nil,
     Integer(i64),
     Number(f64),
     Bool(bool),
-    Nil,
     /** true for negative */
     Infinity(bool),
     // Bool(bool),
-    String(Box<str>),
+    String(Box<String>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
     Function(Rc<ScopedFunction>), // closure: Environment,

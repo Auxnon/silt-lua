@@ -101,45 +101,6 @@ impl std::fmt::Display for Expression {
             }
             Expression::Function { value, .. } => write!(f, "function"),
 
-            // Expression::Function(_, _) => write!(f, "function"),
-
-            // Expression::Function { params, block } => {
-            //     let mut s = format!("(fn(");
-            //     for param in params {
-            //         s.push_str(&format!("{},", param));
-            //     }
-            //     s.push_str(") {");
-            //     for statement in block {
-            //         s.push_str(&format!("\n||{}", statement));
-            //     }
-            //     s.push_str("})");
-            //     write!(f, "{}", s)
-            // }
-            // Expression::AssignmentExpression { name, value } => {
-            //     write!(f, "({} := {})", name, value)
-            // }
-            // Expression::LogicalExpression {
-            //     left,
-            //     operator,
-            //     right,
-            // } => write!(f, "({} {} {})", operator, left, right),
-            // Expression::CallExpression { callee, arguments } => {
-            //     let mut s = format!("({}(", callee);
-            //     for arg in arguments {
-            //         s.push_str(&format!("{},", arg));
-            //     }
-            //     s.push_str("))");
-            //     write!(f, "{}", s)
-            // }
-            // Expression::GetExpression { object, name } => write!(f, "({}.{})", object, name),
-            // Expression::SetExpression {
-            //     object,
-            //     name,
-            //     value,
-            // } => write!(f, "({}.{}={})", object, name, value),
-            // Expression::ThisExpression { keyword } => write!(f, "{}", keyword),
-            // Expression::SuperExpression { keyword, method } => write!(f, "{}.{}", keyword, method),
-            // Expression::EndOfFile => write!(f, "EOF"),
             Expression::InvalidExpression => write!(f, "!Invalid_Expression!"),
         }
     }

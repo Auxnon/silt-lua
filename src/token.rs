@@ -19,7 +19,7 @@ pub enum Token {
     ArrowFunction,
     In,
     Local,
-    Type,
+    Goto,
 
     Repeat,
     Until,
@@ -56,6 +56,7 @@ pub enum Token {
     ModulusAssign,
     LengthOp,                  //#
     Colon,                     //:
+    ColonColon,                //::
     ColonIdentifier(Box<str>), // :ident (for types and calls)
     OpenParen,
     CloseParen,
@@ -71,14 +72,14 @@ pub enum Token {
     StringLiteral(Box<str>),
     True,
     False,
-
-    // EOF,
+    EOF,
 
     //extra
     Bang, // !
     Class,
     Global,
     Flag(Flag),
+    Type,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +142,7 @@ impl Display for Token {
             Token::Then => write!(f, "then"),
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),
+            Token::Goto => write!(f, "goto"),
             Token::Assign => write!(f, "::="),
             Token::AddAssign => write!(f, "+="),
             Token::SubAssign => write!(f, "-="),
@@ -149,6 +151,7 @@ impl Display for Token {
             Token::ModulusAssign => write!(f, "%="),
             Token::LengthOp => write!(f, "#"),
             Token::Colon => write!(f, ":"),
+            Token::ColonColon => write!(f, "::"),
             Token::Class => write!(f, "class"),
             Token::Number(n) => write!(f, "{}f", n),
             Token::Integer(i) => write!(f, "{}i", i),
@@ -167,6 +170,7 @@ impl Display for Token {
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
             Token::Global => write!(f, "global"),
             Token::Flag(ref flag) => write!(f, "flag({})", flag),
+            Self::EOF => write!(f, "EOF"),
         }
     }
 }

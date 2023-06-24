@@ -3,6 +3,11 @@ use crate::{
     token::{Flag, Operator, Token},
 };
 
+enum Mode {
+    Normal,
+    Flag,
+    Typer,
+}
 pub struct Lexer {
     pub source: String,
     pub iterator: std::iter::Peekable<std::vec::IntoIter<char>>,
@@ -12,9 +17,35 @@ pub struct Lexer {
     pub line: usize,
     pub column: usize,
     pub column_start: usize,
-    pub error_list: Vec<ErrorTuple>,
-    pub tokens: Vec<Token>,
-    pub locations: Vec<Location>,
+    mode: Mode,
+    // pub error_list: Vec<ErrorTuple>,
+    // pub tokens: Vec<Token>,
+    // pub locations: Vec<Location>,
+}
+
+pub type TokenTuple = (Token, Location);
+pub type TokenResult = Result<TokenTuple, ErrorTuple>;
+pub type TokenOption = Option<TokenResult>;
+
+impl Iterator for Lexer {
+    type Item = TokenResult;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current >= self.end {
+            return None;
+        }
+        match self.mode {
+            Mode::Normal => self.step(),
+            Mode::Flag => match self.get_flag() {
+                Some(r) => Some(r),
+                None => {
+                    self.mode = Mode::Normal;
+                    self.step()
+                }
+            },
+            Mode::Typer => self.colon_blow(),
+        }
+    }
 }
 
 impl<'a> Lexer {
@@ -32,9 +63,10 @@ impl<'a> Lexer {
             end: len,
             line: 1,
             iterator: chars,
-            error_list: Vec::new(),
-            tokens: Vec::new(),
-            locations: Vec::new(),
+            mode: Mode::Normal,
+            // error_list: Vec::new(),
+            // tokens: Vec::new(),
+            // locations: Vec::new(),
         }
     }
     fn set_start(&mut self) {
@@ -54,27 +86,35 @@ impl<'a> Lexer {
     fn peek(&mut self) -> Option<&char> {
         self.iterator.peek()
     }
-    fn error(&mut self, code: SiltError) {
-        self.error_list.push(ErrorTuple {
+    fn _error(&mut self, code: SiltError) -> TokenResult {
+        Err(ErrorTuple {
             code,
             location: (self.line, self.start),
-        });
+        })
     }
-    pub fn get_errors(&mut self) -> Vec<ErrorTuple> {
-        self.error_list.drain(..).collect()
+    fn error(&mut self, code: SiltError) -> TokenOption {
+        Some(self._error(code))
     }
-    fn add(&mut self, token: Token) {
-        self.tokens.push(token);
-        self.locations.push((self.line, self.column_start + 1)); // add 1 because column_start is 0-indexed
+    // pub fn get_errors(&mut self) -> Vec<ErrorTuple> {
+    //     self.error_list.drain(..).collect()
+    // }
+    fn _send(&mut self, token: Token) -> TokenResult {
+        Ok((token, (self.line, self.column_start + 1)))
     }
-    fn eat_add(&mut self, token: Token) {
+    fn send(&mut self, token: Token) -> TokenOption {
+        // self.tokens.push(token);
+        // self.locations.push((self.line, self.column_start + 1)); // add 1 because column_start is 0-indexed
+        Some(self._send(token))
+    }
+
+    fn eat_send(&mut self, token: Token) -> TokenOption {
         self.eat();
-        self.add(token);
+        self.send(token)
     }
-    fn eat_eat_add(&mut self, token: Token) {
+    fn eat_eat_send(&mut self, token: Token) -> TokenOption {
         self.eat();
         self.eat();
-        self.add(token);
+        self.send(token)
     }
     // fn maybe_add(&mut self, token: Option<Token>) {
     //     if let Some(t) = token {
@@ -89,7 +129,7 @@ impl<'a> Lexer {
     fn get_sofar(&self) -> String {
         self.source[self.start..self.current].to_string()
     }
-    fn number(&mut self, prefix_dot: bool) {
+    fn number(&mut self, prefix_dot: bool) -> TokenOption {
         if prefix_dot {
             self.start = self.current - 1;
             self.column_start = self.column - 1;
@@ -111,15 +151,13 @@ impl<'a> Lexer {
                     }
                     '.' => {
                         if is_float {
-                            self.error(SiltError::InvalidNumber(self.get_sofar()));
-                            return;
+                            return self.error(SiltError::InvalidNumber(self.get_sofar()));
                         }
                         is_float = true;
                         self.eat();
                     }
                     'a'..='z' | 'A'..='Z' | '_' => {
-                        self.error(SiltError::InvalidNumber(self.get_sofar()));
-                        return;
+                        return self.error(SiltError::InvalidNumber(self.get_sofar()));
                     }
                     _ => break,
                 },
@@ -135,11 +173,10 @@ impl<'a> Lexer {
             } {
                 Ok(n) => n,
                 Err(_) => {
-                    self.error(SiltError::NotANumber(cc.to_string()));
-                    return;
+                    return self.error(SiltError::NotANumber(cc.to_string()));
                 }
             };
-            self.add(Token::Number(n));
+            self.send(Token::Number(n))
         } else {
             let n = match if strip {
                 cc.replace("_", "").parse::<i64>()
@@ -148,15 +185,14 @@ impl<'a> Lexer {
             } {
                 Ok(n) => n,
                 Err(_) => {
-                    self.error(SiltError::NotANumber(cc.to_string()));
-                    return;
+                    return self.error(SiltError::NotANumber(cc.to_string()));
                 }
             };
-            self.add(Token::Integer(n));
+            return self.send(Token::Integer(n));
         }
     }
 
-    fn string(&mut self, apos: bool) -> Option<Token> {
+    fn string(&mut self, apos: bool) -> TokenOption {
         // start column at '"' not within string starter
         self.column_start = self.column;
         self.eat();
@@ -165,8 +201,7 @@ impl<'a> Lexer {
             match self.peek() {
                 Some(c) => match c {
                     '\n' => {
-                        self.error(SiltError::UnterminatedString);
-                        return None;
+                        return self.error(SiltError::UnterminatedString);
                     }
                     '\'' => {
                         self.eat();
@@ -185,15 +220,14 @@ impl<'a> Lexer {
                     }
                 },
                 None => {
-                    self.error(SiltError::UnterminatedString);
-                    return None;
+                    return self.error(SiltError::UnterminatedString);
                 }
             }
         }
         let cc = self.source[self.start..self.current - 1].to_string();
-        Some(Token::StringLiteral(cc.into_boxed_str()))
+        self.send(Token::StringLiteral(cc.into_boxed_str()))
     }
-    fn multi_line_string(&mut self) -> Option<Token> {
+    fn multi_line_string(&mut self) -> TokenOption {
         self.column_start = self.column;
         self.eat();
         self.start = self.current;
@@ -217,13 +251,12 @@ impl<'a> Lexer {
                     }
                 },
                 None => {
-                    self.error(SiltError::UnterminatedString);
-                    return None;
+                    return self.error(SiltError::UnterminatedString);
                 }
             }
         }
         let cc = self.source[self.start..self.current - 2].to_string();
-        Some(Token::StringLiteral(cc.into_boxed_str()))
+        self.send(Token::StringLiteral(cc.into_boxed_str()))
     }
     fn word_eater(&mut self) {
         while self.current < self.end {
@@ -236,8 +269,9 @@ impl<'a> Lexer {
             }
         }
     }
-    fn get_flags(&mut self) {
+    fn get_flag(&mut self) -> TokenOption {
         // let mut words = vec![];
+        self.mode = Mode::Flag;
         self.set_start();
         while self.current < self.end {
             match self.eat_out() {
@@ -245,13 +279,14 @@ impl<'a> Lexer {
                     'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.eat(),
                     '\n' => {
                         self.new_line();
+                        self.mode = Mode::Normal;
                         break;
                     }
                     _ => {
                         let cc = &self.source[self.start..self.current];
                         match cc.to_lowercase().as_str() {
-                            "strict" => self.add(Token::Flag(Flag::Strict)),
-                            "local" => self.add(Token::Flag(Flag::Local)),
+                            "strict" => return self.send(Token::Flag(Flag::Strict)),
+                            "local" => return self.send(Token::Flag(Flag::Local)),
                             _ => {}
                         }
                         // words.push(cc.to_string());
@@ -261,32 +296,48 @@ impl<'a> Lexer {
                 None => break,
             }
         }
+        None
     }
     /** Follow up a colon to determine if an identifer is listed, this may be either a typing or a method determined by context */
-    fn colon_blow(&mut self) -> Token {
+    fn colon_blow(&mut self) -> TokenOption {
         while let Some(' ' | '\r' | '\t') = self.peek() {
             self.eat();
         }
+
         self.set_start();
         self.word_eater();
+        self.mode = Mode::Normal;
+        if self.start == self.current {
+            return self.error(SiltError::ExpectedLocalIdentifier);
+        }
         let cc = &self.source[self.start..self.current];
-        Token::ColonIdentifier(cc.into())
+        self.send(Token::ColonIdentifier(cc.into()))
     }
 
-    pub fn parse(&mut self) -> (Vec<Token>, Vec<Location>) {
+    // pub fn parse(&mut self) -> (Vec<Token>, Vec<Location>) {
+    //     // while self.current < self.end {
+    //     self.step();
+    //     // }
+    //     (
+    //         self.tokens.drain(..).collect(),
+    //         self.locations.drain(..).collect(),
+    //     )
+    // }
+    pub fn step(&mut self) -> TokenOption {
         while self.current < self.end {
             let char = match self.peek() {
                 Some(c) => *c,
-                None => break,
+                None => return None,
             };
 
             self.set_start();
-            match char {
+            if let Some(res) = match char {
                 '_' | 'a'..='z' | 'A'..='Z' => {
                     self.eat();
                     self.word_eater();
                     let cc = &self.source[self.start..self.current];
-                    self.add(match cc {
+                    // TODO is there ever a scenario where a trie is faster then rust's match?
+                    self.send(match cc {
                         "if" => Token::If,
                         "else" => Token::Else,
                         "elseif" => Token::ElseIf,
@@ -310,18 +361,19 @@ impl<'a> Lexer {
                         "and" => Token::Op(Operator::And),
                         "break" => Token::Break,
                         "do" => Token::Do,
+                        "goto" => Token::Goto,
                         "class" => Token::Class,
                         "sprint" => Token::Print,
                         _ => Token::Identifier(cc.into()),
-                    });
+                    })
                 }
                 '0'..='9' => self.number(false),
                 '.' => {
                     self.eat();
                     match self.peek() {
                         Some('0'..='9') => self.number(true),
-                        Some('.') => self.eat_add(Token::Op(Operator::Concat)),
-                        _ => self.add(Token::Call),
+                        Some('.') => self.eat_send(Token::Op(Operator::Concat)),
+                        _ => self.send(Token::Call),
                     }
                 }
                 '=' => {
@@ -333,7 +385,7 @@ impl<'a> Lexer {
                         }
                         _ => Token::Assign,
                     };
-                    self.add(t);
+                    self.send(t)
                 }
                 '+' => {
                     self.eat();
@@ -344,7 +396,7 @@ impl<'a> Lexer {
                         }
                         _ => Token::Op(Operator::Add),
                     };
-                    self.add(t);
+                    self.send(t)
                 }
                 '-' => {
                     self.eat();
@@ -353,7 +405,7 @@ impl<'a> Lexer {
                             self.eat();
                             if let Some('!') = self.peek() {
                                 self.eat();
-                                self.get_flags();
+                                self.get_flag()
                             } else {
                                 while self.current < self.end {
                                     if let Some('\n') = self.eat_out() {
@@ -361,142 +413,143 @@ impl<'a> Lexer {
                                         break;
                                     }
                                 }
+                                None
                             }
                         }
                         Some('=') => {
                             self.eat();
-                            self.add(Token::SubAssign);
+                            self.send(Token::SubAssign)
                         }
                         Some('>') => {
                             self.eat();
-                            self.add(Token::ArrowFunction)
+                            self.send(Token::ArrowFunction)
                         }
-                        _ => self.add(Token::Op(Operator::Sub)),
-                    };
+                        _ => self.send(Token::Op(Operator::Sub)),
+                    }
                 }
                 '/' => {
                     self.eat();
                     match self.peek() {
                         Some('=') => {
                             self.eat();
-                            self.add(Token::DivideAssign);
+                            self.send(Token::DivideAssign)
                         }
-                        _ => self.add(Token::Op(Operator::Divide)),
-                    };
+                        _ => self.send(Token::Op(Operator::Divide)),
+                    }
                 }
                 '*' => {
                     self.eat();
                     match self.peek() {
                         Some('=') => {
                             self.eat();
-                            self.add(Token::MultiplyAssign);
+                            self.send(Token::MultiplyAssign)
                         }
-                        _ => self.add(Token::Op(Operator::Multiply)),
-                    };
+                        _ => self.send(Token::Op(Operator::Multiply)),
+                    }
                 }
                 '%' => {
                     self.eat();
                     match self.peek() {
                         Some('=') => {
                             self.eat();
-                            self.add(Token::ModulusAssign);
+                            self.send(Token::ModulusAssign)
                         }
-                        _ => self.add(Token::Op(Operator::Modulus)),
-                    };
+                        _ => self.send(Token::Op(Operator::Modulus)),
+                    }
                 }
                 '(' => {
                     self.eat();
-                    self.add(Token::OpenParen);
+                    self.send(Token::OpenParen)
                 }
                 ')' => {
                     self.eat();
-                    self.add(Token::CloseParen);
+                    self.send(Token::CloseParen)
                 }
                 ';' => {
                     self.eat();
-                    self.add(Token::SemiColon);
+                    self.send(Token::SemiColon)
                 }
                 ',' => {
                     self.eat();
-                    self.add(Token::Comma);
+                    self.send(Token::Comma)
                 }
-                '"' => {
-                    if let Some(t) = self.string(false) {
-                        self.add(t);
-                    }
-                }
-                '\'' => {
-                    if let Some(t) = self.string(true) {
-                        self.add(t);
-                    }
-                }
+                '"' => self.string(false),
+                '\'' => self.string(true),
                 '<' => {
                     self.eat();
                     match self.peek() {
                         Some('=') => {
                             self.eat();
-                            self.add(Token::Op(Operator::LessEqual));
+                            self.send(Token::Op(Operator::LessEqual))
                         }
-                        _ => self.add(Token::Op(Operator::Less)),
-                    };
+                        _ => self.send(Token::Op(Operator::Less)),
+                    }
                 }
                 '>' => {
                     self.eat();
                     match self.peek() {
                         Some('=') => {
                             self.eat();
-                            self.add(Token::Op(Operator::GreaterEqual));
+                            self.send(Token::Op(Operator::GreaterEqual))
                         }
-                        _ => self.add(Token::Op(Operator::Greater)),
-                    };
+                        _ => self.send(Token::Op(Operator::Greater)),
+                    }
                 }
                 '[' => {
                     self.eat();
                     match self.peek() {
                         Some(c) => match c {
-                            '[' => {
-                                if let Some(t) = self.multi_line_string() {
-                                    self.add(t);
-                                }
-                            }
+                            '[' => self.multi_line_string(),
                             // '=' => {
                             //     self.eat();
                             //     return Some(Token::OpenBracketAssign);
                             // }
-                            _ => self.add(Token::OpenBracket),
+                            _ => self.send(Token::OpenBracket),
                         },
-                        None => self.add(Token::OpenBracket),
+                        None => self.send(Token::OpenBracket),
                     }
                 }
                 ']' => {
                     self.eat();
-                    self.add(Token::CloseBracket);
+                    self.send(Token::CloseBracket)
                 }
-                ' ' | '\r' | '\t' => self.eat(),
+                ' ' | '\r' | '\t' => {
+                    self.eat();
+                    None
+                }
                 '\n' => {
                     self.new_line();
                     self.eat();
+                    None
                 }
                 '#' => {
                     self.eat();
-                    self.add(Token::LengthOp);
+                    self.send(Token::LengthOp)
                 }
                 ':' => {
                     self.eat();
-                    self.add(Token::Colon);
-                    // trust me on this, it's easier to parse this way
-                    let t = self.colon_blow();
-                    self.add(t);
+                    match self.peek() {
+                        Some(':') => {
+                            self.eat();
+                            self.send(Token::ColonColon)
+                        }
+                        _ => {
+                            self.send(Token::Colon)
+                            // trust me on this, it's easier to parse this way
+                            // let t = self.colon_blow();
+                            // self.add(t);
+                        }
+                    }
                 }
                 '~' => {
                     self.eat();
                     match self.peek() {
                         Some('=') => {
                             self.eat();
-                            self.add(Token::Op(Operator::NotEqual));
+                            self.send(Token::Op(Operator::NotEqual))
                         }
-                        _ => self.add(Token::Op(Operator::Tilde)),
-                    };
+                        _ => self.send(Token::Op(Operator::Tilde)),
+                    }
                 }
                 #[cfg(feature = "bang")]
                 '!' => {
@@ -504,21 +557,20 @@ impl<'a> Lexer {
                     match self.peek() {
                         Some('=') => {
                             self.eat();
-                            self.add(Token::Op(Operator::NotEqual));
+                            self.send(Token::Op(Operator::NotEqual))
                         }
-                        _ => self.add(Token::Op(Operator::Not)),
-                    };
+                        _ => self.send(Token::Op(Operator::Not)),
+                    }
                 }
                 cw => {
-                    self.error(SiltError::UnexpectedCharacter(cw));
+                    let re = self.error(SiltError::UnexpectedCharacter(cw));
                     self.eat();
+                    re
                 }
+            } {
+                return Some(res);
             }
         }
-
-        (
-            self.tokens.drain(..).collect(),
-            self.locations.drain(..).collect(),
-        )
+        None
     }
 }
