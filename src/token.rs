@@ -75,7 +75,7 @@ pub enum Token {
     EOF,
 
     //extra
-    Bang, // !
+    // Bang, // !
     Class,
     Global,
     Flag(Flag),
@@ -165,7 +165,7 @@ impl Display for Token {
             Token::CloseBracket => write!(f, "]"),
             // Token::EOF => write!(f, "EOF"),
             Token::Call => write!(f, "call"),
-            Token::Bang => write!(f, "!"),
+            // Token::Bang => write!(f, "!"),
             Token::Type => write!(f, "type"),
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
             Token::Global => write!(f, "global"),

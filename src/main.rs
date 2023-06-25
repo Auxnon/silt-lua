@@ -115,7 +115,9 @@ fn main() {
 
     // --print(echo(echo(1)+echo(2)) + echo(echo(4)+echo(5)) )
     // "#;
-    let source_in = r#" 4*-6*(3 * 7 + 5) + 2 * 9"#;
+    // let source_in = r#" 4*-6*(3 * 7 + 5) + 2 * 9"#;
+    let source_in = r#"!(5-4 > 3*2 == !nil)"#;
+    let source_in = "!nil==!false";
 
     //     let source_in = r#"
     //     do

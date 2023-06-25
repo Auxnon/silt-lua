@@ -329,14 +329,26 @@ pub mod compiler {
             // func(self);
             match token {
                 Token::OpenParen => rule!(grouping, void, None),
+                Token::Assign => rule!(void, void, None),
                 Token::Op(op) => match op {
                     Operator::Sub => rule!(unary, binary, Term),
                     Operator::Add => rule!(void, binary, Term),
                     Operator::Multiply => rule!(void, binary, Factor),
                     Operator::Divide => rule!(void, binary, Factor),
+                    Operator::Not => rule!(unary, void, None),
+                    Operator::NotEqual => rule!(void, binary, Equality),
+                    Operator::Equal => rule!(void, binary, Equality),
+                    Operator::Less => rule!(void, binary, Comparison),
+                    Operator::LessEqual => rule!(void, binary, Comparison),
+                    Operator::Greater => rule!(void, binary, Comparison),
+                    Operator::GreaterEqual => rule!(void, binary, Comparison),
                     _ => rule!(void, void, None),
                 },
                 Token::Integer(_) => rule!(integer, void, None),
+                Token::Nil => rule!(literal, void, None),
+                Token::True => rule!(literal, void, None),
+                Token::False => rule!(literal, void, None),
+                // Token::Bang => rule!(unary, void, None),
                 _ => rule!(void, void, None),
             }
         }
@@ -405,9 +417,10 @@ pub mod compiler {
         // self.expression();
 
         this.parse_precedence(Precedence::Unary);
-
-        if let Token::Op(Operator::Sub) = t.0 {
-            this.emit(OpCode::NEGATE, this.previous.1);
+        match t.0 {
+            Token::Op(Operator::Sub) => this.emit(OpCode::NEGATE, t.1),
+            Token::Op(Operator::Not) => this.emit(OpCode::NOT, t.1),
+            _ => {}
         }
         //     let operator = Self::de_op(self.eat_out());
         //     let location = self.get_last_loc();
@@ -432,8 +445,16 @@ pub mod compiler {
                 Operator::Sub => this.emit(OpCode::SUB, t.1),
                 Operator::Multiply => this.emit(OpCode::MULTIPLY, t.1),
                 Operator::Divide => this.emit(OpCode::DIVIDE, t.1),
+
                 // Operator::Modulus => self.emit(OpCode::MODULUS, t.1),
                 // Operator::Equal => self.emit(OpCode::EQUAL, t.1),
+                Operator::Equal => this.emit(OpCode::EQUAL, t.1),
+                Operator::NotEqual => this.emit(OpCode::NOT_EQUAL, t.1),
+                Operator::Less => this.emit(OpCode::LESS, t.1),
+                Operator::LessEqual => this.emit(OpCode::LESS_EQUAL, t.1),
+                Operator::Greater => this.emit(OpCode::GREATER, t.1),
+                Operator::GreaterEqual => this.emit(OpCode::GREATER_EQUAL, t.1),
+
                 _ => todo!(),
             }
         }
@@ -448,6 +469,14 @@ pub mod compiler {
             unreachable!()
         };
         this.constant(value, t.1);
+    }
+    fn literal(this: &mut Compiler) {
+        match this.previous.0 {
+            Token::Nil => this.emit(OpCode::NIL, this.previous.1),
+            Token::True => this.emit(OpCode::TRUE, this.previous.1),
+            Token::False => this.emit(OpCode::FALSE, this.previous.1),
+            _ => unreachable!(),
+        }
     }
 
     pub fn void(_: &mut Compiler) {}

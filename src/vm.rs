@@ -117,6 +117,44 @@ impl<'a> VM<'a> {
                     }
                     // TODO  test this vs below: unsafe { *self.stack_top = -*self.stack_top };
                 }
+                OpCode::NIL => self.push(Value::Nil),
+                OpCode::TRUE => self.push(Value::Bool(true)),
+                OpCode::FALSE => self.push(Value::Bool(false)),
+                OpCode::NOT => {
+                    let value = self.pop();
+                    self.push(Value::Bool(!Self::is_truthy(&value)));
+                }
+                OpCode::EQUAL => {
+                    let r = self.pop();
+                    let l = self.pop();
+                    self.push(Value::Bool(Self::is_equal(&l, &r)));
+                }
+                OpCode::NOT_EQUAL => {
+                    let r = self.pop();
+                    let l = self.pop();
+                    self.push(Value::Bool(!Self::is_equal(&l, &r)));
+                }
+                OpCode::LESS => {
+                    let r = self.pop();
+                    let l = self.pop();
+                    self.push(Value::Bool(Self::is_less(&l, &r)?));
+                }
+                OpCode::LESS_EQUAL => {
+                    let r = self.pop();
+                    let l = self.pop();
+                    self.push(Value::Bool(!Self::is_greater(&l, &r)?));
+                }
+                OpCode::GREATER => {
+                    let r = self.pop();
+                    let l = self.pop();
+                    self.push(Value::Bool(Self::is_greater(&l, &r)?));
+                }
+                OpCode::GREATER_EQUAL => {
+                    let r = self.pop();
+                    let l = self.pop();
+                    self.push(Value::Bool(!Self::is_less(&l, &r)?));
+                }
+
                 OpCode::LITERAL { dest, literal } => {}
             }
             //stack
@@ -159,6 +197,57 @@ impl<'a> VM<'a> {
     fn peek1(&mut self) -> &Value {
         // unsafe { *self.stack_top.sub(2) }
         &self.stack[self.stack.len() - 2]
+    }
+
+    fn is_truthy(v: &Value) -> bool {
+        match v {
+            Value::Bool(b) => *b,
+            Value::Nil => false,
+            _ => true,
+        }
+    }
+    fn is_equal(l: &Value, r: &Value) -> bool {
+        match (l, r) {
+            (Value::Number(left), Value::Number(right)) => left == right,
+            (Value::Integer(left), Value::Integer(right)) => left == right,
+            (Value::Number(left), Value::Integer(right)) => *left == *right as f64,
+            (Value::Integer(left), Value::Number(right)) => *left as f64 == *right,
+            (Value::String(left), Value::String(right)) => left == right,
+            (Value::Bool(left), Value::Bool(right)) => left == right,
+            (Value::Nil, Value::Nil) => true,
+            (Value::Infinity(left), Value::Infinity(right)) => left == right,
+            (_, _) => false,
+        }
+    }
+
+    fn is_less(l: &Value, r: &Value) -> Result<bool, SiltError> {
+        Ok(match (l, r) {
+            (Value::Number(left), Value::Number(right)) => left < right,
+            (Value::Integer(left), Value::Integer(right)) => left < right,
+            (Value::Number(left), Value::Integer(right)) => *left < *right as f64,
+            (Value::Integer(left), Value::Number(right)) => (*left as f64) < (*right),
+            (Value::Infinity(left), Value::Infinity(right)) => left != right && *left,
+            (_, _) => Err(SiltError::ExpOpValueWithValue(
+                l.to_error(),
+                Operator::Less,
+                r.to_error(),
+            ))?,
+        })
+    }
+
+    fn is_greater(l: &Value, r: &Value) -> Result<bool, SiltError> {
+        Ok(match (l, r) {
+            (Value::Number(left), Value::Number(right)) => left > right,
+            (Value::Integer(left), Value::Integer(right)) => left > right,
+            (Value::Number(left), Value::Integer(right)) => *left > *right as f64,
+            (Value::Integer(left), Value::Number(right)) => (*left as f64) > (*right),
+            (Value::Infinity(left), Value::Infinity(right)) => left != right && !*left,
+            (_, _) => Err(SiltError::ExpOpValueWithValue(
+                l.to_error(),
+                Operator::Greater,
+                r.to_error(),
+            ))?,
+        })
     }
 
     pub fn print_stack(&self) {
