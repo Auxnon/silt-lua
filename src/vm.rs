@@ -1,5 +1,142 @@
-use crate::{chunk::Chunk, code::OpCode, error::SiltError, token::Operator, value::Value};
+use crate::{
+    chunk::Chunk,
+    code::OpCode,
+    error::{ErrorTypes, SiltError},
+    token::Operator,
+    value::{Reference, Value},
+};
 
+/** Convert Integer to Float, lossy for now */
+macro_rules! int2f {
+    ($left:ident) => {
+        $left as f64
+    };
+}
+
+macro_rules! intr2f {
+    ($left:ident) => {
+        *$left as f64
+    };
+}
+
+macro_rules! str_op_str{
+    ($left:ident $op:tt $right:ident $enu:ident )=>{
+        (||{
+            if let Ok(n1) = $left.parse::<i64>() {
+                if let Ok(n2) = $right.parse::<i64>() {
+                    return Ok(Value::Integer(n1 $op n2));
+                }
+                if let Ok(n2) = $right.parse::<f64>() {
+                    return Ok(Value::Number(int2f!(n1) $op n2));
+                }
+            }
+            if let Ok(n1) = $left.parse::<f64>() {
+                if let Ok(n2) = $right.parse::<f64>() {
+                    return Ok(Value::Number(n1 $op n2));
+                }
+            }
+            return Err(SiltError::ExpOpValueWithValue(
+                ErrorTypes::String,
+                Operator::$enu,
+                ErrorTypes::String,
+            ));
+        })()
+    }
+}
+
+macro_rules! str_op_int{
+    ($left:ident $op:tt $right:ident $enu:ident)=>{
+        (||{
+            if let Ok(n1) = $left.parse::<i64>() {
+                    return Ok(Value::Integer(n1 $op $right));
+
+            }
+            if let Ok(n1) = $left.parse::<f64>() {
+                    return Ok(Value::Number(n1 $op int2f!($right)));
+            }
+            return Err(SiltError::ExpOpValueWithValue(
+                ErrorTypes::String,
+                Operator::$enu,
+                ErrorTypes::Integer,
+            ));
+        })()
+    }
+}
+
+macro_rules! int_op_str{
+    ($left:ident $op:tt $right:ident  $enu:ident)=>{
+        (||{
+            if let Ok(n1) = $right.parse::<i64>() {
+                    return Ok(Value::Integer($left $op n1));
+
+            }
+            if let Ok(n1) = $right.parse::<f64>() {
+                    return Ok(Value::Number((int2f!($left) $op n1)));
+            }
+            return Err(SiltError::ExpOpValueWithValue(
+                ErrorTypes::Integer,
+                Operator::$enu,
+                ErrorTypes::String,
+            ));
+        })()
+    }
+}
+
+macro_rules! op_error {
+    ($left:ident $op:ident $right:ident ) => {{
+        return Err(SiltError::ExpOpValueWithValue($left, Operator::$op, $right));
+    }};
+}
+
+macro_rules! str_op_num{
+    ($left:ident $op:tt $right:ident $enu:ident)=>{
+        if let Ok(n1) = $left.parse::<f64>() {
+            Value::Number(n1 $op $right)
+        }else {
+            return Err(SiltError::ExpOpValueWithValue(
+                ErrorTypes::String,
+                Operator::$enu,
+                ErrorTypes::String,
+            ))
+        }
+    }
+}
+
+macro_rules! num_op_str{
+    ($left:ident $op:tt $right:ident $enu:ident)=>{
+        if let Ok(n1) = $right.parse::<f64>() {
+            Value::Number($left $op n1)
+        }else{
+            return Err(SiltError::ExpOpValueWithValue(
+                ErrorTypes::Number,
+                Operator::$enu,
+                ErrorTypes::String,
+            ))
+        }
+    }
+}
+
+macro_rules! binary_op {
+    ($vm:ident, $op:tt, $opp:tt) => {
+        {
+            let r = $vm.pop();
+            let l = $vm.pop();
+
+            $vm.push(match (l, r) {
+                (Value::Number(left), Value::Number(right)) => (Value::Number(left $op right)),
+                (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
+                (Value::Number(left), Value::Integer(right)) => (Value::Number(left $op right as f64)),
+                (Value::Integer(left), Value::Number(right)) =>(Value::Number(left as f64 $op right)),
+                (Value::String(left), Value::String(right)) => str_op_str!(left $op right $opp)?,
+                (Value::String(left), Value::Integer(right)) => str_op_int!(left $op right $opp)?,
+                (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp)?,
+                (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
+                (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
+                (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
+            });
+        }
+    };
+}
 pub struct VM<'a> {
     chunk: Option<&'a Chunk>,
     /** Instruction to be run at start of loop  */
@@ -7,23 +144,10 @@ pub struct VM<'a> {
     stack: Vec<Value>, // TODO fixed size array vs Vec
     /** Next empty location */
     stack_top: *mut Value,
-}
-macro_rules! binary_op {
-    ($vm:ident, $op:tt, $opp:tt) => {
-        {
-        let r = $vm.pop();
-        let l = $vm.pop();
-
-        match (l, r) {
-            (Value::Number(left), Value::Number(right)) => $vm.push(Value::Number(left $op right)),
-            (Value::Integer(left), Value::Integer(right)) => $vm.push(Value::Integer(left $op right)),
-            (Value::Number(left), Value::Integer(right)) => $vm.push(Value::Number(left $op right as f64)),
-            (Value::Integer(left), Value::Number(right)) => $vm.push(Value::Number(left as f64 $op right)),
-            (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
-        }
-
-        }
-    };
+    globals: hashbrown::HashMap<String, Value>, // TODO store strings as identifer usize and use that as key
+                                                // references: Vec<Reference>,
+                                                // obj
+                                                // TODO should we store all strings in their own table/array for better equality checks? is this cheaper?
 }
 
 impl<'a> VM<'a> {
@@ -41,6 +165,7 @@ impl<'a> VM<'a> {
             ip: 0 as *const OpCode,
             stack, //: unsafe { *stack },
             stack_top,
+            globals: hashbrown::HashMap::new(),
         }
     }
 
@@ -57,7 +182,7 @@ impl<'a> VM<'a> {
             self.ip = unsafe { self.ip.add(1) };
             match instruction {
                 OpCode::RETURN => {
-                    println!("<< {}", self.pop());
+                    // println!("<< {}", self.pop());
                     return Ok(());
                 }
                 OpCode::CONSTANT { constant } => {
@@ -71,9 +196,31 @@ impl<'a> VM<'a> {
                     //     _ => {}
                     // }
                 }
+                OpCode::DEFINE_GLOBAL { constant } => {
+                    let value = self.chunk.unwrap().get_constant(*constant);
+                    if let Value::String(s) = value {
+                        let v = self.pop();
+                        self.globals.insert(s.to_string(), v);
+                    } else {
+                        return Err(SiltError::VmRuntimeError);
+                    }
+                }
+                OpCode::GET_GLOBAL { constant } => {
+                    let value = self.chunk.unwrap().get_constant(*constant);
+                    if let Value::String(s) = value {
+                        if let Some(v) = self.globals.get(&**s) {
+                            self.push(v.clone());
+                        } else {
+                            self.push(Value::Nil);
+                        }
+                    } else {
+                        return Err(SiltError::VmRuntimeError);
+                    }
+                }
+                OpCode::DEFINE_LOCAL { constant } => todo!(),
                 OpCode::ADD => binary_op!(self, +, Add),
-                OpCode::SUB => binary_op!(self, -, Sub),
-                OpCode::MULTIPLY => binary_op!(self, *, Multiply),
+                OpCode::SUB => binary_op!(self,-, Sub),
+                OpCode::MULTIPLY => binary_op!(self,*, Multiply),
                 OpCode::DIVIDE => {
                     let right = self.pop();
                     let left = self.pop();
@@ -154,8 +301,32 @@ impl<'a> VM<'a> {
                     let l = self.pop();
                     self.push(Value::Bool(!Self::is_less(&l, &r)?));
                 }
+                OpCode::CONCAT => {
+                    let r = self.pop();
+                    let l = self.pop();
+                    match (l, r) {
+                        (Value::String(left), Value::String(right)) => {
+                            self.push(Value::String(Box::new(*left + &right)))
+                        }
+                        (Value::String(left), v2) => {
+                            self.push(Value::String(Box::new(*left + &v2.to_string())))
+                        }
+                        (v1, Value::String(right)) => {
+                            self.push(Value::String(Box::new(v1.to_string() + &right)))
+                        }
+                        (v1, v2) => {
+                            self.push(Value::String(Box::new(v1.to_string() + &v2.to_string())))
+                        }
+                    }
+                }
 
                 OpCode::LITERAL { dest, literal } => {}
+                OpCode::POP => {
+                    self.pop();
+                }
+                OpCode::PRINT => {
+                    println!("<<<<<< {} >>>>>>>", self.pop());
+                }
             }
             //stack
             self.print_stack();
@@ -248,6 +419,16 @@ impl<'a> VM<'a> {
                 r.to_error(),
             ))?,
         })
+    }
+
+    /** unsafe as hell, we're relying on compiler*/
+    fn read_string(&mut self, constant: u8) -> String {
+        let value = self.chunk.unwrap().get_constant(constant);
+        if let Value::String(s) = value {
+            return s.to_string();
+        } else {
+            unreachable!("Only strings can be identifiers")
+        }
     }
 
     pub fn print_stack(&self) {

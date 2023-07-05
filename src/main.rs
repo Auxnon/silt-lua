@@ -118,6 +118,7 @@ fn main() {
     // let source_in = r#" 4*-6*(3 * 7 + 5) + 2 * 9"#;
     let source_in = r#"!(5-4 > 3*2 == !nil)"#;
     let source_in = "!nil==!false";
+    let source_in = "local a= -5+6"; // sprint 1+8";
 
     //     let source_in = r#"
     //     do
@@ -269,7 +270,7 @@ mod tests {
         println!("size of char: {}", size_of::<char>());
         println!("size of usize: {}", size_of::<usize>());
         println!("size of u8: {}", size_of::<u8>());
-        println!("size of str: {}", size_of::<&str>());
+        println!("size of &str: {}", size_of::<&str>());
         println!("size of String: {}", size_of::<String>());
         println!("size of Box<str>: {}", size_of::<Box<str>>());
         println!("size of boxed<Strinv> {}", size_of::<Box<String>>());
@@ -277,6 +278,10 @@ mod tests {
         println!("size of Tester: {}", size_of::<crate::code::Tester>());
         println!("size of Flag: {}", size_of::<crate::token::Flag>());
         println!("size of token: {}", size_of::<Token>());
+
+        println!("size of token: {}", size_of::<Token>());
+        // let s = "12345678".as_bytes().len();
+        // println!("size of str: {}", s);
         println!(
             "size of silt_error: {}",
             size_of::<crate::error::SiltError>()
@@ -331,7 +336,7 @@ mod tests {
         );
 
         assert!(size_of::<Token>() == 24);
-        assert!(size_of::<crate::code::OpCode>() == 4);
+        assert!(size_of::<crate::code::OpCode>() == 3);
     }
 
     #[test]

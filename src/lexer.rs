@@ -364,7 +364,7 @@ impl<'a> Lexer {
                         "goto" => Token::Goto,
                         "class" => Token::Class,
                         "sprint" => Token::Print,
-                        _ => Token::Identifier(cc.into()),
+                        _ => Token::Identifier(Box::new(cc.to_string())),
                     })
                 }
                 '0'..='9' => self.number(false),

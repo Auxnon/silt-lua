@@ -6,7 +6,7 @@ pub enum Token {
     // TODO temporary
     Print,
 
-    Identifier(Box<str>),
+    Identifier(Box<String>),
     Break,
     Do,
     If,

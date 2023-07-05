@@ -1,5 +1,6 @@
 pub mod compiler {
     use std::{
+        f32::consts::E,
         fmt::{Display, Formatter},
         iter::Peekable,
         mem::{swap, take},
@@ -30,7 +31,11 @@ pub mod compiler {
     macro_rules! devout {
         ($self:ident $message:literal) => {
             #[cfg(feature = "dev-out")]
-            println!("-> {}: {:?}", $message, $self.peek().unwrap_or(&Token::Nil));
+            println!(
+                "-> {}: {:?}",
+                $message,
+                $self.get_current().unwrap_or(&Token::Nil)
+            );
         };
     }
 
@@ -94,6 +99,7 @@ pub mod compiler {
         () => {};
     }
 
+    /** the higher the precedence, */
     #[derive(PartialEq, PartialOrd)]
     enum Precedence {
         None,
@@ -108,6 +114,10 @@ pub mod compiler {
         Call,       // . ()
         Primary,
     }
+
+    type Ident = u8;
+
+    type Catch = Result<(), ErrorTuple>;
 
     impl Precedence {
         fn next(self) -> Self {
@@ -146,8 +156,8 @@ pub mod compiler {
     }
 
     struct ParseRule {
-        prefix: fn(&mut Compiler),
-        infix: fn(&mut Compiler),
+        prefix: fn(&mut Compiler) -> Catch,
+        infix: fn(&mut Compiler) -> Catch,
         precedence: Precedence,
     }
 
@@ -157,9 +167,12 @@ pub mod compiler {
         pub current_index: usize,
         pub errors: Vec<ErrorTuple>,
         pub valid: bool,
-        current: TokenTuple,
-        previous: TokenTuple,
-        pre_previous: TokenTuple,
+        current: Result<Token, ErrorTuple>,
+        previous: Result<Token, ErrorTuple>,
+        current_location: Location,
+        // location: (usize, usize),
+        // previous: TokenTuple,
+        // pre_previous: TokenTuple,
         extra: bool, // pub global: &'a mut Environment,
     }
     impl<'a> Compiler {
@@ -168,107 +181,221 @@ pub mod compiler {
             Self {
                 chunk: Chunk::new(),
                 iterator: Lexer::new("".to_string()).peekable(),
-                current: (Token::Nil, (0, 0)),
+                current: Ok(Token::Nil),
+                previous: Ok(Token::Nil),
+                current_location: (0, 0),
                 current_index: 0,
                 errors: vec![],
                 valid: true,
-                previous: (Token::Nil, (0, 0)),
-                pre_previous: (Token::Nil, (0, 0)),
+                // location: (0, 0),
+                // previous: (Token::Nil, (0, 0)),
+                // pre_previous: (Token::Nil, (0, 0)),
                 extra: true,
             }
         }
 
-        fn error_last(&mut self, code: SiltError) {
-            self.valid = false;
-            self.errors.push(ErrorTuple {
-                code,
-                location: self.pre_previous.1,
-            });
-        }
+        // fn error_last(&mut self, code: SiltError) {
+        //     self.valid = false;
+        //     self.errors.push(ErrorTuple {
+        //         code,
+        //         location: self.pre_previous.1,
+        //     });
+        // }
+
         fn error_syntax(&mut self, code: SiltError, location: Location) {
             self.valid = false;
             self.errors.push(ErrorTuple { code, location });
         }
 
-        fn error(&mut self, code: SiltError) {
-            self.valid = false;
-            self.errors.push(ErrorTuple {
-                code,
-                location: self.previous.1,
-            });
-        }
+        // check ?
+        // fn prev_token(&self) -> &Token {
+        //     &self.previous.0
+        // }
+
+        // fn error(&mut self, code: SiltError) {
+        //     self.valid = false;
+        //     self.errors.push(ErrorTuple {
+        //         code,
+        //         location: self.location,
+        //     });
+        // }
 
         pub fn get_errors(&self) -> &Vec<ErrorTuple> {
             &self.errors
         }
 
-        fn advance(&mut self) -> bool {
+        // fn advance(&mut self) -> bool {
+        //     self.current_index += 1;
+        //     // self.current=self.iterator.next()
+        //     match self.iterator.next() {
+        //         Some(res) => match res {
+        //             Ok(t) => {
+        //                 self.pre_previous = std::mem::replace(
+        //                     &mut self.previous,
+        //                     std::mem::replace(&mut self.current, t),
+        //                 );
+        //             }
+        //             Err(e) => {
+        //                 self.error_syntax(e.code, e.location);
+        //                 return false;
+        //             }
+        //         },
+        //         None => {
+        //             self.pre_previous = std::mem::replace(
+        //                 &mut self.previous,
+        //                 std::mem::replace(&mut self.current, (Token::EOF, (0, 0))),
+        //             );
+        //             return false;
+        //         }
+        //     }
+        //     println!(
+        //         "advance: {}:{} {} -> {} -> {}",
+        //         self.current.1 .0,
+        //         self.current.1 .1,
+        //         self.current.0,
+        //         self.previous.0,
+        //         self.pre_previous.0
+        //     );
+        //     // self.current
+        //     // self.previous = take(&mut self.current);
+        //     true
+        // }
+
+        // fn eat(&mut self) {
+        //     self.current_index += 1;
+        //     let p = self.iterator.next();
+        //     if let Some(Ok(t)) = p {
+        //         // assign to previous and old previous to pre_previous
+        //         self.pre_previous = std::mem::replace(&mut self.previous, t);
+        //     }
+        // }
+
+        /** pop and return the token tuple, take care as this does not wipe the current token */
+        pub fn pop(&mut self) -> (Result<Token, ErrorTuple>, Location) {
             self.current_index += 1;
-            // self.current=self.iterator.next()
             match self.iterator.next() {
-                Some(res) => match res {
-                    Ok(t) => {
-                        self.pre_previous = std::mem::replace(
-                            &mut self.previous,
-                            std::mem::replace(&mut self.current, t),
-                        );
-                    }
-                    Err(e) => {
-                        self.error_syntax(e.code, e.location);
-                        return false;
-                    }
-                },
-                None => {
-                    self.pre_previous = std::mem::replace(
-                        &mut self.previous,
-                        std::mem::replace(&mut self.current, (Token::EOF, (0, 0))),
-                    );
-                    return false;
+                Some(Ok(t)) => {
+                    #[cfg(feature = "dev-out")]
+                    println!("popped {}", t.0);
+                    (Ok(t.0), t.1)
+                }
+                Some(Err(e)) => {
+                    let l = e.location;
+                    (Err(e), l)
+                }
+                None => (Ok(Token::EOF), (0, 0)),
+            }
+        }
+
+        /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
+        pub fn eat(&mut self) {
+            self.current_index += 1;
+            let t = self.iterator.next();
+            #[cfg(feature = "dev-out")]
+            {
+                match t {
+                    Some(Ok(t)) => println!("eat {}", t.0),
+                    Some(Err(e)) => println!("eat {}", e.code),
+                    None => println!("eat {:?}", Token::EOF),
                 }
             }
-            println!(
-                "advance: {}:{} {} -> {} -> {}",
-                self.current.1 .0,
-                self.current.1 .1,
-                self.current.0,
-                self.previous.0,
-                self.pre_previous.0
-            );
-            // self.current
-            // self.previous = take(&mut self.current);
-            true
         }
 
-        fn eat(&mut self) {
+        /** pop and store on to self as current token tuple */
+        pub fn store(&mut self) {
             self.current_index += 1;
-            let p = self.iterator.next();
-            if let Some(Ok(t)) = p {
-                // assign to previous and old previous to pre_previous
-                self.pre_previous = std::mem::replace(&mut self.previous, t);
+            (self.current, self.current_location) = match self.iterator.next() {
+                Some(Ok(t)) => (Ok(t.0), t.1),
+                Some(Err(e)) => {
+                    // self.error_syntax(e.code, e.location);
+                    let l = e.location;
+                    (Err(e), l)
+                }
+                None => (Ok(Token::EOF), (0, 0)),
+            };
+        }
+
+        // pub fn get_current(&self) -> Result<(&Token, &(usize, usize)), ErrorTuple> {
+        //     match self.current {
+        //         Ok((t, l)) => Ok((&t, &l)),
+        //         Err(e) => Err(e),
+        //     }
+        // }
+
+        pub fn take_store(&mut self) -> Result<Token, ErrorTuple> {
+            // std::mem::replace(&mut self.current, Ok(Token::Nil))
+            self.current.clone()
+        }
+
+        /** pop and store on to self as current token tuple, return the tuple we replaced */
+        fn store_and_return(&mut self) -> Result<Token, ErrorTuple> {
+            self.current_index += 1;
+            let (r, l) = match self.iterator.next() {
+                Some(Ok(t)) => (Ok(t.0), t.1),
+                Some(Err(e)) => {
+                    // self.error_syntax(e.code, e.location);
+                    let l = e.location;
+                    (Err(e), l)
+                }
+                None => (Ok(Token::EOF), (0, 0)),
+            };
+
+            std::mem::replace(&mut self.current_location, l);
+            std::mem::replace(&mut self.current, r)
+        }
+
+        pub fn get_current(&self) -> Result<&Token, ErrorTuple> {
+            match &self.current {
+                Ok(t) => {
+                    #[cfg(feature = "dev-out")]
+                    println!("get_current {}", t);
+                    Ok(t)
+                }
+                Err(e) => Err(e.clone()),
             }
-        }
-
-        pub fn next(&mut self) -> TokenOption {
-            self.current_index += 1;
-            self.iterator.next()
         }
 
         /** only use after peek */
-        pub fn eat_out(&mut self) -> TokenResult {
-            self.current_index += 1;
-            self.iterator.next().unwrap()
-        }
+        // pub fn eat_out(&mut self) -> TokenResult {
+        //     self.current_index += 1;
+        //     self.iterator.next().unwrap()
+        // }
 
-        fn peek(&mut self) -> Option<&TokenResult> {
-            self.iterator.peek()
+        fn peek(&mut self) -> &TokenResult {
+            match self.iterator.peek() {
+                Some(r) => r,
+                None => &Ok((Token::EOF, (0, 0))),
+            }
         }
 
         fn emit(&mut self, op: OpCode, location: Location) {
             self.chunk.write_code(op, location);
+            #[cfg(feature = "dev-out")]
+            {
+                println!("emit ...");
+                self.chunk.print_chunk();
+            }
         }
+
+        fn emit_at(&mut self, op: OpCode) {
+            self.chunk.write_code(op, self.current_location);
+            #[cfg(feature = "dev-out")]
+            {
+                println!("emit_at ...");
+                self.chunk.print_chunk();
+            }
+        }
+
+        fn identifer_constant(&mut self, ident: Box<String>) -> u8 {
+            self.chunk.write_constant(Value::String(ident)) as u8
+        }
+
         fn constant(&mut self, value: Value, location: Location) {
             let constant = self.chunk.write_constant(value) as u8;
             self.emit(OpCode::CONSTANT { constant }, location);
+        }
+        fn constant_at(&mut self, value: Value) {
+            self.constant(value, self.current_location);
         }
 
         fn current_chunk(&self) -> &Chunk {
@@ -276,33 +403,33 @@ pub mod compiler {
         }
 
         fn is_end(&mut self) -> bool {
-            match self.peek() {
+            match self.iterator.peek() {
                 None => true,
                 _ => false,
             }
         }
 
-        fn get_loc(&self) -> Location {
-            #[cfg(feature = "dev-out")]
-            println!(
-                "get index {} is loc {}:{}",
-                self.current, self.locations[self.current].0, self.locations[self.current].1
-            );
-            // self.locations[self.current]
-            // TODO current?
-            self.previous.1
-        }
+        // fn get_prev_loc(&self) -> Location {
+        //     #[cfg(feature = "dev-out")]
+        //     println!(
+        //         "get index {} is loc {}:{}",
+        //         self.current, self.locations[self.current].0, self.locations[self.current].1
+        //     );
+        //     // self.locations[self.current]
+        //     // TODO current?
+        //     self.previous.1
+        // }
 
-        fn get_last_loc(&self) -> Location {
-            #[cfg(feature = "dev-out")]
-            println!(
-                "get index {} is loc {}:{}",
-                self.current - 1,
-                self.locations[self.current - 1].0,
-                self.locations[self.current - 1].1
-            );
-            self.previous.1
-        }
+        // fn get_pre_prev_loc(&self) -> Location {
+        //     #[cfg(feature = "dev-out")]
+        //     println!(
+        //         "get index {} is loc {}:{}",
+        //         self.current - 1,
+        //         self.locations[self.current - 1].0,
+        //         self.locations[self.current - 1].1
+        //     );
+        //     self.pre_previous.1
+        // }
 
         // pub fn parse(&mut self) -> Vec<Statement> {
         //     let mut statements = vec![];
@@ -344,6 +471,7 @@ pub mod compiler {
                     Operator::GreaterEqual => rule!(void, binary, Comparison),
                     _ => rule!(void, void, None),
                 },
+                Token::Identifier(_) => rule!(variable, void, None),
                 Token::Integer(_) => rule!(integer, void, None),
                 Token::Nil => rule!(literal, void, None),
                 Token::True => rule!(literal, void, None),
@@ -368,10 +496,18 @@ pub mod compiler {
             // if Precedence::And > Precedence::Or {
             //     println!("and is greater than or");
             // }
-            self.advance();
+            // self.eat();
+            self.store();
 
             while !self.is_end() {
-                expression(self);
+                // expression(self);
+                match declaration(self) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        self.error_syntax(e.code, e.location);
+                        self.synchronize();
+                    }
+                }
             }
 
             // while !self.is_end() {
@@ -382,44 +518,280 @@ pub mod compiler {
 
             std::mem::take(&mut self.chunk).into()
         }
+        fn synchronize(&mut self) {
+            // TODO should we unwind or just dump it all?
+            // self.eat();
+            // while !self.is_end() {
+            //     match self.get_current() {
+            //         Ok(Token::Print) => return,
+            //         _ => {}
+            //     }
+            //     self.eat();
+            // }
+        }
 
-        fn parse_precedence(&mut self, precedence: Precedence) {
-            self.advance();
-            let t = &self.previous.0;
-            println!("check rule for token {}", t);
-            let rule = Self::get_rule(t);
-            // println!("precedence:  {}", precedence);
-            // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
-            (rule.prefix)(self);
-
-            while precedence <= Self::get_rule(&self.current.0).precedence {
-                self.advance();
-                let rule = Self::get_rule(&self.previous.0);
-                (rule.infix)(self);
+        fn parse_precedence(
+            &mut self,
+            precedence: Precedence,
+            skip_step: bool,
+        ) -> Result<(), ErrorTuple> {
+            if !skip_step {
+                self.store();
             }
+            // self.store(); // MARK with store first it works for normal statements, but it breaks for incomplete expressions that are meant to pop off
+            // Basically the integer we just saw is dropped off when we reach here because of store
+            let t = self.get_current()?;
+            let loc = self.current_location;
+
+            println!("check rule for token {}", t);
+            let rule = Self::get_rule(&t);
+            // #[cfg(feature = "dev-out")]
+            println!(
+                "target precedence:  {}, current precedence: {}",
+                precedence, rule.precedence
+            );
+            // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
+            (rule.prefix)(self)?;
+            // self.store();
+            // let c = &self.current?.0;
+
+            loop {
+                let c = self.peek();
+                let rule = match c {
+                    Ok((Token::EOF, _)) => break,
+                    Ok((t, _)) => Self::get_rule(t),
+                    Err(e) => {
+                        return Err(e.clone());
+                    }
+                };
+                // let c = self.get_current()?;
+                // let rule = Self::get_rule(c);
+                // #[cfg(feature = "dev-out")]
+                println!(
+                    "loop target precedence for :  {}, current precedence for  : {}",
+                    precedence, rule.precedence
+                );
+                if precedence > rule.precedence {
+                    break;
+                }
+                self.store();
+                // let c = self.get_current()?;
+                // let rule = Self::get_rule(c);
+                (rule.infix)(self)?;
+            }
+            // while precedence <= Self::get_rule(&self.current?.0).precedence {
+            //     self.store_and_return()
+            //     let rule = Self::get_rule(&self.current?.0);
+            //     (rule.infix)(self);
+            // }
+            // self.store();
+            if skip_step {
+                self.store();
+            }
+            Ok(())
         }
     }
 
-    fn expression(this: &mut Compiler) {
-        this.parse_precedence(Precedence::Assignment);
+    fn declaration(this: &mut Compiler) -> Catch {
+        devout!(this "declaration");
+
+        let t = this.get_current()?;
+        match t {
+            Token::Local => declaration_scope(this, true, false)?,
+            Token::Global => declaration_scope(this, false, false)?,
+            // Token::Function => {
+            //     this.eat();
+            //     this.define_function(true, None)
+            // }
+            _ => statement(this)?,
+        }
+        Ok(())
     }
 
-    fn grouping(this: &mut Compiler) {
-        expression(this);
+    fn declaration_scope(this: &mut Compiler, local: bool, already_function: bool) -> Catch {
+        devout!(this "declaration_scope");
+        // self.eat();
+        // this.advance();
+        // this.store();
+        let (res, location) = this.pop();
+        match res? {
+            Token::Identifier(ident) => {
+                // MARK
+                let ident = this.identifer_constant(ident); //(self.global.to_register(&ident), 0);
+                typing(this, ident, location, local);
+            }
+            // Token::Function => {
+            //     if !already_function {
+            //         self.define_function(local, None)
+            //     } else {
+            //         self.error(SiltError::ExpectedLocalIdentifier);
+            //         Statement::InvalidStatement
+            //     }
+            // }
+            // _ => {
+            //     self.error(SiltError::ExpectedLocalIdentifier);
+            //     Statement::InvalidStatement
+            // }
+            _ => todo!(),
+        }
+        Ok(())
+    }
+
+    fn typing(this: &mut Compiler, ident: Ident, location: Location, local: bool) -> Catch {
+        devout!(this "typing");
+        if let Ok((Token::Colon, _)) = this.peek() {
+            // typing or self calling
+            this.eat();
+            this.store();
+            let t = this.get_current()?;
+            if let Token::ColonIdentifier(target) = t {
+                // method or type name
+                // if let Some(&Token::OpenParen) = self.peek() {
+                //     // self call
+
+                //     Statement::InvalidStatement
+                // } else {
+                //     // typing
+                //     // return self.assign(self.peek(), ident);
+                //     Statement::InvalidStatement
+                // }
+                define_declaration(this, ident, location, local)?;
+            } else {
+                // self.error(SiltError::InvalidColonPlacement);
+                // Statement::InvalidStatement
+            }
+        } else {
+            define_declaration(this, ident, location, local)?;
+        }
+        Ok(())
+    }
+
+    fn define_declaration(
+        this: &mut Compiler,
+        ident: Ident,
+        location: Location,
+        local: bool,
+    ) -> Catch {
+        devout!(this "define_declaration");
+        this.store();
+        let t = this.get_current()?;
+        match t {
+            Token::Assign => {
+                next_expression(this)?;
+            }
+            // we can't increment what doesn't exist yet, like what are you even doing?
+            Token::AddAssign
+            | Token::SubAssign
+            | Token::MultiplyAssign
+            | Token::DivideAssign
+            | Token::ModulusAssign => {
+                // let tt = t.unwrap().clone(); // TODO
+                // self.error(SiltError::InvalidAssignment(tt));
+                // Statement::InvalidStatement
+            }
+            _ => this.emit_at(OpCode::NIL),
+        }
+        define_variable(this, ident, location, local);
+        Ok(())
+    }
+
+    fn define_variable(this: &mut Compiler, ident: Ident, location: Location, local: bool) {
+        devout!(this "define_variable");
+        if local {
+            this.emit(OpCode::DEFINE_LOCAL { constant: ident }, location);
+        } else {
+            this.emit(OpCode::DEFINE_GLOBAL { constant: ident }, location);
+        }
+    }
+
+    fn statement(this: &mut Compiler) -> Catch {
+        devout!(this "statement");
+        match this.get_current()? {
+            Token::Print => print(this)?,
+            // Token::OpenBrace => block(this),
+            _ => expression_statement(this)?,
+        }
+        Ok(())
+    }
+
+    fn expression(this: &mut Compiler, skip_step: bool) -> Catch {
+        devout!(this "expression");
+        this.parse_precedence(Precedence::Assignment, skip_step)?;
+        Ok(())
+    }
+    fn next_expression(this: &mut Compiler) -> Catch {
+        devout!(this "next_expression");
+        this.eat();
+        // this.advance();
+        expression(this, false)?;
+        Ok(())
+    }
+
+    fn expression_statement(this: &mut Compiler) -> Catch {
+        devout!(this "expression_statement");
+        expression(this, true)?;
+        this.emit_at(OpCode::POP);
+        devout!(this "expression_statement end");
+        Ok(())
+    }
+
+    fn variable(this: &mut Compiler) -> Catch {
+        devout!(this "variable");
+        // let t = this.previous.clone();
+        // let ident = if let Token::Identifier(ident) = t.0 {
+        //     this.identifer_constant(ident)
+        // } else {
+        //     unreachable!()
+        // };
+        // if let Some(Ok((Token::Assign, _))) = this.peek() {
+        //     this.advance();
+        //     next_expression(this);
+        //     this.emit(OpCode::DEFINE_GLOBAL { constant: ident }, t.1);
+        // } else {
+        //     this.emit(OpCode::LITERAL { dest: ident, literal: ident }, t.1);
+        // }
+        named_variables(this, false)?;
+        Ok(())
+    }
+
+    fn named_variables(this: &mut Compiler, local: bool) -> Catch {
+        devout!(this "named_variables");
+        let t = this.take_store()?;
+        let ident = if let Token::Identifier(ident) = t {
+            this.identifer_constant(ident)
+        } else {
+            unreachable!()
+        };
+        this.emit_at(OpCode::GET_GLOBAL { constant: ident });
+        // if let Some(Ok((Token::Assign, _))) = this.peek() {
+        //     this.advance();
+        //     next_expression(this);
+        //     define_variable(this, ident, local);
+        // } else {
+        //     this.emit(OpCode::LITERAL { dest: ident, literal: ident }, t.1);
+        // }
+        Ok(())
+    }
+
+    fn grouping(this: &mut Compiler) -> Catch {
+        devout!(this "grouping");
+        expression(this, false)?;
         //TODO expect
         // expect_token!(self, CloseParen, SiltError::UnterminatedParenthesis(0, 0));
         // self.consume(TokenType::RightParen, "Expect ')' after expression.");
+        Ok(())
     }
 
     /** op unary or primary */
-    fn unary(this: &mut Compiler) {
-        let t = &this.previous.clone();
+    fn unary(this: &mut Compiler) -> Catch {
+        devout!(this "unary");
+        let t = this.take_store()?;
         // self.expression();
 
-        this.parse_precedence(Precedence::Unary);
-        match t.0 {
-            Token::Op(Operator::Sub) => this.emit(OpCode::NEGATE, t.1),
-            Token::Op(Operator::Not) => this.emit(OpCode::NOT, t.1),
+        this.parse_precedence(Precedence::Unary, false)?;
+        match t {
+            Token::Op(Operator::Sub) => this.emit_at(OpCode::NEGATE),
+            Token::Op(Operator::Not) => this.emit_at(OpCode::NOT),
             _ => {}
         }
         //     let operator = Self::de_op(self.eat_out());
@@ -433,53 +805,75 @@ pub mod compiler {
         // } else {
         //     self.anonymous_check()
         // }
+        Ok(())
     }
 
-    fn binary(this: &mut Compiler) {
-        let t = this.previous.clone();
-        let rule = Compiler::get_rule(&t.0);
-        this.parse_precedence(rule.precedence.next());
-        if let Token::Op(op) = t.0 {
+    fn binary(this: &mut Compiler) -> Catch {
+        devout!(this "binary");
+        let t = this.take_store()?;
+        let l = this.current_location;
+        let rule = Compiler::get_rule(&t);
+        this.parse_precedence(rule.precedence.next(), false)?;
+        if let Token::Op(op) = t {
             match op {
-                Operator::Add => this.emit(OpCode::ADD, t.1),
-                Operator::Sub => this.emit(OpCode::SUB, t.1),
-                Operator::Multiply => this.emit(OpCode::MULTIPLY, t.1),
-                Operator::Divide => this.emit(OpCode::DIVIDE, t.1),
+                Operator::Add => this.emit(OpCode::ADD, l),
+                Operator::Sub => this.emit(OpCode::SUB, l),
+                Operator::Multiply => this.emit(OpCode::MULTIPLY, l),
+                Operator::Divide => this.emit(OpCode::DIVIDE, l),
+
+                Operator::Concat => this.emit(OpCode::CONCAT, l),
 
                 // Operator::Modulus => self.emit(OpCode::MODULUS, t.1),
                 // Operator::Equal => self.emit(OpCode::EQUAL, t.1),
-                Operator::Equal => this.emit(OpCode::EQUAL, t.1),
-                Operator::NotEqual => this.emit(OpCode::NOT_EQUAL, t.1),
-                Operator::Less => this.emit(OpCode::LESS, t.1),
-                Operator::LessEqual => this.emit(OpCode::LESS_EQUAL, t.1),
-                Operator::Greater => this.emit(OpCode::GREATER, t.1),
-                Operator::GreaterEqual => this.emit(OpCode::GREATER_EQUAL, t.1),
+                Operator::Equal => this.emit(OpCode::EQUAL, l),
+                Operator::NotEqual => this.emit(OpCode::NOT_EQUAL, l),
+                Operator::Less => this.emit(OpCode::LESS, l),
+                Operator::LessEqual => this.emit(OpCode::LESS_EQUAL, l),
+                Operator::Greater => this.emit(OpCode::GREATER, l),
+                Operator::GreaterEqual => this.emit(OpCode::GREATER_EQUAL, l),
 
                 _ => todo!(),
             }
         }
+        Ok(())
     }
 
-    fn integer(this: &mut Compiler) {
-        let t = &this.previous;
-        let value = if let Token::Integer(i) = t.0 {
+    fn integer(this: &mut Compiler) -> Catch {
+        devout!(this "$integer");
+        let t = this.take_store()?;
+        let value = if let Token::Integer(i) = t {
             println!("integer: {}", i);
             Value::Integer(i)
         } else {
             unreachable!()
         };
-        this.constant(value, t.1);
-    }
-    fn literal(this: &mut Compiler) {
-        match this.previous.0 {
-            Token::Nil => this.emit(OpCode::NIL, this.previous.1),
-            Token::True => this.emit(OpCode::TRUE, this.previous.1),
-            Token::False => this.emit(OpCode::FALSE, this.previous.1),
-            _ => unreachable!(),
-        }
+        this.constant_at(value);
+        Ok(())
     }
 
-    pub fn void(_: &mut Compiler) {}
+    fn literal(this: &mut Compiler) -> Catch {
+        devout!(this "literal");
+        let t = this.take_store()?;
+        match t {
+            Token::Nil => this.emit_at(OpCode::NIL),
+            Token::True => this.emit_at(OpCode::TRUE),
+            Token::False => this.emit_at(OpCode::FALSE),
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    fn print(this: &mut Compiler) -> Catch {
+        devout!(this "print");
+        expression(this, false)?;
+        this.emit_at(OpCode::PRINT);
+        Ok(())
+    }
+
+    pub fn void(_this: &mut Compiler) -> Catch {
+        devout!(_this "void");
+        Ok(())
+    }
 
     pub fn invalid(_: &mut Compiler) { // TODO
                                        // this.error(SiltError::InvalidExpression);

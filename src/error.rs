@@ -3,6 +3,7 @@ use crate::{
     value::Value,
 };
 
+#[derive(Clone)]
 pub enum SiltError {
     //parse errors
     InvalidNumber(String),
@@ -43,6 +44,8 @@ pub enum SiltError {
 
     Unknown,
 }
+
+#[derive(Debug, Clone)]
 pub enum ErrorTypes {
     String,
     Number,
@@ -53,6 +56,7 @@ pub enum ErrorTypes {
     Infinity,
     NativeFunction,
     Function,
+    Table,
 }
 
 pub type Location = (usize, usize);
@@ -117,10 +121,12 @@ impl std::fmt::Display for ErrorTypes {
             ErrorTypes::Infinity => write!(f, "infinity"),
             ErrorTypes::NativeFunction => write!(f, "native_function"),
             ErrorTypes::Function => write!(f, "function"),
+            ErrorTypes::Table => write!(f, "table"),
         }
     }
 }
 
+#[derive(Clone)]
 pub struct ErrorTuple {
     pub code: SiltError,
     pub location: Location,

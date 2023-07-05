@@ -1,5 +1,7 @@
 use std::rc::Rc;
 
+use hashbrown::HashMap;
+
 use crate::{environment::Environment, error::ErrorTypes, function::ScopedFunction};
 
 pub enum Value {
@@ -10,14 +12,27 @@ pub enum Value {
     /** true for negative */
     Infinity(bool),
     // Bool(bool),
+    // TODO in most cases strings are just copied around on the heap, this is expensive but saves us from using GC here
+    // TODO 2 consider other encoding options for efficiency. Is having a seperate ASCII string type beneficial to only english speakers? how would other speaking languages handle ascii strings without needed glyphs?
     String(Box<String>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
+    Table(Reference<HashMap<Value, Value>>),
+    // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
+    // Boxed()
     Function(Rc<ScopedFunction>), // closure: Environment,
 
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(fn(&mut Environment, Vec<Value>) -> Value),
     // UserData
+}
+
+pub enum ReferneceStore {
+    Table(HashMap<Value, Value>),
+}
+pub struct Reference<T> {
+    pub value: Rc<T>,
+    pub id: usize,
 }
 
 impl std::fmt::Display for Value {
@@ -31,6 +46,7 @@ impl std::fmt::Display for Value {
             Value::Infinity(_) => write!(f, "inf"),
             Value::NativeFunction(_) => write!(f, "native_function"),
             Value::Function { .. } => write!(f, "function"),
+            Value::Table(t) => write!(f, "table: {}", t.id),
         }
     }
 }
@@ -46,6 +62,27 @@ impl Value {
             Value::Infinity(_) => ErrorTypes::Infinity,
             Value::NativeFunction(_) => ErrorTypes::NativeFunction,
             Value::Function { .. } => ErrorTypes::Function,
+            Value::Table(_) => ErrorTypes::Table,
+        }
+    }
+
+    fn to_string(&self) -> String {
+        match self {
+            Value::Integer(i) => i.to_string(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Nil => "nil".to_string(),
+            Value::Infinity(b) => {
+                if *b {
+                    "-ing".to_string()
+                } else {
+                    "inf".to_string()
+                }
+            }
+            Value::NativeFunction(_) => "native_function".to_string(),
+            Value::Function { .. } => "function".to_string(),
+            Value::String(s) => s.to_string(),
+            Value::Table(t) => format!("table: {}", t.id),
         }
     }
 }
@@ -62,6 +99,10 @@ impl Clone for Value {
             Value::NativeFunction(f) => Value::NativeFunction(*f),
             // TODO: implement this
             Value::Function(r) => Value::Function(Rc::clone(r)),
+            Value::Table(t) => Value::Table(Reference {
+                value: Rc::clone(&t.value),
+                id: t.id,
+            }),
         }
     }
 }

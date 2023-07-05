@@ -902,6 +902,7 @@ pub fn eval_binary(left: &Value, operator: &Operator, right: &Value) -> Result<V
         | (_, Value::NativeFunction(_))
         | (Value::Function(_), _)
         | (_, Value::Function(_)) => return Err(SiltError::ExpInvalidOperator(operator.clone())), // _=>Value::Nil,
+        (_, _) => todo!(),
     };
     Ok(val)
 }
