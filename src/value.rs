@@ -51,6 +51,12 @@ impl std::fmt::Display for Value {
     }
 }
 
+impl core::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
 impl Value {
     pub fn to_error(&self) -> ErrorTypes {
         match self {
@@ -103,6 +109,26 @@ impl Clone for Value {
                 value: Rc::clone(&t.value),
                 id: t.id,
             }),
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Integer(i), Value::Integer(j)) => i == j,
+            (Value::Number(i), Value::Number(j)) => i == j,
+            (Value::Bool(i), Value::Bool(j)) => i == j,
+            (Value::Nil, Value::Nil) => true,
+            (Value::String(i), Value::String(j)) => i == j,
+            (Value::Infinity(i), Value::Infinity(j)) => i == j,
+            (Value::NativeFunction(i), Value::NativeFunction(j)) => {
+                i as *const fn(&mut Environment, Vec<Value>) -> Value
+                    == j as *const fn(&mut Environment, Vec<Value>) -> Value
+            }
+            (Value::Function(i), Value::Function(j)) => Rc::ptr_eq(i, j),
+            (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i.value, &j.value),
+            _ => false,
         }
     }
 }

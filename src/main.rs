@@ -1,6 +1,8 @@
 use core::panic;
 use std::vec;
 
+use value::Value;
+
 use crate::{chunk::Chunk, compiler::compiler::Compiler, lexer::TokenResult, vm::VM};
 
 mod chunk;
@@ -21,164 +23,206 @@ mod userdata;
 mod value;
 mod vm;
 fn main() {
-    // println!("Hello, world!");
-    // let source = r#"
-    // abc
-    // abc2
-    // bc=5--hi there
-    // a=1
-    // b=2
-    // c=a+b
-    // d='hello'
-    // e="world"
-    // f=[[multi
-    // line]]
-    // print(c)
-    // if a==1 then
-    // a=2
-    // end
-    // print(a)
-    // let source_in =
-    // "#;
-    // let source_in = r#"
-    // a=1
-    // while a < 10_000_00 do
-    //     a = a + 1
-    // end
-    // print a
-    // "#;
+    {
 
-    //benchmark
-    // let source_in = r#"
-    // start=clock()
-    // i=1
-    // a="a"
-    // while i < 100_000 do
-    //     i = i +1
-    //     a = a .. "1"
-    // end
-    // elapsed=clock()-start
-    // print "done"
-    // print elapsed
-    // elapsed
-    // "#;
+        // cli(source_in, &mut global);
 
-    // func test
-    // let source_in = r#"
+        // match cli(source_in, &mut global) {
+        //     value::Value::Nil => {}
+        //     v => println!("{}", v),
+        // }
+        // println!(">");
 
-    // n=1
-    // function b(h) print 'b'..n n=h print 'c'..n end
+        // loop {
+        //     let mut line = String::new();
+        //     if let Ok(_) = std::io::stdin().read_line(&mut line) {
+        //         let s = line.trim();
+        //         match cli(s, &mut global) {
+        //             value::Value::Nil => {}
+        //             v => println!("{}", v),
+        //         }
+        //         println!(">");
+        //     }
+        // }
 
-    // function a() print 'e'..n  n=3 print 'f'..n b(10) print 'g'..n end
+        // println!("Hello, world!");
+        // let source = r#"
+        // abc
+        // abc2
+        // bc=5--hi there
+        // a=1
+        // b=2
+        // c=a+b
+        // d='hello'
+        // e="world"
+        // f=[[multi
+        // line]]
+        // print(c)
+        // if a==1 then
+        // a=2
+        // end
+        // print(a)
+        // let source_in =
+        // "#;
+        // let source_in = r#"
+        // a=1
+        // while a < 10_000_00 do
+        //     a = a + 1
+        // end
+        // print a
+        // "#;
 
-    // print 'a'..n
-    // b(9)
-    // print 'd'..n
-    // a()
-    // print 'h'.. n
-    // "#;
+        //benchmark
+        // let source_in = r#"
+        // start=clock()
+        // i=1
+        // a="a"
+        // while i < 100_000 do
+        //     i = i +1
+        //     a = a .. "1"
+        // end
+        // elapsed=clock()-start
+        // print "done"
+        // print elapsed
+        // elapsed
+        // "#;
 
-    // thrice
-    //     let source_in = r#"
+        // func test
+        // let source_in = r#"
 
-    // function thrice(fn)
-    // for i = 1,  1 do
-    //     fn(i)
-    // end
-    // end
+        // n=1
+        // function b(h) print 'b'..n n=h print 'c'..n end
 
-    // thrice(function(i) print("p "..i) end)
-    // "#;
+        // function a() print 'e'..n  n=3 print 'f'..n b(10) print 'g'..n end
 
-    //     let source_in = r#"
-    //     function create_counter()
-    //     local count = 0
-    //     return function()
-    //         count = count + 1
-    //         print(count)
-    //         return count
-    //     end
-    // end
+        // print 'a'..n
+        // b(9)
+        // print 'd'..n
+        // a()
+        // print 'h'.. n
+        // "#;
 
-    // local counter = create_counter()
-    // counter()
-    // counter()
-    //     "#;
-    // let source_in = r#"
-    // function echo(n)
-    // print("x"..n)
-    // return 2
-    // end
+        // thrice
+        //     let source_in = r#"
 
-    // echo(2)
-    // print("y"..2)
+        // function thrice(fn)
+        // for i = 1,  1 do
+        //     fn(i)
+        // end
+        // end
 
-    // --print(echo(echo(1)+echo(2)) + echo(echo(4)+echo(5)) )
-    // "#;
-    // let source_in = r#" 4*-6*(3 * 7 + 5) + 2 * 9"#;
+        // thrice(function(i) print("p "..i) end)
+        // "#;
+
+        //     let source_in = r#"
+        //     function create_counter()
+        //     local count = 0
+        //     return function()
+        //         count = count + 1
+        //         print(count)
+        //         return count
+        //     end
+        // end
+
+        // local counter = create_counter()
+        // counter()
+        // counter()
+        //     "#;
+        // let source_in = r#"
+        // function echo(n)
+        // print("x"..n)
+        // return 2
+        // end
+
+        // echo(2)
+        // print("y"..2)
+
+        // --print(echo(echo(1)+echo(2)) + echo(echo(4)+echo(5)) )
+        // "#;
+        // let source_in = r#" 4*-6*(3 * 7 + 5) + 2 * 9"#;
+
+        //     let source_in = r#"
+        //     do
+        //     local a=1
+        //     if true then
+        //         local b=2
+        //         print(a)
+        //     end
+        //     print(b)
+        // end
+        //     "#;
+
+        //     let source_in = r#"
+        // "#;
+
+        // panic!("test");
+
+        // fibonaci
+        // let source_in = r#"
+        // a=0
+        // b=1
+        // while a < 10000 do
+        //     b+=temp
+        //     print a
+        //     temp=a
+        //     a=b
+        // end
+        // "#;
+        // let source_in = "local a= 'test'..'1' a='now' sprint a"; // sprint 1+8";
+        // let source_in = "local a= -5+6";
+    }
     let source_in = r#"!(5-4 > 3*2 == !nil)"#;
     let source_in = "!nil==!false";
-    let source_in = "local a= -5+6"; // sprint 1+8";
 
-    //     let source_in = r#"
-    //     do
-    //     local a=1
-    //     if true then
-    //         local b=2
-    //         print(a)
-    //     end
-    //     print(b)
-    // end
-    //     "#;
+    let source_in = r#"
+    local a="test"
+    local b="t"
+    sprint b
+     b="a"
+     sprint b
+    b=a.."working"
+    sprint b
+     "#;
 
-    //     let source_in = r#"
-    // "#;
-
-    // panic!("test");
-
-    // fibonaci
-    // let source_in = r#"
-    // a=0
-    // b=1
-    // while a < 10000 do
-    //     b+=temp
-    //     print a
-    //     temp=a
-    //     a=b
-    // end
-    // "#;
-
+    let source_in = r#"
+     local a=2
+     local b=1
+     a*b=5
+     sprint ab
+     "#;
     let mut global = environment::Environment::new();
     global.load_standard_library();
-
-    // cli(source_in, &mut global);
-
-    // match cli(source_in, &mut global) {
-    //     value::Value::Nil => {}
-    //     v => println!("{}", v),
-    // }
-    // println!(">");
-
-    // loop {
-    //     let mut line = String::new();
-    //     if let Ok(_) = std::io::stdin().read_line(&mut line) {
-    //         let s = line.trim();
-    //         match cli(s, &mut global) {
-    //             value::Value::Nil => {}
-    //             v => println!("{}", v),
-    //         }
-    //         println!(">");
-    //     }
-    // }
 
     let mut compiler = Compiler::new();
     let c = compiler.compile(source_in.to_string(), &mut global);
 
     c.print_chunk();
-    println!("-----------------");
-    let mut vm = VM::new();
-    if let Err(e) = vm.interpret(&c) {
-        println!("{}", e);
+    compiler.print_errors();
+    if c.is_valid() {
+        println!("-----------------");
+        let mut vm = VM::new();
+        if let Err(e) = vm.interpret(&c) {
+            println!("{}", e);
+        }
+    }
+}
+
+fn simple(source: &str) -> Value {
+    let mut global = environment::Environment::new();
+    let mut compiler = Compiler::new();
+    let c = compiler.compile(source.to_string(), &mut global);
+    if c.is_valid() {
+        let mut vm = VM::new();
+        match vm.interpret(&c) {
+            Ok(v) => v,
+            Err(e) => Value::String(Box::new(e.to_string())),
+        }
+    } else {
+        let e = compiler.get_errors();
+        if e.len() > 0 {
+            return Value::String(Box::new(e[0].to_string()));
+        }
+        Value::String(Box::new("Unknown error".to_string()))
     }
 }
 
@@ -248,12 +292,22 @@ fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
     value::Value::Nil
 }
 
+macro_rules! valeq {
+    ($source:literal, $val:expr) => {
+        assert_eq!(simple($source), $val);
+    };
+}
+macro_rules! vstr {
+    ($source:literal) => {
+        Value::String(Box::new($source.to_string()))
+    };
+}
 #[cfg(test)]
 mod tests {
     use crate::{
         chunk::Chunk,
         code::{self, OpCode},
-        parser,
+        parser, simple,
         token::Token,
         value::Value,
         vm::VM,
@@ -398,13 +452,6 @@ mod tests {
     #[test]
     fn chunk() {
         let mut c = Chunk::new();
-        // c.write_code(
-        //     OpCode::LITERAL {
-        //         dest: 8,
-        //         literal: 8,
-        //     },
-        //     (1, 0),
-        // );
         c.write_value(Value::Number(1.2), (1, 1));
         c.write_value(Value::Number(3.4), (1, 2));
         c.write_code(OpCode::ADD, (1, 3));
@@ -430,5 +477,39 @@ mod tests {
                 assert_eq!(*x_ptr.add(i), 1 << i);
             }
         }
+    }
+    #[test]
+    fn compliance() {
+        valeq!(" 1+2", Value::Integer(3));
+        valeq!(" '1'..'2'", vstr!("12"));
+
+        valeq!(
+            r#"
+            local a= 1+2
+            a
+            "#,
+            Value::Integer(3)
+        );
+        valeq!(
+            r#"
+            local a= '1'..'2'
+            a
+            "#,
+            vstr!("12")
+        );
+        valeq!(
+            r#"
+            local a= 'a'
+            sprint a
+            a='b'
+            sprint a
+            local b='c'
+            sprint b
+            b=a..b
+            sprint b
+            b
+            "#,
+            vstr!("bc")
+        );
     }
 }
