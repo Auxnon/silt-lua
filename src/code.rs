@@ -4,7 +4,10 @@ pub enum OpCode {
     CONSTANT { constant: u8 },
     DEFINE_GLOBAL { constant: u8 },
     GET_GLOBAL { constant: u8 },
+    SET_GLOBAL { constant: u8 },
     DEFINE_LOCAL { constant: u8 },
+    GET_LOCAL { constant: u8 },
+    SET_LOCAL { constant: u8 },
     RETURN,
     POP,
     ADD,
@@ -78,6 +81,15 @@ impl Display for OpCode {
             Self::LESS_EQUAL => write!(f, "OP_LESS_EQUAL"),
             Self::GREATER => write!(f, "OP_GREATER"),
             Self::GREATER_EQUAL => write!(f, "OP_GREATER_EQUAL"),
+            Self::SET_GLOBAL { constant } => {
+                write!(f, "OP_SET_GLOBAL {}", constant)
+            }
+            Self::GET_LOCAL { constant } => {
+                write!(f, "OP_GET_LOCAL {}", constant)
+            }
+            Self::SET_LOCAL { constant } => {
+                write!(f, "OP_SET_LOCAL {}", constant)
+            }
         }
     }
 }

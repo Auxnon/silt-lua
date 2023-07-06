@@ -169,12 +169,14 @@ impl<'a> VM<'a> {
         }
     }
 
-    pub fn interpret(&mut self, chunk: &'a Chunk) -> Result<(), SiltError> {
+    pub fn interpret(&mut self, chunk: &'a Chunk) -> Result<Value, SiltError> {
         self.ip = chunk.code.as_ptr();
         self.chunk = Some(chunk);
         self.run()
     }
-    fn run(&mut self) -> Result<(), SiltError> {
+
+    fn run(&mut self) -> Result<Value, SiltError> {
+        let mut last = Value::Nil; // TODO temporary for testing
         loop {
             let instruction = unsafe { &*self.ip };
             // TODO devout
@@ -183,7 +185,10 @@ impl<'a> VM<'a> {
             match instruction {
                 OpCode::RETURN => {
                     // println!("<< {}", self.pop());
-                    return Ok(());
+                    match self.stack.pop() {
+                        Some(v) => return Ok(v),
+                        None => return Ok(last),
+                    }
                 }
                 OpCode::CONSTANT { constant } => {
                     let value = self.chunk.unwrap().get_constant(*constant);
@@ -205,8 +210,25 @@ impl<'a> VM<'a> {
                         return Err(SiltError::VmRuntimeError);
                     }
                 }
-                OpCode::GET_GLOBAL { constant } => {
+                // TODO does this need to exist?
+                OpCode::SET_GLOBAL { constant } => {
                     let value = self.chunk.unwrap().get_constant(*constant);
+                    if let Value::String(s) = value {
+                        let v = self.take(); // TODO expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
+                                             // alternatively we can peek the value, that might be better to prevent side effects
+
+                        // if let Some(_) = self.globals.get(&**s) {
+                        //     self.globals.insert(s.to_string(), v);
+                        // } else {
+                        //     self.globals.insert(s.to_string(), v);
+                        // }
+                        self.globals.insert(s.to_string(), v);
+                    } else {
+                        return Err(SiltError::VmRuntimeError);
+                    }
+                }
+                OpCode::GET_GLOBAL { constant } => {
+                    let value = self.get_chunk().get_constant(*constant);
                     if let Value::String(s) = value {
                         if let Some(v) = self.globals.get(&**s) {
                             self.push(v.clone());
@@ -322,11 +344,13 @@ impl<'a> VM<'a> {
 
                 OpCode::LITERAL { dest, literal } => {}
                 OpCode::POP => {
-                    self.pop();
+                    last = self.pop();
                 }
                 OpCode::PRINT => {
                     println!("<<<<<< {} >>>>>>>", self.pop());
                 }
+                OpCode::GET_LOCAL { constant } => todo!(),
+                OpCode::SET_LOCAL { constant } => todo!(),
             }
             //stack
             self.print_stack();
@@ -334,6 +358,11 @@ impl<'a> VM<'a> {
         }
     }
 
+    // TODO is having a default empty chunk cheaper?
+    /** We're operating on the assumtpion a chunk is always present when using this */
+    fn get_chunk(&self) -> &Chunk {
+        self.chunk.unwrap()
+    }
     pub fn reset_stack(&mut self) {
         // TODO we probably dont even need to clear the stack, just reset the stack_top
         // self.stack.clear();
@@ -358,6 +387,16 @@ impl<'a> VM<'a> {
         // unsafe { *self.stack_top }
         self.stack.pop().unwrap()
     }
+
+    /** take and replace with a Nil */
+    fn take(&mut self) -> Value {
+        // self.stack_top = unsafe { self.stack_top.sub(1) };
+        // unsafe { *self.stack_top }
+        let v = self.pop();
+        self.push(Value::Nil);
+        v
+    }
+
     fn peek(&mut self) -> Option<&Value> {
         self.stack.last()
     }

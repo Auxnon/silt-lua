@@ -8,6 +8,7 @@ pub struct Chunk {
     pub code: Vec<OpCode>,
     constants: Vec<Value>, //TODO VALUE ARRAY typedef faster?
     locations: Vec<(usize, usize)>,
+    valid: bool,
 }
 
 impl Chunk {
@@ -16,6 +17,7 @@ impl Chunk {
             code: vec![],
             constants: vec![],
             locations: vec![],
+            valid: true,
         }
     }
     // capacity < 8 ? 8: capacity*2
@@ -40,6 +42,12 @@ impl Chunk {
     pub fn get_constant(&self, index: u8) -> &Value {
         &self.constants[index as usize]
     }
+    pub fn invalidate(&mut self) {
+        self.valid = false;
+    }
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
 
     // fn add_constant(&mut self, value: Value) -> usize {
     //     self.constants.write_value(value)
@@ -56,7 +64,19 @@ impl Chunk {
                 print!("{:03}", l.0);
             }
             // println!("{} {}:{}", c, l.0, l.1);
-            println!(":{:02} | {}", l.1, c);
+            let constant = match c {
+                OpCode::CONSTANT { constant }
+                | OpCode::DEFINE_GLOBAL { constant }
+                | OpCode::GET_GLOBAL { constant }
+                | OpCode::DEFINE_LOCAL { constant }
+                | OpCode::GET_LOCAL { constant }
+                | OpCode::SET_LOCAL { constant } => {
+                    format!("({})", self.get_constant(*constant))
+                }
+                _ => String::new(),
+            };
+
+            println!(":{:02} | {} {}", l.1, c, constant);
             last = l.0;
         }
     }
