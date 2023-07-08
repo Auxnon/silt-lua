@@ -19,6 +19,7 @@ pub enum SiltError {
     ExpectedThen,
     ExpectedDo,
     ExpectedToken(Token),
+    TooManyLocals,
 
     //expression errors
     ExpInvalidOperator(Operator),
@@ -64,6 +65,7 @@ pub type Location = (usize, usize);
 impl std::fmt::Display for SiltError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
             Self::Return(v) => write!(f, "~Return {}~", v),
             SiltError::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
             SiltError::NotANumber(s) => write!(f, "Not a number: {}", s),

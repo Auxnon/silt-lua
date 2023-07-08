@@ -34,6 +34,19 @@ impl Chunk {
         self.constants.len() - 1
     }
 
+    pub fn write_identifier(&mut self, identifier: Box<String>) -> usize {
+        match self.constants.iter().enumerate().position(|(i, x)| {
+            if let Value::String(s) = x {
+                s == &identifier
+            } else {
+                false
+            }
+        }) {
+            Some(i) => i,
+            None => self.write_constant(Value::String(identifier)),
+        }
+    }
+
     pub fn write_value(&mut self, value: Value, location: Location) {
         let u = self.write_constant(value);
         self.write_code(OpCode::CONSTANT { constant: u as u8 }, location);
@@ -68,10 +81,11 @@ impl Chunk {
                 OpCode::CONSTANT { constant }
                 | OpCode::DEFINE_GLOBAL { constant }
                 | OpCode::GET_GLOBAL { constant }
-                | OpCode::DEFINE_LOCAL { constant }
-                | OpCode::GET_LOCAL { constant }
-                | OpCode::SET_LOCAL { constant } => {
+                | OpCode::DEFINE_LOCAL { constant } => {
                     format!("({})", self.get_constant(*constant))
+                }
+                OpCode::GET_LOCAL { index } | OpCode::SET_LOCAL { index } => {
+                    format!("(${})", index)
                 }
                 _ => String::new(),
             };

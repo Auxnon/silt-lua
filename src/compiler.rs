@@ -28,7 +28,7 @@ pub mod compiler {
         }};
     }
 
-    macro_rules! devout {
+    macro_rules! devnote {
         ($self:ident $message:literal) => {
             #[cfg(feature = "dev-out")]
             println!(
@@ -38,6 +38,13 @@ pub mod compiler {
                 $self.get_current().unwrap_or(&Token::Nil)
             );
         };
+    }
+
+    macro_rules! devout {
+        ($($arg:tt)*) => {
+            #[cfg(feature = "devout")]
+            println!($($arg)*);
+        }
     }
 
     macro_rules! op_assign {
@@ -87,6 +94,17 @@ pub mod compiler {
                 return Expression::InvalidExpression;
             }
         };};
+    }
+
+    macro_rules! build_block_until {
+        ($self:ident $($rule:ident)|*) => {{
+            let mut statements = vec![];
+            while !matches!($self.peek(), Some(
+                $( &Token::$rule)|*)) {
+                    declaration($self)?;
+            }
+            statements
+        }};
     }
 
     macro_rules! rule {
@@ -163,6 +181,11 @@ pub mod compiler {
         precedence: Precedence,
     }
 
+    struct Local {
+        ident: Box<String>,
+        depth: usize,
+    }
+
     pub struct Compiler {
         chunk: Chunk,
         iterator: Peekable<Lexer>,
@@ -172,6 +195,9 @@ pub mod compiler {
         current: Result<Token, ErrorTuple>,
         previous: Result<Token, ErrorTuple>,
         current_location: Location,
+        local_count: usize,
+        scope_depth: usize,
+        locals: Vec<Local>,
         // location: (usize, usize),
         // previous: TokenTuple,
         // pre_previous: TokenTuple,
@@ -189,6 +215,9 @@ pub mod compiler {
                 current_index: 0,
                 errors: vec![],
                 valid: true,
+                local_count: 0,
+                scope_depth: 0,
+                locals: vec![],
                 // location: (0, 0),
                 // previous: (Token::Nil, (0, 0)),
                 // pre_previous: (Token::Nil, (0, 0)),
@@ -223,8 +252,7 @@ pub mod compiler {
             self.current_index += 1;
             match self.iterator.next() {
                 Some(Ok(t)) => {
-                    #[cfg(feature = "dev-out")]
-                    println!("popped {}", t.0);
+                    devout!("popped {}", t.0);
                     (Ok(t.0), t.1)
                 }
                 Some(Err(e)) => {
@@ -288,8 +316,7 @@ pub mod compiler {
         pub fn get_current(&self) -> Result<&Token, ErrorTuple> {
             match &self.current {
                 Ok(t) => {
-                    #[cfg(feature = "dev-out")]
-                    println!("get_current {}", t);
+                    devout!("get_current {}", t);
                     Ok(t)
                 }
                 Err(e) => Err(e.clone()),
@@ -305,14 +332,12 @@ pub mod compiler {
         fn peek(&mut self) -> Result<&Token, ErrorTuple> {
             match self.iterator.peek() {
                 Some(Ok(t)) => {
-                    #[cfg(feature = "dev-out")]
-                    println!("peek {}", t.0);
+                    devout!("peek {}", t.0);
                     Ok(&t.0)
                 }
                 Some(Err(e)) => {
                     // self.error_syntax(e.code, e.location);
-                    #[cfg(feature = "dev-out")]
-                    println!("peek err {}", e.code);
+                    devout!("peek err {}", e.code);
                     let l = e.location;
                     Err(ErrorTuple {
                         code: e.code.clone(),
@@ -365,7 +390,7 @@ pub mod compiler {
         }
 
         fn identifer_constant(&mut self, ident: Box<String>) -> u8 {
-            self.chunk.write_constant(Value::String(ident)) as u8
+            self.chunk.write_identifier(ident) as u8
         }
 
         fn constant(&mut self, value: Value, location: Location) {
@@ -463,6 +488,7 @@ pub mod compiler {
 
         pub fn compile(&mut self, source: String, global: &mut Environment) -> Chunk {
             let lexer = Lexer::new(source.to_owned());
+            #[cfg(feature = "dev-out")]
             lexer.for_each(|r| match r {
                 Ok(t) => {
                     println!("token {}", t.0);
@@ -518,12 +544,13 @@ pub mod compiler {
             let t = self.get_current()?;
             let loc = self.current_location;
 
-            println!("check rule for token {}", t);
+            devout!("check rule for token {}", t);
             let rule = Self::get_rule(&t);
             // #[cfg(feature = "dev-out")]
-            println!(
+            devout!(
                 "target precedence:  {}, current precedence: {}",
-                precedence, rule.precedence
+                precedence,
+                rule.precedence
             );
             // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
             let can_assign = precedence <= Precedence::Assignment;
@@ -543,9 +570,10 @@ pub mod compiler {
                 // let c = self.get_current()?;
                 // let rule = Self::get_rule(c);
                 // #[cfg(feature = "dev-out")]
-                println!(
+                devout!(
                     "loop target precedence for :  {}, current precedence for  : {}",
-                    precedence, rule.precedence
+                    precedence,
+                    rule.precedence
                 );
                 if precedence > rule.precedence {
                     break;
@@ -580,7 +608,7 @@ pub mod compiler {
     }
 
     fn declaration(this: &mut Compiler) -> Catch {
-        devout!(this "declaration");
+        devnote!(this "declaration");
 
         let t = this.peek()?;
         match t {
@@ -596,16 +624,22 @@ pub mod compiler {
     }
 
     fn declaration_scope(this: &mut Compiler, local: bool, already_function: bool) -> Catch {
-        devout!(this "declaration_scope");
+        devnote!(this "declaration_scope");
         this.eat();
         // this.advance();
         // this.store();
         let (res, location) = this.pop();
         match res? {
             Token::Identifier(ident) => {
-                // MARK
-                let ident = this.identifer_constant(ident); //(self.global.to_register(&ident), 0);
-                typing(this, ident, location, local)?;
+                if this.scope_depth > 0 {
+                    //local
+                    //TODO should we warn? redefine_behavior(this,ident)?
+                    add_local(this, ident)?;
+                    typing(this, None, location)?;
+                } else {
+                    let ident = this.identifer_constant(ident); //(self.global.to_register(&ident), 0);
+                    typing(this, Some(ident), location)?;
+                }
             }
             // Token::Function => {
             //     if !already_function {
@@ -624,8 +658,50 @@ pub mod compiler {
         Ok(())
     }
 
-    fn typing(this: &mut Compiler, ident: Ident, location: Location, local: bool) -> Catch {
-        devout!(this "typing");
+    // TODO Warning?
+    // fn redefine_behavior(this: &mut Compiler, ident: Box<String>) -> Catch {
+    //     // TODO depth !=-1 ?
+    //     for l in this.locals.iter().rev() {
+    //         if l.depth != -1 && l.depth < this.scope_depth {
+    //             return Ok(());
+    //         } else {
+    //             if l.ident == ident {
+    //                 return Err(this.error_at(SiltError::AlreadyDefined(ident)));
+    //             }
+    //         }
+    //     }
+    //     Ok(())
+    // }
+
+    fn add_local(this: &mut Compiler, ident: Box<String>) -> Catch {
+        devnote!(this "add_local");
+        if this.local_count == 255 {
+            return Err(this.error_at(SiltError::TooManyLocals));
+        }
+        this.local_count += 1;
+        this.locals.push(Local {
+            ident,
+            depth: this.scope_depth,
+        });
+        Ok(())
+    }
+
+    fn resolve_local(
+        this: &mut Compiler,
+        ident: &Box<String>,
+        local: bool,
+    ) -> Result<Option<u8>, ErrorTuple> {
+        devnote!(this "resolve_local");
+        for (i, l) in this.locals.iter().enumerate().rev() {
+            if l.ident == *ident {
+                return Ok(Some(i as u8));
+            }
+        }
+        Ok(None)
+    }
+
+    fn typing(this: &mut Compiler, ident: Option<Ident>, location: Location) -> Catch {
+        devnote!(this "typing");
         if let Token::Colon = this.peek()? {
             // typing or self calling
             this.eat();
@@ -642,25 +718,20 @@ pub mod compiler {
                 //     // return self.assign(self.peek(), ident);
                 //     Statement::InvalidStatement
                 // }
-                define_declaration(this, ident, location, local)?;
+                define_declaration(this, ident, location)?;
             } else {
                 todo!("typing");
                 // self.error(SiltError::InvalidColonPlacement);
                 // Statement::InvalidStatement
             }
         } else {
-            define_declaration(this, ident, location, local)?;
+            define_declaration(this, ident, location)?;
         }
         Ok(())
     }
 
-    fn define_declaration(
-        this: &mut Compiler,
-        ident: Ident,
-        location: Location,
-        local: bool,
-    ) -> Catch {
-        devout!(this "define_declaration");
+    fn define_declaration(this: &mut Compiler, ident: Option<Ident>, location: Location) -> Catch {
+        devnote!(this "define_declaration");
         this.store();
         let t = this.get_current()?;
         match t {
@@ -677,60 +748,101 @@ pub mod compiler {
                 // self.error(SiltError::InvalidAssignment(tt));
                 // Statement::InvalidStatement
             }
-            _ => this.emit_at(OpCode::NIL),
+            _ => this.emit_at(OpCode::NIL), // TODO are more then just declarations hitting this syntactic sugar?
         }
-        define_variable(this, ident, location, local)?;
+        define_variable(this, ident, location)?;
         Ok(())
     }
 
-    fn define_variable(
-        this: &mut Compiler,
-        ident: Ident,
-        location: Location,
-        local: bool,
-    ) -> Catch {
-        devout!(this "define_variable");
-        if local {
-            this.emit(OpCode::DEFINE_GLOBAL { constant: ident }, location); // TODO
-        } else {
+    fn define_variable(this: &mut Compiler, ident: Option<Ident>, location: Location) -> Catch {
+        devnote!(this "define_variable");
+        // if local {
+        //     // this.emit(OpCode::DEFINE_GLOBAL { constant: ident }, location); // TODO
+        // } else {
+        //     this.emit(OpCode::DEFINE_GLOBAL { constant: ident }, location);
+        // }
+
+        if let Some(ident) = ident {
             this.emit(OpCode::DEFINE_GLOBAL { constant: ident }, location);
         }
         Ok(())
     }
 
     fn statement(this: &mut Compiler) -> Catch {
-        devout!(this "statement");
+        devnote!(this "statement");
         match this.peek()? {
             Token::Print => print(this)?,
+            Token::Do => {
+                this.eat();
+                begin_scope(this);
+                block(this)?;
+                end_scope(this);
+            }
             // Token::OpenBrace => block(this),
             _ => expression_statement(this)?,
         }
         Ok(())
     }
 
+    fn block(this: &mut Compiler) -> Catch {
+        devnote!(this "block");
+        // build_block_until!(this End);
+        while match this.peek()? {
+            Token::End => {
+                this.eat();
+                false
+            }
+            Token::EOF => {
+                return Err(this.error_at(SiltError::UnterminatedBlock));
+            }
+            _ => {
+                declaration(this)?;
+                true
+            }
+        } {
+            // This space for rent!
+        }
+
+        Ok(())
+    }
+
+    fn begin_scope(this: &mut Compiler) {
+        this.scope_depth += 1;
+    }
+
+    fn end_scope(this: &mut Compiler) {
+        this.scope_depth -= 1;
+        let mut i = 0;
+        while !this.locals.is_empty() && this.locals.last().unwrap().depth > this.scope_depth {
+            this.locals.pop();
+            i += 1;
+        }
+        this.emit_at(OpCode::POPN(i));
+    }
+
     fn expression(this: &mut Compiler, skip_step: bool) -> Catch {
-        devout!(this "expression");
+        devnote!(this "expression");
         this.parse_precedence(Precedence::Assignment, skip_step)?;
         Ok(())
     }
 
     fn next_expression(this: &mut Compiler) -> Catch {
-        devout!(this "next_expression");
+        devnote!(this "next_expression");
         this.eat();
         expression(this, false)?;
         Ok(())
     }
 
     fn expression_statement(this: &mut Compiler) -> Catch {
-        devout!(this "expression_statement");
+        devnote!(this "expression_statement");
         expression(this, false)?;
         this.emit_at(OpCode::POP);
-        devout!(this "expression_statement end");
+        devnote!(this "expression_statement end");
         Ok(())
     }
 
     fn variable(this: &mut Compiler, can_assign: bool) -> Catch {
-        devout!(this "variable");
+        devnote!(this "variable");
         // let t = this.previous.clone();
         // let ident = if let Token::Identifier(ident) = t.0 {
         //     this.identifer_constant(ident)
@@ -748,15 +860,28 @@ pub mod compiler {
         Ok(())
     }
 
-    fn named_variable(this: &mut Compiler, can_assign: bool, local: bool) -> Catch {
-        devout!(this "named_variables");
+    fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Catch {
+        devnote!(this "named_variables");
         let t = this.take_store()?;
         let ident = if let Token::Identifier(ident) = t {
-            println!("assigning to identifier: {}", ident);
-            this.identifer_constant(ident)
+            devout!("assigning to identifier: {}", ident);
+            match resolve_local(this, &ident, local)? {
+                Some(i) => {
+                    local = true;
+                    i
+                }
+                None => {
+                    local = false;
+                    this.identifer_constant(ident)
+                }
+            }
         } else {
             unreachable!()
         };
+
+        // if i!=-1 {
+        // set local or get local
+        //    this.emit(OpCode::GET_LOCAL { local: i }, t.1); its local
 
         if can_assign
             && if let Token::Assign = this.peek()? {
@@ -766,16 +891,18 @@ pub mod compiler {
             }
         {
             this.eat();
-            let loc = this.current_location;
             expression(this, false)?;
             if local {
-                // TODO local
-                this.emit(OpCode::SET_GLOBAL { constant: ident }, loc);
+                this.emit_at(OpCode::SET_LOCAL { index: ident });
             } else {
-                this.emit(OpCode::SET_GLOBAL { constant: ident }, loc);
+                this.emit_at(OpCode::SET_GLOBAL { constant: ident });
             }
         } else {
-            this.emit_at(OpCode::GET_GLOBAL { constant: ident });
+            if local {
+                this.emit_at(OpCode::GET_LOCAL { index: ident });
+            } else {
+                this.emit_at(OpCode::GET_GLOBAL { constant: ident });
+            }
         }
 
         // if let &Token::Assign = this.get_current()? {
@@ -789,7 +916,7 @@ pub mod compiler {
     }
 
     fn grouping(this: &mut Compiler, can_assign: bool) -> Catch {
-        devout!(this "grouping");
+        devnote!(this "grouping");
         expression(this, false)?;
         //TODO expect
         // expect_token!(self, CloseParen, SiltError::UnterminatedParenthesis(0, 0));
@@ -799,7 +926,7 @@ pub mod compiler {
 
     /** op unary or primary */
     fn unary(this: &mut Compiler, can_assign: bool) -> Catch {
-        devout!(this "unary");
+        devnote!(this "unary");
         let t = this.take_store()?;
         // self.expression();
 
@@ -824,7 +951,7 @@ pub mod compiler {
     }
 
     fn binary(this: &mut Compiler, _can_assign: bool) -> Catch {
-        devout!(this "binary");
+        devnote!(this "binary");
         let t = this.take_store()?;
         let l = this.current_location;
         let rule = Compiler::get_rule(&t);
@@ -854,7 +981,7 @@ pub mod compiler {
     }
 
     fn concat(this: &mut Compiler, _can_assign: bool) -> Catch {
-        devout!(this "concat_binary");
+        devnote!(this "concat_binary");
         let t = this.take_store()?;
         let l = this.current_location;
         let rule = Compiler::get_rule(&t);
@@ -870,10 +997,9 @@ pub mod compiler {
     }
 
     fn integer(this: &mut Compiler, can_assign: bool) -> Catch {
-        devout!(this "integer");
+        devnote!(this "integer");
         let t = this.take_store()?;
         let value = if let Token::Integer(i) = t {
-            println!("integer: {}", i);
             Value::Integer(i)
         } else {
             unreachable!()
@@ -882,10 +1008,9 @@ pub mod compiler {
         Ok(())
     }
     fn string(this: &mut Compiler, can_assign: bool) -> Catch {
-        devout!(this "string");
+        devnote!(this "string");
         let t = this.take_store()?;
         let value = if let Token::StringLiteral(s) = t {
-            println!("string: {}", s);
             Value::String(Box::new(s.into_string()))
         } else {
             unreachable!()
@@ -895,7 +1020,7 @@ pub mod compiler {
     }
 
     fn literal(this: &mut Compiler, can_assign: bool) -> Catch {
-        devout!(this "literal");
+        devnote!(this "literal");
         let t = this.take_store()?;
         match t {
             Token::Nil => this.emit_at(OpCode::NIL),
@@ -907,7 +1032,7 @@ pub mod compiler {
     }
 
     fn print(this: &mut Compiler) -> Catch {
-        devout!(this "print");
+        devnote!(this "print");
         this.eat();
         expression(this, false)?;
         this.emit_at(OpCode::PRINT);
@@ -915,7 +1040,7 @@ pub mod compiler {
     }
 
     pub fn void(_this: &mut Compiler, _can_assign: bool) -> Catch {
-        devout!(_this "void");
+        devnote!(_this "void");
         Ok(())
     }
 

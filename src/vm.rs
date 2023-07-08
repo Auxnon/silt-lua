@@ -18,6 +18,13 @@ macro_rules! intr2f {
         *$left as f64
     };
 }
+macro_rules! devout {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "devout")]
+        println!($($arg)*);
+    }
+
+}
 
 macro_rules! str_op_str{
     ($left:ident $op:tt $right:ident $enu:ident )=>{
@@ -119,6 +126,8 @@ macro_rules! num_op_str{
 macro_rules! binary_op {
     ($vm:ident, $op:tt, $opp:tt) => {
         {
+
+            // TODO test speed of this vs 1 pop and a mutate
             let r = $vm.pop();
             let l = $vm.pop();
 
@@ -179,8 +188,8 @@ impl<'a> VM<'a> {
         let mut last = Value::Nil; // TODO temporary for testing
         loop {
             let instruction = unsafe { &*self.ip };
-            // TODO devout
-            println!("ip: {:p} | {}", self.ip, instruction);
+
+            devout!("ip: {:p} | {}", self.ip, instruction);
             self.ip = unsafe { self.ip.add(1) };
             match instruction {
                 OpCode::RETURN => {
@@ -192,8 +201,7 @@ impl<'a> VM<'a> {
                 }
                 OpCode::CONSTANT { constant } => {
                     let value = self.chunk.unwrap().get_constant(*constant);
-                    // TODO devout
-                    println!("CONSTANT value {}", value);
+                    devout!("CONSTANT value {}", value);
                     self.push(value.clone());
                     // match value {
                     //     Value::Number(f) => self.push(*f),
@@ -214,8 +222,10 @@ impl<'a> VM<'a> {
                 OpCode::SET_GLOBAL { constant } => {
                     let value = self.chunk.unwrap().get_constant(*constant);
                     if let Value::String(s) = value {
-                        let v = self.take(); // TODO expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
-                                             // alternatively we can peek the value, that might be better to prevent side effects
+                        let v = self.duplicate();
+                        // TODO we could take, expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
+                        // alternatively we can peek the value, that might be better to prevent side effects
+                        // do we want expressions to evaluate to a value? probably? is this is ideal for implicit returns?
 
                         // if let Some(_) = self.globals.get(&**s) {
                         //     self.globals.insert(s.to_string(), v);
@@ -238,6 +248,15 @@ impl<'a> VM<'a> {
                     } else {
                         return Err(SiltError::VmRuntimeError);
                     }
+                }
+                OpCode::SET_LOCAL { index } => {
+                    let value = self.duplicate();
+                    self.stack[*index as usize] = value;
+                }
+                OpCode::GET_LOCAL { index } => {
+                    self.push(self.stack[*index as usize].clone());
+                    // TODO ew cloning, is our cloning optimized yet?
+                    // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
                 OpCode::DEFINE_LOCAL { constant } => todo!(),
                 OpCode::ADD => binary_op!(self, +, Add),
@@ -346,15 +365,17 @@ impl<'a> VM<'a> {
                 OpCode::POP => {
                     last = self.pop();
                 }
+                OpCode::POPN(n) => self.popn(*n), //TODO here's that 255 local limit again
                 OpCode::PRINT => {
                     println!("<<<<<< {} >>>>>>>", self.pop());
                 }
-                OpCode::GET_LOCAL { constant } => todo!(),
-                OpCode::SET_LOCAL { constant } => todo!(),
             }
             //stack
-            self.print_stack();
-            println!("---");
+            #[cfg(feature = "devout")]
+            {
+                self.print_stack();
+                println!("---");
+            }
         }
     }
 
@@ -363,12 +384,14 @@ impl<'a> VM<'a> {
     fn get_chunk(&self) -> &Chunk {
         self.chunk.unwrap()
     }
+
     pub fn reset_stack(&mut self) {
         // TODO we probably dont even need to clear the stack, just reset the stack_top
         // self.stack.clear();
         // set to 0 index of stack
         self.stack_top = unsafe { self.stack.as_mut_ptr() };
     }
+
     pub fn push(&mut self, value: Value) {
         // TODO can we push to the stack by pointer? Or should we just push on a Vec?
         // *self.stack_top= value;
@@ -387,6 +410,9 @@ impl<'a> VM<'a> {
         // unsafe { *self.stack_top }
         self.stack.pop().unwrap()
     }
+    fn popn(&mut self, n: u8) {
+        self.stack.truncate(self.stack.len() - n as usize);
+    }
 
     /** take and replace with a Nil */
     fn take(&mut self) -> Value {
@@ -397,13 +423,22 @@ impl<'a> VM<'a> {
         v
     }
 
+    fn duplicate(&mut self) -> Value {
+        match self.peek() {
+            Some(v) => v.clone(),
+            None => Value::Nil,
+        }
+    }
+
     fn peek(&mut self) -> Option<&Value> {
         self.stack.last()
     }
+
     fn peek0(&mut self) -> &Value {
         // unsafe { *self.stack_top.sub(1) }
         self.stack.last().unwrap()
     }
+
     fn peek1(&mut self) -> &Value {
         // unsafe { *self.stack_top.sub(2) }
         &self.stack[self.stack.len() - 2]

@@ -190,6 +190,14 @@ fn main() {
      a*b=5
      sprint ab
      "#;
+    let source_in = r#"
+    do
+    local a=1
+    a=3+4
+    sprint a
+    end
+    sprint a
+    "#;
     let mut global = environment::Environment::new();
     global.load_standard_library();
 
@@ -510,6 +518,14 @@ mod tests {
             b
             "#,
             vstr!("bc")
+        );
+        // TODO ?????
+        valeq!(
+            r#"
+            local a= b=2
+            a
+            "#,
+            Value::Integer(2)
         );
     }
 }

@@ -6,10 +6,11 @@ pub enum OpCode {
     GET_GLOBAL { constant: u8 },
     SET_GLOBAL { constant: u8 },
     DEFINE_LOCAL { constant: u8 },
-    GET_LOCAL { constant: u8 },
-    SET_LOCAL { constant: u8 },
+    GET_LOCAL { index: u8 },
+    SET_LOCAL { index: u8 },
     RETURN,
     POP,
+    POPN(u8),
     ADD,
     SUB,
     MULTIPLY,
@@ -49,6 +50,9 @@ impl Display for OpCode {
             }
             Self::RETURN => write!(f, "OP_RETURN"),
             Self::POP => write!(f, "OP_POP"),
+            Self::POPN(n) => {
+                write!(f, "OP_POPx{}", n)
+            }
             Self::CONSTANT { constant } => {
                 write!(f, "OP_CONSTANT {}", constant)
             }
@@ -84,11 +88,11 @@ impl Display for OpCode {
             Self::SET_GLOBAL { constant } => {
                 write!(f, "OP_SET_GLOBAL {}", constant)
             }
-            Self::GET_LOCAL { constant } => {
-                write!(f, "OP_GET_LOCAL {}", constant)
+            Self::GET_LOCAL { index } => {
+                write!(f, "OP_GET_LOCAL {}", index)
             }
-            Self::SET_LOCAL { constant } => {
-                write!(f, "OP_SET_LOCAL {}", constant)
+            Self::SET_LOCAL { index } => {
+                write!(f, "OP_SET_LOCAL {}", index)
             }
         }
     }
