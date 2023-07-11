@@ -22,10 +22,11 @@ impl Chunk {
     }
     // capacity < 8 ? 8: capacity*2
 
-    pub fn write_code(&mut self, byte: OpCode, location: Location) {
+    pub fn write_code(&mut self, byte: OpCode, location: Location) -> usize {
         // TODO https://shnatsel.medium.com/how-to-avoid-bounds-checks-in-rust-without-unsafe-f65e618b4c1e
         self.code.push(byte);
         self.locations.push(location);
+        self.code.len() - 1
     }
 
     pub fn write_constant(&mut self, value: Value) -> usize {

@@ -14,12 +14,17 @@ pub enum SiltError {
     InvalidTokenPlacement(Token),
     InvalidColonPlacement, // more specific to types and calls
     ExpectedLocalIdentifier,
+    ExpectedLabelIdentifier,
+    ExpectedGotoIdentifier,
+    UndefinedLabel(String),
     InvalidAssignment(Token),
     UnterminatedBlock,
     ExpectedThen,
     ExpectedDo,
     ExpectedToken(Token),
     TooManyLocals,
+    TooManyOperations,
+    ChunkCorrupt,
 
     //expression errors
     ExpInvalidOperator(Operator),
@@ -65,22 +70,29 @@ pub type Location = (usize, usize);
 impl std::fmt::Display for SiltError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UndefinedLabel(s) => write!(f, "No matching goto label for '{}'", s),
+            Self::ExpectedGotoIdentifier => write!(f, "Expected identifier following goto keyword"),
+            Self::ChunkCorrupt => write!(f, "Invalid chunk due compilation corruption"),
+            Self::TooManyOperations => write!(
+                f,
+                "Too many operations within this condition, limited to 65535"
+            ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
             Self::Return(v) => write!(f, "~Return {}~", v),
-            SiltError::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
-            SiltError::NotANumber(s) => write!(f, "Not a number: {}", s),
-            SiltError::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),
-            SiltError::UnterminatedString => write!(f, "Unterminated string"),
-            SiltError::UnterminatedParenthesis(x, y) => {
+            Self::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
+            Self::NotANumber(s) => write!(f, "Not a number: {}", s),
+            Self::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),
+            Self::UnterminatedString => write!(f, "Unterminated string"),
+            Self::UnterminatedParenthesis(x, y) => {
                 write!(
                     f,
                     "Expected closing paren due to open paren '(' here {}:{}",
                     x, y
                 )
             }
-            SiltError::ExpInvalidOperator(t) => write!(f, "Invalid expression token: {}", t),
-            SiltError::EarlyEndOfFile => write!(f, "File ended early"),
-            SiltError::ExpOpValueWithValue(v1, op, v2) => {
+            Self::ExpInvalidOperator(t) => write!(f, "Invalid expression token: {}", t),
+            Self::EarlyEndOfFile => write!(f, "File ended early"),
+            Self::ExpOpValueWithValue(v1, op, v2) => {
                 write!(f, "Cannot {} '{}' and '{}'", op, v1, v2)
             }
             SiltError::ExpInvalidNegation(v) => write!(f, "Cannot negate '{}'", v),
@@ -94,6 +106,9 @@ impl std::fmt::Display for SiltError {
             }
             SiltError::ExpectedLocalIdentifier => {
                 write!(f, "Expected identifier following local keyword")
+            }
+            Self::ExpectedLabelIdentifier => {
+                write!(f, "Expected identifier only inbetween label tokens `::`")
             }
             SiltError::InvalidAssignment(t) => {
                 write!(f, "Cannot use assignment operator '{}' on declaration", t)

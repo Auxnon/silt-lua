@@ -8,6 +8,12 @@ pub enum OpCode {
     DEFINE_LOCAL { constant: u8 },
     GET_LOCAL { index: u8 },
     SET_LOCAL { index: u8 },
+    // TODO this the size bottleneck but we were considering word size anyway soooooo
+    // TODO also we could explore a popless goto_if for if statements while conditionals still use the pop variant
+    GOTO_IF_FALSE(u16),
+    GOTO_IF_TRUE(u16),
+    FORWARD(u16),
+    REWIND(u16),
     RETURN,
     POP,
     POPN(u8),
@@ -28,6 +34,7 @@ pub enum OpCode {
     GREATER,
     GREATER_EQUAL,
     PRINT,
+    META(u8),
 
     LITERAL { dest: u8, literal: u8 },
 }
@@ -39,6 +46,15 @@ pub enum Tester {
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::META(_) => write!(f, "META"),
+            Self::GOTO_IF_FALSE(offset) => {
+                write!(f, "OP_GOTO_IF_FALSE {}", offset)
+            }
+            Self::GOTO_IF_TRUE(offset) => {
+                write!(f, "OP_GOTO_IF_TRUE {}", offset)
+            }
+            Self::FORWARD(offset) => write!(f, "OP_FORWARD {}", offset),
+            Self::REWIND(offset) => write!(f, "OP_REWIND {}", offset),
             Self::DEFINE_GLOBAL { constant } => {
                 write!(f, "OP_DEFINE_GLOBAL {}", constant)
             }

@@ -198,6 +198,20 @@ fn main() {
     end
     sprint a
     "#;
+    let source_in = r#"
+    do
+    local a=3
+    end
+    "#;
+    let source_in = r#"
+    do 
+    local a=0
+    while a< 10 do
+        a=a+1
+        sprint a
+    end
+    end
+    "#;
     let mut global = environment::Environment::new();
     global.load_standard_library();
 

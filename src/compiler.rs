@@ -7,6 +7,8 @@ pub mod compiler {
         println, vec,
     };
 
+    use hashbrown::HashMap;
+
     use crate::{
         chunk::Chunk,
         code::OpCode,
@@ -18,13 +20,15 @@ pub mod compiler {
     };
 
     macro_rules! build_block_until {
-        ($self:ident $($rule:ident)|*) => {{
-            let mut statements = vec![];
-            while !matches!($self.peek(), Some(
-                $( &Token::$rule)|*)) {
-                    statements.push($self.declaration());
+        ($self:ident, $($rule:ident)|*) => {{
+            while match $self.peek()? {
+                $( Token::$rule)|* => {$self.eat(); false}
+                Token::EOF => {
+                    return Err($self.error_at(SiltError::UnterminatedBlock));
+                }
+                _ =>{declaration($self)?; true}
+            } {
             }
-            statements
         }};
     }
 
@@ -70,11 +74,10 @@ pub mod compiler {
     /** error if missing, eat if present */
     macro_rules! expect_token {
         ($self:ident $token:ident) => {{
-            if let Some(&Token::$token) = $self.peek() {
+            if let Token::$token = $self.peek()? {
                 $self.eat();
             } else {
-                $self.error(SiltError::ExpectedToken(Token::$token));
-                return Statement::InvalidStatement;
+                return Err($self.error_at(SiltError::ExpectedToken(Token::$token)));
             }
         };};
         ($self:ident, $token:ident, $custom_error:expr) => {{
@@ -94,17 +97,6 @@ pub mod compiler {
                 return Expression::InvalidExpression;
             }
         };};
-    }
-
-    macro_rules! build_block_until {
-        ($self:ident $($rule:ident)|*) => {{
-            let mut statements = vec![];
-            while !matches!($self.peek(), Some(
-                $( &Token::$rule)|*)) {
-                    declaration($self)?;
-            }
-            statements
-        }};
     }
 
     macro_rules! rule {
@@ -198,9 +190,11 @@ pub mod compiler {
         local_count: usize,
         scope_depth: usize,
         locals: Vec<Local>,
+        labels: HashMap<String, usize>,
         // location: (usize, usize),
         // previous: TokenTuple,
         // pre_previous: TokenTuple,
+        pending_gotos: Vec<(String, usize, Location)>,
         extra: bool, // pub global: &'a mut Environment,
     }
     impl<'a> Compiler {
@@ -218,36 +212,44 @@ pub mod compiler {
                 local_count: 0,
                 scope_depth: 0,
                 locals: vec![],
+                labels: HashMap::new(),
+                pending_gotos: vec![],
                 // location: (0, 0),
                 // previous: (Token::Nil, (0, 0)),
                 // pre_previous: (Token::Nil, (0, 0)),
                 extra: true,
             }
         }
-
+        /** syntax error with code at location */
         fn error_syntax(&mut self, code: SiltError, location: Location) -> ErrorTuple {
             self.valid = false;
             self.chunk.invalidate();
             ErrorTuple { code, location }
         }
 
+        /**syntax error at current token location with provided code */
         fn error_at(&mut self, code: SiltError) -> ErrorTuple {
             self.error_syntax(code, self.current_location)
         }
+
+        /** print all syntax errors */
         pub fn print_errors(&self) {
             for e in &self.errors {
                 println!("!!{} at {}:{}", e.code, e.location.0, e.location.1);
             }
         }
+
+        /** push error and location on to error stack */
         fn push_error(&mut self, code: ErrorTuple) {
             self.errors.push(code);
         }
 
+        /** return current array of errors */
         pub fn get_errors(&self) -> &Vec<ErrorTuple> {
             &self.errors
         }
 
-        /** pop and return the token tuple, take care as this does not wipe the current token */
+        /** pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
         pub fn pop(&mut self) -> (Result<Token, ErrorTuple>, Location) {
             self.current_index += 1;
             match self.iterator.next() {
@@ -291,6 +293,7 @@ pub mod compiler {
             };
         }
 
+        /** take by value and gain ownership of the currently stored token */
         pub fn take_store(&mut self) -> Result<Token, ErrorTuple> {
             // std::mem::replace(&mut self.current, Ok(Token::Nil))
             self.current.clone()
@@ -313,6 +316,7 @@ pub mod compiler {
             std::mem::replace(&mut self.current, r)
         }
 
+        /** return the current token result */
         pub fn get_current(&self) -> Result<&Token, ErrorTuple> {
             match &self.current {
                 Ok(t) => {
@@ -329,6 +333,7 @@ pub mod compiler {
         //     self.iterator.next().unwrap()
         // }
 
+        /** return the peeked token result */
         fn peek(&mut self) -> Result<&Token, ErrorTuple> {
             match self.iterator.peek() {
                 Some(Ok(t)) => {
@@ -348,6 +353,7 @@ pub mod compiler {
             }
         }
 
+        /** return the peeked token tuple (token+location) result */
         fn peek_result(&mut self) -> &TokenResult {
             #[cfg(feature = "dev-out")]
             match self.iterator.peek() {
@@ -371,6 +377,7 @@ pub mod compiler {
             }
         }
 
+        /** emit op code at token location */
         fn emit(&mut self, op: OpCode, location: Location) {
             self.chunk.write_code(op, location);
             #[cfg(feature = "dev-out")]
@@ -380,13 +387,60 @@ pub mod compiler {
             }
         }
 
+        /** emit op code at current token location */
         fn emit_at(&mut self, op: OpCode) {
             self.chunk.write_code(op, self.current_location);
             #[cfg(feature = "dev-out")]
             {
                 println!("emit_at ...");
-                self.chunk.print_chunk();
+                self.chunk.print_chunk()
             }
+        }
+
+        /** emit op code at current token location and return op index */
+        fn emit_index(&mut self, op: OpCode) -> usize {
+            let i = self.chunk.write_code(op, self.current_location);
+            #[cfg(feature = "dev-out")]
+            {
+                println!("emit_index ...");
+                self.chunk.print_chunk()
+            }
+            i
+        }
+
+        /** patch the op code that specified index */
+        fn patch(&mut self, offset: usize) -> Catch {
+            let jump = self.chunk.code.len() - offset;
+            if jump > u16::MAX as usize {
+                self.error_at(SiltError::TooManyOperations);
+            }
+            // self.chunk.code[offset] = ((jump >> 8) & 0xff) as u8;
+            // self.chunk.code[offset + 1] = (jump & 0xff) as u8;
+            match self.chunk.code[offset] {
+                OpCode::GOTO_IF_FALSE(_) => {
+                    self.chunk.code[offset] = OpCode::GOTO_IF_FALSE(jump as u16)
+                }
+                OpCode::FORWARD(_) => self.chunk.code[offset] = OpCode::FORWARD(jump as u16),
+                OpCode::REWIND(_) => self.chunk.code[offset] = OpCode::REWIND(jump as u16),
+                _ => {
+                    return Err(self.error_at(SiltError::ChunkCorrupt));
+                }
+            }
+            Ok(())
+        }
+
+        fn emit_rewind(&mut self, start: usize) {
+            // we base the jump off of the index we'll be at one we've written the rewind op below
+            let jump = (self.chunk.code.len() + 1) - start;
+            if jump > u16::MAX as usize {
+                self.error_at(SiltError::TooManyOperations);
+            }
+            self.chunk
+                .write_code(OpCode::REWIND(jump as u16), self.current_location);
+        }
+
+        fn set_label(&mut self, label: String) {
+            self.labels.insert(label, self.chunk.code.len());
         }
 
         fn identifer_constant(&mut self, ident: Box<String>) -> u8 {
@@ -423,28 +477,6 @@ pub mod compiler {
         //     self.previous.1
         // }
 
-        // fn get_pre_prev_loc(&self) -> Location {
-        //     #[cfg(feature = "dev-out")]
-        //     println!(
-        //         "get index {} is loc {}:{}",
-        //         self.current - 1,
-        //         self.locations[self.current - 1].0,
-        //         self.locations[self.current - 1].1
-        //     );
-        //     self.pre_previous.1
-        // }
-
-        // pub fn parse(&mut self) -> Vec<Statement> {
-        //     let mut statements = vec![];
-        //     while !self.is_end() {
-        //         // if let Ok(s) = self.statement() {
-        //         statements.push(self.declaration());
-        //         // }
-        //         // else synchronize
-        //     }
-        //     statements
-        // }
-
         fn get_rule(token: &Token) -> ParseRule {
             // ParseRule {
             //     prefix: Some(|self| self.grouping()),
@@ -473,6 +505,8 @@ pub mod compiler {
                     Operator::Greater => rule!(void, binary, Comparison),
                     Operator::GreaterEqual => rule!(void, binary, Comparison),
                     Operator::Concat => rule!(void, concat, Term),
+                    Operator::And => rule!(void, and, And),
+                    Operator::Or => rule!(void, or, Or),
                     _ => rule!(void, void, None),
                 },
                 Token::Identifier(_) => rule!(variable, void, None),
@@ -772,13 +806,17 @@ pub mod compiler {
         devnote!(this "statement");
         match this.peek()? {
             Token::Print => print(this)?,
+            Token::If => if_statement(this)?,
             Token::Do => {
                 this.eat();
                 begin_scope(this);
                 block(this)?;
                 end_scope(this);
             }
+            Token::While => while_statement(this)?,
             // Token::OpenBrace => block(this),
+            Token::ColonColon => set_goto_label(this)?,
+            Token::Goto => goto_statement(this)?,
             _ => expression_statement(this)?,
         }
         Ok(())
@@ -786,22 +824,22 @@ pub mod compiler {
 
     fn block(this: &mut Compiler) -> Catch {
         devnote!(this "block");
-        // build_block_until!(this End);
-        while match this.peek()? {
-            Token::End => {
-                this.eat();
-                false
-            }
-            Token::EOF => {
-                return Err(this.error_at(SiltError::UnterminatedBlock));
-            }
-            _ => {
-                declaration(this)?;
-                true
-            }
-        } {
-            // This space for rent!
-        }
+        build_block_until!(this, End);
+        // while match this.peek()? {
+        //     Token::End => {
+        //         this.eat();
+        //         false
+        //     }
+        //     Token::EOF => {
+        //         return Err(this.error_at(SiltError::UnterminatedBlock));
+        //     }
+        //     _ => {
+        //         declaration(this)?;
+        //         true
+        //     }
+        // } {
+        //     // This space for rent!
+        // }
 
         Ok(())
     }
@@ -817,6 +855,180 @@ pub mod compiler {
             this.locals.pop();
             i += 1;
         }
+        this.emit_at(OpCode::POPN(i));
+    }
+
+    fn if_statement(this: &mut Compiler) -> Catch {
+        devnote!(this "if_statement");
+        this.eat();
+        expression(this, false)?;
+        expect_token!(this Then);
+        let index = this.emit_index(OpCode::GOTO_IF_FALSE(0));
+        // statement(this)?;
+        this.emit_at(OpCode::POP);
+        build_block_until!(this, End | Else | ElseIf);
+        this.patch(index)?;
+        match this.peek()? {
+            Token::Else => {
+                this.eat();
+                this.emit_at(OpCode::POP);
+                let index = this.emit_index(OpCode::FORWARD(0));
+                build_block_until!(this, End);
+                this.patch(index)?;
+            }
+            Token::ElseIf => {
+                this.eat();
+                this.emit_at(OpCode::POP);
+                if_statement(this)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn while_statement(this: &mut Compiler) -> Catch {
+        devnote!(this "while_statement");
+        this.eat();
+        let loop_start = this.chunk.code.len();
+        expression(this, false)?;
+        expect_token!(this Do);
+        let exit_jump = this.emit_index(OpCode::GOTO_IF_FALSE(0));
+        this.emit_at(OpCode::POP);
+        // statement(this)?;
+        build_block_until!(this, End);
+        this.emit_rewind(loop_start);
+        this.patch(exit_jump)?;
+        this.emit_at(OpCode::POP);
+        Ok(())
+    }
+
+    fn set_goto_label(this: &mut Compiler) -> Catch {
+        devnote!(this "goto_label");
+        this.eat();
+        let token = this.pop().0?;
+        if let Token::Identifier(ident) = token {
+            this.labels.insert(*ident, this.chunk.code.len());
+        } else {
+            return Err(this.error_at(SiltError::ExpectedLabelIdentifier));
+        }
+        Ok(())
+    }
+
+    fn goto_statement(this: &mut Compiler) -> Catch {
+        devnote!(this "goto_statement");
+        this.eat();
+        let token = this.pop().0?;
+        if let Token::Identifier(ident) = token {
+            resolve_goto(this, &*ident, this.chunk.code.len(), None)?;
+            // match this.labels.get(ident) {
+            //     Some(i) => {
+            //         let c = this.chunk.code.len();
+            //         let o = *i;
+            //         if c > o {
+            //             let offset = c - o;
+            //             if offset > u16::MAX as usize {
+            //                 return Err(this.error_at(SiltError::TooManyOperations));
+            //             }
+            //             this.emit_at(OpCode::REWIND(offset as u16));
+            //         } else {
+            //             let offset = o - c;
+            //             if offset > u16::MAX as usize {
+            //                 return Err(this.error_at(SiltError::TooManyOperations));
+            //             }
+            //             this.emit_at(OpCode::FORWARD(offset as u16));
+            //         }
+            //     }
+            //     None => {
+            //         let index = this.emit_index(OpCode::FORWARD(0));
+            //         this.pending_gotos.push((ident, index));
+            //         // this.labels.insert(*ident, index);
+            //     }
+            // }
+        } else {
+            return Err(this.error_at(SiltError::ExpectedGotoIdentifier));
+        }
+
+        // n end_scope(this: &mut Compiler) {
+        //     this.scope_depth -= 1;
+        //     let mut i = 0;
+        //     while !this.locals.is_empty() && this.locals.last().unwrap().depth > this.scope_depth {
+        //         this.locals.pop();
+        //         i += 1;
+        //     }
+        //     this.emit_at(OpCode::POPN(i));
+        // }
+
+        Ok(())
+    }
+
+    fn resolve_goto(
+        this: &mut Compiler,
+        ident: &str,
+        op_count: usize,
+        replace: Option<(usize, Location)>,
+    ) -> Catch {
+        match this.labels.get(ident) {
+            Some(i) => {
+                let c = op_count;
+                let o = *i;
+                let code = if c > o {
+                    let offset = c - o;
+                    if offset > u16::MAX as usize {
+                        return Err(this.error_at(SiltError::TooManyOperations));
+                    }
+                    OpCode::REWIND(offset as u16)
+                } else {
+                    let offset = o - c;
+                    if offset > u16::MAX as usize {
+                        return Err(this.error_at(SiltError::TooManyOperations));
+                    }
+                    OpCode::FORWARD(offset as u16)
+                };
+
+                match replace {
+                    Some((i, _)) => {
+                        this.chunk.code[i] = code;
+                    }
+                    None => {
+                        this.emit_at(code);
+                    }
+                }
+            }
+            None => match replace {
+                Some((i, location)) => {
+                    return Err(
+                        this.error_syntax(SiltError::UndefinedLabel(ident.to_owned()), location)
+                    )
+                }
+                None => {
+                    let index = this.emit_index(OpCode::FORWARD(0));
+                    this.pending_gotos
+                        .push((ident.to_owned(), index, this.current_location));
+                } // this.labels.insert(*ident, index);
+            },
+        };
+        Ok(())
+    }
+
+    fn final_resolve_goto(this: &mut Compiler) {
+        this.pending_gotos
+            .iter()
+            .for_each(|(ident, index, location)| {});
+    }
+
+    fn goto_scope_skip(this: &mut Compiler) {
+        if this.locals.is_empty() {
+            return;
+        }
+        let mut i = 0;
+        this.locals
+            .iter()
+            .rev()
+            .take_while(|l| l.depth > this.scope_depth)
+            .for_each(|_| {
+                i += 1;
+            });
+
         this.emit_at(OpCode::POPN(i));
     }
 
@@ -993,6 +1205,33 @@ pub mod compiler {
                 _ => todo!(),
             }
         }
+        Ok(())
+    }
+
+    fn and(this: &mut Compiler, _can_assign: bool) -> Catch {
+        devnote!(this "and");
+        let index = this.emit_index(OpCode::GOTO_IF_FALSE(0));
+        this.emit_at(OpCode::POP);
+        this.parse_precedence(Precedence::And, false)?;
+        this.patch(index)?;
+        Ok(())
+    }
+
+    fn or(this: &mut Compiler, _can_assign: bool) -> Catch {
+        devnote!(this "or");
+
+        // the goofy way
+        // let index = this.emit_index(OpCode::GOTO_IF_FALSE(0));
+        // let final_index = this.emit_index(OpCode::GOTO(0));
+        // this.patch(index)?;
+        // this.emit_at(OpCode::POP);
+        // this.parse_precedence(Precedence::Or, false)?;
+        // this.patch(final_index)?;
+
+        let index = this.emit_index(OpCode::GOTO_IF_TRUE(0));
+        this.emit_at(OpCode::POP);
+        this.parse_precedence(Precedence::Or, false)?;
+        this.patch(index)?;
         Ok(())
     }
 

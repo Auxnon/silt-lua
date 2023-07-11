@@ -20,7 +20,7 @@ macro_rules! intr2f {
 }
 macro_rules! devout {
     ($($arg:tt)*) => {
-        #[cfg(feature = "devout")]
+        #[cfg(feature = "dev-out")]
         println!($($arg)*);
     }
 
@@ -366,12 +366,31 @@ impl<'a> VM<'a> {
                     last = self.pop();
                 }
                 OpCode::POPN(n) => self.popn(*n), //TODO here's that 255 local limit again
+                OpCode::GOTO_IF_FALSE(offset) => {
+                    let value = self.peek0();
+                    if !Self::is_truthy(value) {
+                        self.forward(*offset);
+                    }
+                }
+                OpCode::GOTO_IF_TRUE(offset) => {
+                    let value = self.peek0();
+                    if Self::is_truthy(value) {
+                        self.forward(*offset);
+                    }
+                }
+                OpCode::FORWARD(offset) => {
+                    self.forward(*offset);
+                }
+                OpCode::REWIND(offset) => {
+                    self.rewind(*offset);
+                }
                 OpCode::PRINT => {
                     println!("<<<<<< {} >>>>>>>", self.pop());
                 }
+                OpCode::META(_) => todo!(),
             }
             //stack
-            #[cfg(feature = "devout")]
+            #[cfg(feature = "dev-out")]
             {
                 self.print_stack();
                 println!("---");
@@ -430,10 +449,12 @@ impl<'a> VM<'a> {
         }
     }
 
+    // TODO too safe, see below
     fn peek(&mut self) -> Option<&Value> {
         self.stack.last()
     }
 
+    // TODO may as well make it unsafe, our compiler should take the burden of correctness
     fn peek0(&mut self) -> &Value {
         // unsafe { *self.stack_top.sub(1) }
         self.stack.last().unwrap()
@@ -493,6 +514,15 @@ impl<'a> VM<'a> {
                 r.to_error(),
             ))?,
         })
+    }
+
+    /// TODO validate safety of this, compiler has to be solid af!
+    fn forward(&mut self, offset: u16) {
+        self.ip = unsafe { self.ip.add(offset as usize) };
+    }
+    fn rewind(&mut self, offset: u16) {
+        self.ip = unsafe { self.ip.sub(offset as usize) };
+        // println!("rewind: {}", unsafe { &*self.ip });
     }
 
     /** unsafe as hell, we're relying on compiler*/
