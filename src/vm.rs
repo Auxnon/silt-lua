@@ -2,6 +2,7 @@ use crate::{
     chunk::Chunk,
     code::OpCode,
     error::{ErrorTypes, SiltError},
+    function::{CallFrame, FunctionObject},
     token::Operator,
     value::{Reference, Value},
 };
@@ -147,9 +148,10 @@ macro_rules! binary_op {
     };
 }
 pub struct VM<'a> {
-    chunk: Option<&'a Chunk>,
+    body: &'a FunctionObject,
+    frames: Vec<CallFrame<'a>>,
     /** Instruction to be run at start of loop  */
-    ip: *const OpCode, // TODO usize vs *const OpCode, will rust optimize the same?
+    // ip: *const OpCode, // TODO usize vs *const OpCode, will rust optimize the same?
     stack: Vec<Value>, // TODO fixed size array vs Vec
     /** Next empty location */
     stack_top: *mut Value,
@@ -160,7 +162,7 @@ pub struct VM<'a> {
 }
 
 impl<'a> VM<'a> {
-    pub fn new() -> Self {
+    pub fn new(body: &'a FunctionObject) -> Self {
         // TODO try the hard way
         // force array to be 256 Values
         // let stack = unsafe {
@@ -170,27 +172,36 @@ impl<'a> VM<'a> {
         let stack = vec![];
         let stack_top = stack.as_ptr() as *mut Value;
         Self {
-            chunk: None,
-            ip: 0 as *const OpCode,
+            body,
+            frames: vec![],
+            // ip: 0 as *const OpCode,
             stack, //: unsafe { *stack },
             stack_top,
             globals: hashbrown::HashMap::new(),
         }
     }
 
-    pub fn interpret(&mut self, chunk: &'a Chunk) -> Result<Value, SiltError> {
-        self.ip = chunk.code.as_ptr();
-        self.chunk = Some(chunk);
+    pub fn interpret(&mut self, object: &'a FunctionObject) -> Result<Value, SiltError> {
+        // self.ip = object.chunk.code.as_ptr();
+        self.frames.push(CallFrame {
+            function: object,
+            ip: 0,
+        });
+        self.body = object;
         self.run()
     }
 
     fn run(&mut self) -> Result<Value, SiltError> {
         let mut last = Value::Nil; // TODO temporary for testing
+                                   // let frame = self.frames
         loop {
-            let instruction = unsafe { &*self.ip };
+            // let instruction = unsafe { &*frame.ip };
+            // self.ip = unsafe { self.ip.add(1) };
+            let instruction = self.frames.last().unwrap().get_instruction();
+            // devout!("ip: {:p} | {}", self.ip, instruction);
+            // let instruction = self.get_chunk().code.get()
 
-            devout!("ip: {:p} | {}", self.ip, instruction);
-            self.ip = unsafe { self.ip.add(1) };
+            // TODO how much faster would it be to order these ops in order of usage, does match hash? probably.
             match instruction {
                 OpCode::RETURN => {
                     // println!("<< {}", self.pop());
@@ -200,7 +211,7 @@ impl<'a> VM<'a> {
                     }
                 }
                 OpCode::CONSTANT { constant } => {
-                    let value = self.chunk.unwrap().get_constant(*constant);
+                    let value = self.get_chunk().get_constant(*constant);
                     devout!("CONSTANT value {}", value);
                     self.push(value.clone());
                     // match value {
@@ -210,7 +221,7 @@ impl<'a> VM<'a> {
                     // }
                 }
                 OpCode::DEFINE_GLOBAL { constant } => {
-                    let value = self.chunk.unwrap().get_constant(*constant);
+                    let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
                         let v = self.pop();
                         self.globals.insert(s.to_string(), v);
@@ -220,7 +231,7 @@ impl<'a> VM<'a> {
                 }
                 // TODO does this need to exist?
                 OpCode::SET_GLOBAL { constant } => {
-                    let value = self.chunk.unwrap().get_constant(*constant);
+                    let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
                         let v = self.duplicate();
                         // TODO we could take, expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
@@ -401,7 +412,7 @@ impl<'a> VM<'a> {
     // TODO is having a default empty chunk cheaper?
     /** We're operating on the assumtpion a chunk is always present when using this */
     fn get_chunk(&self) -> &Chunk {
-        self.chunk.unwrap()
+        &self.body.chunk
     }
 
     pub fn reset_stack(&mut self) {
@@ -442,7 +453,7 @@ impl<'a> VM<'a> {
         v
     }
 
-    fn duplicate(&mut self) -> Value {
+    fn duplicate(&self) -> Value {
         match self.peek() {
             Some(v) => v.clone(),
             None => Value::Nil,
@@ -450,12 +461,12 @@ impl<'a> VM<'a> {
     }
 
     // TODO too safe, see below
-    fn peek(&mut self) -> Option<&Value> {
+    fn peek(&self) -> Option<&Value> {
         self.stack.last()
     }
 
     // TODO may as well make it unsafe, our compiler should take the burden of correctness
-    fn peek0(&mut self) -> &Value {
+    fn peek0(&self) -> &Value {
         // unsafe { *self.stack_top.sub(1) }
         self.stack.last().unwrap()
     }
@@ -518,16 +529,19 @@ impl<'a> VM<'a> {
 
     /// TODO validate safety of this, compiler has to be solid af!
     fn forward(&mut self, offset: u16) {
-        self.ip = unsafe { self.ip.add(offset as usize) };
+        self.frames.last_mut().unwrap().ip += offset as usize;
+        // self.ip = unsafe { self.ip.add(offset as usize) };
     }
+
     fn rewind(&mut self, offset: u16) {
-        self.ip = unsafe { self.ip.sub(offset as usize) };
+        self.frames.last_mut().unwrap().ip -= offset as usize;
+        // self.ip = unsafe { self.ip.sub(offset as usize) };
         // println!("rewind: {}", unsafe { &*self.ip });
     }
 
     /** unsafe as hell, we're relying on compiler*/
     fn read_string(&mut self, constant: u8) -> String {
-        let value = self.chunk.unwrap().get_constant(constant);
+        let value = self.get_chunk().get_constant(constant);
         if let Value::String(s) = value {
             return s.to_string();
         } else {

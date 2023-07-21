@@ -1,6 +1,7 @@
 use core::panic;
 use std::vec;
 
+use function::FunctionObject;
 use value::Value;
 
 use crate::{chunk::Chunk, compiler::compiler::Compiler, lexer::TokenResult, vm::VM};
@@ -12,7 +13,6 @@ mod environment;
 mod error;
 mod expression;
 mod function;
-mod interpreter;
 mod lexer;
 mod parser;
 mod resolver;
@@ -203,27 +203,51 @@ fn main() {
     local a=3
     end
     "#;
+    // REMEMBER 10,000,000 takes about ~6.47 seconds
     let source_in = r#"
     do 
-    local a=0
-    while a< 10 do
+    local a=1
+    while a<= 10_000_000 do
         a=a+1
+    end
         sprint a
     end
+    "#;
+    // let source_in = r#"
+    // do
+    // local a=5
+    // sprint a
+    // a=nil
+    // sprint a
+    // local b=5+6
+    // 3+2
+    // a=1+4 +b
+    // sprint a
+    // end
+    // "#;
+    // TODO should get about 100 million in a second for lua
+    let source_in = r#"
+    do
+    local a=1
+    for i=1, 10_000_000 do
+    a=i
+    end
+    sprint a
     end
     "#;
     let mut global = environment::Environment::new();
     global.load_standard_library();
 
     let mut compiler = Compiler::new();
-    let c = compiler.compile(source_in.to_string(), &mut global);
+    let o = compiler.compile(source_in.to_string(), &mut global);
 
-    c.print_chunk();
+    o.chunk.print_chunk();
     compiler.print_errors();
-    if c.is_valid() {
+    if o.chunk.is_valid() {
         println!("-----------------");
-        let mut vm = VM::new();
-        if let Err(e) = vm.interpret(&c) {
+        let blank = FunctionObject::new(None, false);
+        let mut vm = VM::new(&blank);
+        if let Err(e) = vm.interpret(&o) {
             println!("{}", e);
         }
     }
@@ -232,10 +256,11 @@ fn main() {
 fn simple(source: &str) -> Value {
     let mut global = environment::Environment::new();
     let mut compiler = Compiler::new();
-    let c = compiler.compile(source.to_string(), &mut global);
-    if c.is_valid() {
-        let mut vm = VM::new();
-        match vm.interpret(&c) {
+    let o = compiler.compile(source.to_string(), &mut global);
+    if o.chunk.is_valid() {
+        let blank = FunctionObject::new(None, false);
+        let mut vm = VM::new(&blank);
+        match vm.interpret(&o) {
             Ok(v) => v,
             Err(e) => Value::String(Box::new(e.to_string())),
         }
@@ -248,71 +273,65 @@ fn simple(source: &str) -> Value {
     }
 }
 
-fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
-    println!("-----------------");
-    let mut lexer = lexer::Lexer::new(source.to_owned());
-    let mut t: Vec<TokenResult> = lexer.collect();
-    let mut erronious = false;
-    let mut tokens = vec![];
-    let mut locations = vec![];
-    t.drain(..).enumerate().for_each(|(i, res)| match res {
-        Ok(t) => {
-            let p = t.1;
-            println!("|{}:{}| {}", p.0, p.1, t.0);
+// fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
+//     println!("-----------------");
+//     let mut lexer = lexer::Lexer::new(source.to_owned());
+//     let mut t: Vec<TokenResult> = lexer.collect();
+//     let mut erronious = false;
+//     let mut tokens = vec![];
+//     let mut locations = vec![];
+//     t.drain(..).enumerate().for_each(|(i, res)| match res {
+//         Ok(t) => {
+//             let p = t.1;
+//             println!("|{}:{}| {}", p.0, p.1, t.0);
 
-            tokens.push(t.0);
-            locations.push(t.1);
-        }
-        Err(e) => {
-            erronious = true;
-            println!("|!! {}", e)
-        }
-    });
+//             tokens.push(t.0);
+//             locations.push(t.1);
+//         }
+//         Err(e) => {
+//             erronious = true;
+//             println!("|!! {}", e)
+//         }
+//     });
 
-    if !erronious {
-        let mut parser = crate::parser::parser::Parser::new(tokens, locations, global);
-        println!("|----------------");
-        let mut statements = parser.parse();
-        statements
-            .iter()
-            .enumerate()
-            .for_each(|(i, e)| println!("| {} {}", i, e));
-        // println!("{}", exp);
-        // let val = parser.evaluate(exp);
-        let err = parser.get_errors();
-        if err.len() > 0 {
-            println!("|----------------");
-            println!("Parse Errors:");
-            err.iter().for_each(|e| println!("{}", e));
-            println!("-----------------");
-        } else {
-            println!("-----------------");
-            let mut resolver = crate::resolver::Resolver::new();
-            resolver.process(&mut statements);
-            let res = crate::interpreter::execute(global, &statements);
-            match res {
-                Ok(v) => {
-                    println!("");
-                    return v;
-                }
-                Err(e) => {
-                    println!("| Runtime Errors:");
-                    println!("| {}", e);
-                    println!("-----------------");
-                }
-            }
-        }
-    }
+//     if !erronious {
+//         let mut parser = crate::parser::parser::Parser::new(tokens, locations, global);
+//         println!("|----------------");
+//         let mut statements = parser.parse();
+//         statements
+//             .iter()
+//             .enumerate()
+//             .for_each(|(i, e)| println!("| {} {}", i, e));
+//         // println!("{}", exp);
+//         // let val = parser.evaluate(exp);
+//         let err = parser.get_errors();
+//         if err.len() > 0 {
+//             println!("|----------------");
+//             println!("Parse Errors:");
+//             err.iter().for_each(|e| println!("{}", e));
+//             println!("-----------------");
+//         } else {
+//             println!("-----------------");
+//             let mut resolver = crate::resolver::Resolver::new();
+//             resolver.process(&mut statements);
+//             let res = crate::interpreter::execute(global, &statements);
+//             match res {
+//                 Ok(v) => {
+//                     println!("");
+//                     return v;
+//                 }
+//                 Err(e) => {
+//                     println!("| Runtime Errors:");
+//                     println!("| {}", e);
+//                     println!("-----------------");
+//                 }
+//             }
+//         }
+//     }
 
-    // println!("-----------------");
-    // match val {
-    //     Ok(v) => println!("{}", v),
-    //     Err(e) => println!("Error: {}", e),
-    // }
-    // println!("-----------------");
-    println!("");
-    value::Value::Nil
-}
+//     println!("");
+//     value::Value::Nil
+// }
 
 macro_rules! valeq {
     ($source:literal, $val:expr) => {
@@ -329,6 +348,7 @@ mod tests {
     use crate::{
         chunk::Chunk,
         code::{self, OpCode},
+        function::FunctionObject,
         parser, simple,
         token::Token,
         value::Value,
@@ -430,16 +450,16 @@ mod tests {
     print ("elapsed: "..elapsed)
     elapsed
     "#;
-        let n = if let crate::value::Value::Number(n) = crate::cli(
-            source_in,
-            &mut crate::environment::Environment::new_with_std(),
-        ) {
-            println!("{} seconds", n);
-            n
-        } else {
-            999999.
-        };
-        assert!(n < 2.14)
+        // let n = if let crate::value::Value::Number(n) = crate::cli(
+        //     source_in,
+        //     &mut crate::environment::Environment::new_with_std(),
+        // ) {
+        //     println!("{} seconds", n);
+        //     n
+        // } else {
+        //     999999.
+        // };
+        // assert!(n < 2.14)
     }
 
     #[test]
@@ -460,16 +480,16 @@ mod tests {
       elapsed=clock()-start
       elapsed
     "#;
-        let n = if let crate::value::Value::Number(n) = crate::cli(
-            source_in,
-            &mut crate::environment::Environment::new_with_std(),
-        ) {
-            println!("{} seconds", n);
-            n
-        } else {
-            999999.
-        };
-        assert!(n < 3.4)
+        // let n = if let crate::value::Value::Number(n) = crate::cli(
+        //     source_in,
+        //     &mut crate::environment::Environment::new_with_std(),
+        // ) {
+        //     println!("{} seconds", n);
+        //     n
+        // } else {
+        //     999999.
+        // };
+        // assert!(n < 3.4)
     }
     #[test]
     fn chunk() {
@@ -483,8 +503,10 @@ mod tests {
         c.write_code(OpCode::RETURN, (1, 3));
         c.print_chunk();
         println!("-----------------");
-        let mut vm = VM::new();
-        if let Err(e) = vm.interpret(&c) {
+        let mut blank = FunctionObject::new(None, false);
+        blank.set_chunk(c);
+        let mut vm = VM::new(&blank);
+        if let Err(e) = vm.interpret(&blank) {
             println!("{}", e);
         }
     }

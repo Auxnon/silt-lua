@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use hashbrown::HashMap;
 
-use crate::{environment::Environment, error::ErrorTypes, function::ScopedFunction};
+use crate::{environment::Environment, error::ErrorTypes, function::FunctionObject};
 
 pub enum Value {
     Nil,
@@ -20,7 +20,7 @@ pub enum Value {
     Table(Reference<HashMap<Value, Value>>),
     // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
     // Boxed()
-    Function(Rc<ScopedFunction>), // closure: Environment,
+    Function(Rc<FunctionObject>), // closure: Environment,
 
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(fn(&mut Environment, Vec<Value>) -> Value),
@@ -45,7 +45,14 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Infinity(_) => write!(f, "inf"),
             Value::NativeFunction(_) => write!(f, "native_function"),
-            Value::Function { .. } => write!(f, "function"),
+            Value::Function(ff) => {
+                write!(
+                    f,
+                    "fn {}()",
+                    ff.name.as_ref().unwrap_or(&"anonymous".to_string())
+                )
+            }
+
             Value::Table(t) => write!(f, "table: {}", t.id),
         }
     }
