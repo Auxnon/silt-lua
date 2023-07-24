@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::{
     chunk::Chunk,
     code::OpCode,
@@ -125,14 +127,14 @@ macro_rules! num_op_str{
 }
 
 macro_rules! binary_op {
-    ($vm:ident, $op:tt, $opp:tt) => {
+    ($src:ident, $op:tt, $opp:tt) => {
         {
 
             // TODO test speed of this vs 1 pop and a mutate
-            let r = $vm.pop();
-            let l = $vm.pop();
+            let r = $src.pop();
+            let l = $src.pop();
 
-            $vm.push(match (l, r) {
+            $src.push(match (l, r) {
                 (Value::Number(left), Value::Number(right)) => (Value::Number(left $op right)),
                 (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
                 (Value::Number(left), Value::Integer(right)) => (Value::Number(left $op right as f64)),
@@ -152,9 +154,9 @@ pub struct VM<'a> {
     frames: Vec<CallFrame<'a>>,
     /** Instruction to be run at start of loop  */
     // ip: *const OpCode, // TODO usize vs *const OpCode, will rust optimize the same?
-    stack: Vec<Value>, // TODO fixed size array vs Vec
+    // stack: Vec<Value>, // TODO fixed size array vs Vec
     /** Next empty location */
-    stack_top: *mut Value,
+    // stack_top: *mut Value,
     globals: hashbrown::HashMap<String, Value>, // TODO store strings as identifer usize and use that as key
                                                 // references: Vec<Reference>,
                                                 // obj
@@ -169,35 +171,40 @@ impl<'a> VM<'a> {
         //     std::alloc::alloc(std::alloc::Layout::array::<Value>(256).unwrap()) as *mut [Value; 256]
         // };
         // let stack_top = stack as *mut Value;
-        let stack = vec![];
-        let stack_top = stack.as_ptr() as *mut Value;
+        // let stack = vec![];
+        // let stack_top = stack.as_ptr() as *mut Value;
         Self {
             body,
             frames: vec![],
             // ip: 0 as *const OpCode,
-            stack, //: unsafe { *stack },
-            stack_top,
+            // stack, //: unsafe { *stack },
+            // stack_top,
             globals: hashbrown::HashMap::new(),
         }
     }
 
-    pub fn interpret(&mut self, object: &'a FunctionObject) -> Result<Value, SiltError> {
+    pub fn interpret(&mut self, object: Rc<FunctionObject>) -> Result<Value, SiltError> {
+        // TODO param is a reference of &'a
         // self.ip = object.chunk.code.as_ptr();
-        self.frames.push(CallFrame {
-            function: object,
-            ip: 0,
-        });
-        self.body = object;
+        // frame.ip = object.chunk.code.as_ptr();
+        // frame.slots = self.stack ???
+        let mut frame = CallFrame::new(&object);
+        // frame.stack.resize(256, Value::Nil); // TODO
+        frame.stack.push(Value::Function(object)); // TODO this needs to store the function object itself somehow, RC?
+        self.frames.push(frame);
+        // self.body = object;
         self.run()
     }
 
     fn run(&mut self) -> Result<Value, SiltError> {
         let mut last = Value::Nil; // TODO temporary for testing
-                                   // let frame = self.frames
+
+        let mut frame = self.frames.pop().unwrap();
         loop {
             // let instruction = unsafe { &*frame.ip };
             // self.ip = unsafe { self.ip.add(1) };
-            let instruction = self.frames.last().unwrap().get_instruction();
+            let instruction = frame.current_instruction();
+
             // devout!("ip: {:p} | {}", self.ip, instruction);
             // let instruction = self.get_chunk().code.get()
 
@@ -205,7 +212,7 @@ impl<'a> VM<'a> {
             match instruction {
                 OpCode::RETURN => {
                     // println!("<< {}", self.pop());
-                    match self.stack.pop() {
+                    match frame.stack.pop() {
                         Some(v) => return Ok(v),
                         None => return Ok(last),
                     }
@@ -213,7 +220,7 @@ impl<'a> VM<'a> {
                 OpCode::CONSTANT { constant } => {
                     let value = self.get_chunk().get_constant(*constant);
                     devout!("CONSTANT value {}", value);
-                    self.push(value.clone());
+                    frame.push(value.clone());
                     // match value {
                     //     Value::Number(f) => self.push(*f),
                     //     Value::Integer(i) => self.push(*i as f64),
@@ -223,7 +230,7 @@ impl<'a> VM<'a> {
                 OpCode::DEFINE_GLOBAL { constant } => {
                     let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
-                        let v = self.pop();
+                        let v = frame.pop();
                         self.globals.insert(s.to_string(), v);
                     } else {
                         return Err(SiltError::VmRuntimeError);
@@ -233,7 +240,7 @@ impl<'a> VM<'a> {
                 OpCode::SET_GLOBAL { constant } => {
                     let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
-                        let v = self.duplicate();
+                        let v = frame.duplicate();
                         // TODO we could take, expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
                         // alternatively we can peek the value, that might be better to prevent side effects
                         // do we want expressions to evaluate to a value? probably? is this is ideal for implicit returns?
@@ -252,43 +259,44 @@ impl<'a> VM<'a> {
                     let value = self.get_chunk().get_constant(*constant);
                     if let Value::String(s) = value {
                         if let Some(v) = self.globals.get(&**s) {
-                            self.push(v.clone());
+                            frame.push(v.clone());
                         } else {
-                            self.push(Value::Nil);
+                            frame.push(Value::Nil);
                         }
                     } else {
                         return Err(SiltError::VmRuntimeError);
                     }
                 }
                 OpCode::SET_LOCAL { index } => {
-                    let value = self.duplicate();
-                    self.stack[*index as usize] = value;
+                    let value = frame.duplicate();
+                    // frame.stack[*index as usize] = value;
+                    frame.set_val(*index, value)
                 }
                 OpCode::GET_LOCAL { index } => {
-                    self.push(self.stack[*index as usize].clone());
+                    frame.push(frame.stack[*index as usize].clone());
                     // TODO ew cloning, is our cloning optimized yet?
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
                 OpCode::DEFINE_LOCAL { constant } => todo!(),
-                OpCode::ADD => binary_op!(self, +, Add),
-                OpCode::SUB => binary_op!(self,-, Sub),
-                OpCode::MULTIPLY => binary_op!(self,*, Multiply),
+                OpCode::ADD => binary_op!(frame, +, Add),
+                OpCode::SUB => binary_op!(frame,-, Sub),
+                OpCode::MULTIPLY => binary_op!(frame,*, Multiply),
                 OpCode::DIVIDE => {
-                    let right = self.pop();
-                    let left = self.pop();
+                    let right = frame.pop();
+                    let left = frame.pop();
 
                     match (left, right) {
                         (Value::Number(left), Value::Number(right)) => {
-                            self.push(Value::Number(left / right))
+                            frame.push(Value::Number(left / right))
                         }
                         (Value::Integer(left), Value::Integer(right)) => {
-                            self.push(Value::Number(left as f64 / right as f64))
+                            frame.push(Value::Number(left as f64 / right as f64))
                         }
                         (Value::Number(left), Value::Integer(right)) => {
-                            self.push(Value::Number(left / right as f64))
+                            frame.push(Value::Number(left / right as f64))
                         }
                         (Value::Integer(left), Value::Number(right)) => {
-                            self.push(Value::Number(left as f64 / right))
+                            frame.push(Value::Number(left as f64 / right))
                         }
                         (l, r) => {
                             return Err(SiltError::ExpOpValueWithValue(
@@ -300,110 +308,111 @@ impl<'a> VM<'a> {
                     }
                 }
                 OpCode::NEGATE => {
-                    match self.peek() {
+                    match frame.peek() {
                         Some(Value::Number(n)) => {
                             let f = -n;
-                            self.pop();
-                            self.push(Value::Number(f))
+                            frame.pop();
+                            frame.push(Value::Number(f))
                         }
                         Some(Value::Integer(i)) => {
                             let f = -i;
-                            self.pop();
-                            self.push(Value::Integer(f))
+                            frame.pop();
+                            frame.push(Value::Integer(f))
                         }
                         None => Err(SiltError::EarlyEndOfFile)?,
                         Some(c) => Err(SiltError::ExpInvalidNegation(c.to_error()))?,
                     }
                     // TODO  test this vs below: unsafe { *self.stack_top = -*self.stack_top };
                 }
-                OpCode::NIL => self.push(Value::Nil),
-                OpCode::TRUE => self.push(Value::Bool(true)),
-                OpCode::FALSE => self.push(Value::Bool(false)),
+                OpCode::NIL => frame.push(Value::Nil),
+                OpCode::TRUE => frame.push(Value::Bool(true)),
+                OpCode::FALSE => frame.push(Value::Bool(false)),
                 OpCode::NOT => {
-                    let value = self.pop();
-                    self.push(Value::Bool(!Self::is_truthy(&value)));
+                    let value = frame.pop();
+                    frame.push(Value::Bool(!Self::is_truthy(&value)));
                 }
                 OpCode::EQUAL => {
-                    let r = self.pop();
-                    let l = self.pop();
-                    self.push(Value::Bool(Self::is_equal(&l, &r)));
+                    let r = frame.pop();
+                    let l = frame.pop();
+                    frame.push(Value::Bool(Self::is_equal(&l, &r)));
                 }
                 OpCode::NOT_EQUAL => {
-                    let r = self.pop();
-                    let l = self.pop();
-                    self.push(Value::Bool(!Self::is_equal(&l, &r)));
+                    let r = frame.pop();
+                    let l = frame.pop();
+                    frame.push(Value::Bool(!Self::is_equal(&l, &r)));
                 }
                 OpCode::LESS => {
-                    let r = self.pop();
-                    let l = self.pop();
-                    self.push(Value::Bool(Self::is_less(&l, &r)?));
+                    let r = frame.pop();
+                    let l = frame.pop();
+                    frame.push(Value::Bool(Self::is_less(&l, &r)?));
                 }
                 OpCode::LESS_EQUAL => {
-                    let r = self.pop();
-                    let l = self.pop();
-                    self.push(Value::Bool(!Self::is_greater(&l, &r)?));
+                    let r = frame.pop();
+                    let l = frame.pop();
+                    frame.push(Value::Bool(!Self::is_greater(&l, &r)?));
                 }
                 OpCode::GREATER => {
-                    let r = self.pop();
-                    let l = self.pop();
-                    self.push(Value::Bool(Self::is_greater(&l, &r)?));
+                    let r = frame.pop();
+                    let l = frame.pop();
+                    frame.push(Value::Bool(Self::is_greater(&l, &r)?));
                 }
                 OpCode::GREATER_EQUAL => {
-                    let r = self.pop();
-                    let l = self.pop();
-                    self.push(Value::Bool(!Self::is_less(&l, &r)?));
+                    let r = frame.pop();
+                    let l = frame.pop();
+                    frame.push(Value::Bool(!Self::is_less(&l, &r)?));
                 }
                 OpCode::CONCAT => {
-                    let r = self.pop();
-                    let l = self.pop();
+                    let r = frame.pop();
+                    let l = frame.pop();
                     match (l, r) {
                         (Value::String(left), Value::String(right)) => {
-                            self.push(Value::String(Box::new(*left + &right)))
+                            frame.push(Value::String(Box::new(*left + &right)))
                         }
                         (Value::String(left), v2) => {
-                            self.push(Value::String(Box::new(*left + &v2.to_string())))
+                            frame.push(Value::String(Box::new(*left + &v2.to_string())))
                         }
                         (v1, Value::String(right)) => {
-                            self.push(Value::String(Box::new(v1.to_string() + &right)))
+                            frame.push(Value::String(Box::new(v1.to_string() + &right)))
                         }
                         (v1, v2) => {
-                            self.push(Value::String(Box::new(v1.to_string() + &v2.to_string())))
+                            frame.push(Value::String(Box::new(v1.to_string() + &v2.to_string())))
                         }
                     }
                 }
 
                 OpCode::LITERAL { dest, literal } => {}
                 OpCode::POP => {
-                    last = self.pop();
+                    last = frame.pop();
                 }
-                OpCode::POPN(n) => self.popn(*n), //TODO here's that 255 local limit again
+                OpCode::POPN(n) => frame.popn(*n), //TODO here's that 255 local limit again
                 OpCode::GOTO_IF_FALSE(offset) => {
-                    let value = self.peek0();
+                    let value = frame.peek0();
                     if !Self::is_truthy(value) {
-                        self.forward(*offset);
+                        frame.forward(*offset);
                     }
                 }
                 OpCode::GOTO_IF_TRUE(offset) => {
-                    let value = self.peek0();
+                    let value = frame.peek0();
                     if Self::is_truthy(value) {
-                        self.forward(*offset);
+                        frame.forward(*offset);
                     }
                 }
                 OpCode::FORWARD(offset) => {
-                    self.forward(*offset);
+                    frame.forward(*offset);
                 }
                 OpCode::REWIND(offset) => {
-                    self.rewind(*offset);
+                    frame.rewind(*offset);
                 }
                 OpCode::PRINT => {
-                    println!("<<<<<< {} >>>>>>>", self.pop());
+                    println!("<<<<<< {} >>>>>>>", frame.pop());
                 }
                 OpCode::META(_) => todo!(),
             }
+            frame.iterate();
             //stack
             #[cfg(feature = "dev-out")]
             {
-                self.print_stack();
+                self.print_stack(&frame);
                 println!("---");
             }
         }
@@ -415,66 +424,12 @@ impl<'a> VM<'a> {
         &self.body.chunk
     }
 
-    pub fn reset_stack(&mut self) {
-        // TODO we probably dont even need to clear the stack, just reset the stack_top
-        // self.stack.clear();
-        // set to 0 index of stack
-        self.stack_top = unsafe { self.stack.as_mut_ptr() };
-    }
-
-    pub fn push(&mut self, value: Value) {
-        // TODO can we push to the stack by pointer? Or should we just push on a Vec?
-        // *self.stack_top= value;
-
-        // unsafe { *self.stack_top = value };
-        // self.stack.push(value);
-        // self.stack_top = self.stack.as_ptr().add(self.stack.len());
-
-        // unsafe { *self.stack_top = value };
-        // self.stack_top = unsafe { self.stack_top.add(1) };
-        self.stack.push(value);
-    }
-
-    fn pop(&mut self) -> Value {
-        // self.stack_top = unsafe { self.stack_top.sub(1) };
-        // unsafe { *self.stack_top }
-        self.stack.pop().unwrap()
-    }
-    fn popn(&mut self, n: u8) {
-        self.stack.truncate(self.stack.len() - n as usize);
-    }
-
-    /** take and replace with a Nil */
-    fn take(&mut self) -> Value {
-        // self.stack_top = unsafe { self.stack_top.sub(1) };
-        // unsafe { *self.stack_top }
-        let v = self.pop();
-        self.push(Value::Nil);
-        v
-    }
-
-    fn duplicate(&self) -> Value {
-        match self.peek() {
-            Some(v) => v.clone(),
-            None => Value::Nil,
-        }
-    }
-
-    // TODO too safe, see below
-    fn peek(&self) -> Option<&Value> {
-        self.stack.last()
-    }
-
-    // TODO may as well make it unsafe, our compiler should take the burden of correctness
-    fn peek0(&self) -> &Value {
-        // unsafe { *self.stack_top.sub(1) }
-        self.stack.last().unwrap()
-    }
-
-    fn peek1(&mut self) -> &Value {
-        // unsafe { *self.stack_top.sub(2) }
-        &self.stack[self.stack.len() - 2]
-    }
+    // pub fn reset_stack(&mut self) {
+    //     // TODO we probably dont even need to clear the stack, just reset the stack_top
+    //     // self.stack.clear();
+    //     // set to 0 index of stack
+    //     self.stack_top = unsafe { self.stack.as_mut_ptr() };
+    // }
 
     fn is_truthy(v: &Value) -> bool {
         match v {
@@ -527,18 +482,6 @@ impl<'a> VM<'a> {
         })
     }
 
-    /// TODO validate safety of this, compiler has to be solid af!
-    fn forward(&mut self, offset: u16) {
-        self.frames.last_mut().unwrap().ip += offset as usize;
-        // self.ip = unsafe { self.ip.add(offset as usize) };
-    }
-
-    fn rewind(&mut self, offset: u16) {
-        self.frames.last_mut().unwrap().ip -= offset as usize;
-        // self.ip = unsafe { self.ip.sub(offset as usize) };
-        // println!("rewind: {}", unsafe { &*self.ip });
-    }
-
     /** unsafe as hell, we're relying on compiler*/
     fn read_string(&mut self, constant: u8) -> String {
         let value = self.get_chunk().get_constant(constant);
@@ -549,16 +492,16 @@ impl<'a> VM<'a> {
         }
     }
 
-    pub fn print_stack(&self) {
+    pub fn print_stack(&self, frame: &CallFrame<'a>) {
         println!("=== Stack ===");
         // 0 to stack_top
         print!("[");
-        for i in self.stack.iter() {
+        for i in frame.stack.iter() {
             print!("{} ", i);
         }
         print!("]");
-        println!("");
-        println!("stack_top: {:?}", self.stack_top);
+        // println!("");
+        // println!("stack_top: {:?}", self.stack_top);
         println!("---");
     }
 }

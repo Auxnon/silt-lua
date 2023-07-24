@@ -1,5 +1,5 @@
 use core::panic;
-use std::vec;
+use std::{rc::Rc, vec};
 
 use function::FunctionObject;
 use value::Value;
@@ -207,7 +207,7 @@ fn main() {
     let source_in = r#"
     do 
     local a=1
-    while a<= 10_000_000 do
+    while a<= 10 do
         a=a+1
     end
         sprint a
@@ -226,20 +226,20 @@ fn main() {
     // end
     // "#;
     // TODO should get about 100 million in a second for lua
-    let source_in = r#"
-    do
-    local a=1
-    for i=1, 10_000_000 do
-    a=i
-    end
-    sprint a
-    end
-    "#;
+    // let source_in = r#"
+    // do
+    // local a=1
+    // for i=1, 10 do
+    // a=i
+    // end
+    // sprint a
+    // end
+    // "#;
     let mut global = environment::Environment::new();
     global.load_standard_library();
 
     let mut compiler = Compiler::new();
-    let o = compiler.compile(source_in.to_string(), &mut global);
+    let o = compiler.compile(source_in.to_string());
 
     o.chunk.print_chunk();
     compiler.print_errors();
@@ -247,7 +247,7 @@ fn main() {
         println!("-----------------");
         let blank = FunctionObject::new(None, false);
         let mut vm = VM::new(&blank);
-        if let Err(e) = vm.interpret(&o) {
+        if let Err(e) = vm.interpret(Rc::new(o)) {
             println!("{}", e);
         }
     }
@@ -256,11 +256,11 @@ fn main() {
 fn simple(source: &str) -> Value {
     let mut global = environment::Environment::new();
     let mut compiler = Compiler::new();
-    let o = compiler.compile(source.to_string(), &mut global);
+    let o = compiler.compile(source.to_string());
     if o.chunk.is_valid() {
         let blank = FunctionObject::new(None, false);
         let mut vm = VM::new(&blank);
-        match vm.interpret(&o) {
+        match vm.interpret(Rc::new(o)) {
             Ok(v) => v,
             Err(e) => Value::String(Box::new(e.to_string())),
         }
@@ -354,7 +354,7 @@ mod tests {
         value::Value,
         vm::VM,
     };
-    use std::{mem::size_of, println};
+    use std::{mem::size_of, println, rc::Rc};
 
     #[test]
     fn test_32bits() {
@@ -503,10 +503,11 @@ mod tests {
         c.write_code(OpCode::RETURN, (1, 3));
         c.print_chunk();
         println!("-----------------");
-        let mut blank = FunctionObject::new(None, false);
-        blank.set_chunk(c);
+        let blank = FunctionObject::new(None, false);
+        let mut tester = FunctionObject::new(None, false);
+        tester.set_chunk(c);
         let mut vm = VM::new(&blank);
-        if let Err(e) = vm.interpret(&blank) {
+        if let Err(e) = vm.interpret(Rc::new(tester)) {
             println!("{}", e);
         }
     }

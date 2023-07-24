@@ -24,6 +24,7 @@ pub enum SiltError {
     ExpectedToken(Token),
     TooManyLocals,
     TooManyOperations,
+    TooManyParameters,
     ChunkCorrupt,
 
     //expression errors
@@ -78,6 +79,7 @@ impl std::fmt::Display for SiltError {
                 "Too many operations within this condition, limited to 65535"
             ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
+            Self::TooManyParameters => write!(f, "Too many parameters, limited to 255"),
             Self::Return(v) => write!(f, "~Return {}~", v),
             Self::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
             Self::NotANumber(s) => write!(f, "Not a number: {}", s),
