@@ -84,7 +84,7 @@ pub mod compiler {
             }
         };};
         ($self:ident, $token:ident, $custom_error:expr) => {{
-            if let Some(&Token::$token) = $self.peek() {
+            if let Token::$token = $self.peek()? {
                 $self.eat();
             } else {
                 return Err($custom_error);
@@ -521,7 +521,7 @@ pub mod compiler {
 
             // func(self);
             match token {
-                Token::OpenParen => rule!(grouping, void, None),
+                Token::OpenParen => rule!(grouping, call, Call),
                 Token::Assign => rule!(void, void, None),
                 Token::Op(op) => match op {
                     Operator::Sub => rule!(unary, binary, Term),
@@ -1513,6 +1513,51 @@ pub mod compiler {
         Ok(())
     }
 
+    fn call(this: &mut Compiler, can_assign: bool) -> Catch {
+        devnote!(this "call");
+        // let t = this.take_store()?;
+        // let l = this.current_location;
+        // let rule = Compiler::get_rule(&t);
+        // this.parse_precedence(rule.precedence.next(), false)?;
+        // if let Token::OpenParen = t {
+        //     let arg_count = this.argument_list()?;
+        //     this.emit(OpCode::CALL { arg_count }, l);
+        // }
+        let start = this.current_location;
+        this.eat();
+        let arg_count = arguments(this, start)?;
+        Ok(())
+    }
+
+    fn arguments(this: &mut Compiler, start: Location) -> Result<u8, ErrorTuple> {
+        this.eat();
+        let mut args = 0;
+        if !matches!(this.peek()?, &Token::CloseParen) {
+            while {
+                expression(this, false)?;
+                if let &Token::Comma = this.peek()? {
+                    this.eat();
+                    true
+                } else {
+                    false
+                }
+            } {
+                args += 1;
+                if args >= 255 {
+                    return Err(this.error_at(SiltError::TooManyParameters));
+                }
+            }
+        }
+
+        expect_token!(
+            this,
+            CloseParen,
+            this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
+        );
+
+        Ok(args)
+    }
+
     fn print(this: &mut Compiler) -> Catch {
         devnote!(this "print");
         this.eat();
@@ -1870,25 +1915,6 @@ pub mod compiler {
 //     exp
 // }
 
-// fn arguments(&mut self, start: Location) -> Result<Vec<Expression>, SiltError> {
-//     self.eat();
-//     let mut args = vec![];
-//     while !matches!(self.peek(), Some(&Token::CloseParen)) {
-//         args.push(self.expression());
-//         if let Some(&Token::Comma) = self.peek() {
-//             self.eat();
-//         }
-//     }
-//     devout!(self "arguments");
-
-//     expect_token!(
-//         self,
-//         CloseParen,
-//         SiltError::UnterminatedParenthesis(start.0, start.1)
-//     );
-
-//     Ok(args)
-// }
 // fn primary(&mut self) -> Expression {
 //     // Err(code) => {
 //     //     println!("Error Heere: {} :{}", code, self.current);

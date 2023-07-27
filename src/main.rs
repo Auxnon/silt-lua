@@ -198,21 +198,23 @@ fn main() {
     end
     sprint a
     "#;
-    let source_in = r#"
-    do
-    local a=3
-    end
-    "#;
+    // let source_in = r#"
+    // do
+    // local a=3
+    // sprint a
+    // end
+    // sprint a
+    // "#;
     // REMEMBER 10,000,000 takes about ~6.47 seconds
-    let source_in = r#"
-    do 
-    local a=1
-    while a<= 10 do
-        a=a+1
-    end
-        sprint a
-    end
-    "#;
+    // let source_in = r#"
+    // do
+    // local a=1
+    // while a<= 10 do
+    //     a=a+1
+    // end
+    //     sprint a
+    // end
+    // "#;
     // let source_in = r#"
     // do
     // local a=5
@@ -245,8 +247,7 @@ fn main() {
     compiler.print_errors();
     if o.chunk.is_valid() {
         println!("-----------------");
-        let blank = FunctionObject::new(None, false);
-        let mut vm = VM::new(&blank);
+        let mut vm = VM::new();
         if let Err(e) = vm.interpret(Rc::new(o)) {
             println!("{}", e);
         }
@@ -258,8 +259,7 @@ fn simple(source: &str) -> Value {
     let mut compiler = Compiler::new();
     let o = compiler.compile(source.to_string());
     if o.chunk.is_valid() {
-        let blank = FunctionObject::new(None, false);
-        let mut vm = VM::new(&blank);
+        let mut vm = VM::new();
         match vm.interpret(Rc::new(o)) {
             Ok(v) => v,
             Err(e) => Value::String(Box::new(e.to_string())),
@@ -506,7 +506,7 @@ mod tests {
         let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
-        let mut vm = VM::new(&blank);
+        let mut vm = VM::new();
         if let Err(e) = vm.interpret(Rc::new(tester)) {
             println!("{}", e);
         }

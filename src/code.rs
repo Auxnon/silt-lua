@@ -35,6 +35,7 @@ pub enum OpCode {
     GREATER_EQUAL,
     PRINT,
     META(u8),
+    CALL(u8),
 
     LITERAL { dest: u8, literal: u8 },
 }
@@ -46,6 +47,7 @@ pub enum Tester {
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CALL(i) => write!(f, "call({})", i),
             Self::META(_) => write!(f, "META"),
             Self::GOTO_IF_FALSE(offset) => {
                 write!(f, "OP_GOTO_IF_FALSE {}", offset)

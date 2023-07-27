@@ -52,7 +52,6 @@ impl std::fmt::Display for Value {
                     ff.name.as_ref().unwrap_or(&"anonymous".to_string())
                 )
             }
-
             Value::Table(t) => write!(f, "table: {}", t.id),
         }
     }
@@ -137,5 +136,11 @@ impl PartialEq for Value {
             (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i.value, &j.value),
             _ => false,
         }
+    }
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Value::Nil
     }
 }
