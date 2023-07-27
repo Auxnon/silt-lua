@@ -35,7 +35,7 @@ pub struct CallFrame {
     // ip: *const OpCode
     // pub base: usize,
     // pointer point sinto VM values stack
-    pub stack: *mut Value,
+    pub local_stack: *mut Value,
     pub ip: *const OpCode,
 }
 
@@ -45,7 +45,7 @@ impl<'frame> CallFrame {
         Self {
             function,
             ip,
-            stack: std::ptr::null_mut(),
+            local_stack: std::ptr::null_mut(),
         }
     }
 
@@ -59,12 +59,12 @@ impl<'frame> CallFrame {
     }
     pub fn set_val(&mut self, index: u8, value: Value) {
         // self.stack[index as usize] = value;
-        self.stack = unsafe { self.stack.add(index as usize) };
+        unsafe { *self.local_stack.add(index as usize) = value };
     }
 
     pub fn get_val(&self, index: u8) -> &Value {
         // &self.stack[index as usize]
-        unsafe { &*self.stack.add(index as usize) }
+        unsafe { &*self.local_stack.add(index as usize) }
     }
 
     // pub fn push(&mut self, value: Value) {
@@ -110,32 +110,9 @@ impl<'frame> CallFrame {
     pub fn take(&mut self) -> &Value {
         // self.stack_top = unsafe { self.stack_top.sub(1) };
         // unsafe { *self.stack_top }
-        let v = unsafe { &*self.stack };
-        unsafe { *self.stack = Value::Nil };
+        let v = unsafe { &*self.local_stack };
+        unsafe { *self.local_stack = Value::Nil };
         v
-    }
-    pub fn duplicate(&self) -> Value {
-        match self.peek() {
-            Some(v) => v.clone(),
-            None => Value::Nil,
-        }
-    }
-    // TODO too safe, see below
-    pub fn peek(&self) -> Option<&Value> {
-        // self.stack.last()
-        unsafe { self.stack.as_ref() }
-    }
-
-    // TODO may as well make it unsafe, our compiler should take the burden of correctness
-    pub fn peek0(&self) -> &Value {
-        // unsafe { *self.stack_top.sub(1) }
-        // self.stack.last().unwrap()
-        unsafe { &*self.stack }
-    }
-    pub fn peekn(&self, n: u8) -> &Value {
-        // unsafe { *self.stack_top.sub(n as usize) }
-        // &self.stack[self.stack.len() - n as usize]
-        unsafe { &*self.stack.sub(n as usize) }
     }
 
     // TODO validate safety of this, compiler has to be solid af!

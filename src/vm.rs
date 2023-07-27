@@ -175,8 +175,8 @@ impl<'a> VM {
         //     std::alloc::alloc(std::alloc::Layout::array::<Value>(256).unwrap()) as *mut [Value; 256]
         // };
         // let stack: [Value; 256] = [const { Value::Nil }; 256];
-        let stack = [(); 256].map(|_| Value::default());
-        let stack_top = stack.as_ptr() as *mut Value;
+        let mut stack = [(); 256].map(|_| Value::default());
+        let stack_top = stack.as_mut_ptr() as *mut Value;
         // let stack = vec![];
         // let stack_top = stack.as_ptr() as *mut Value;
         Self {
@@ -192,25 +192,57 @@ impl<'a> VM {
         }
     }
 
-    pub fn push(&mut self, value: Value) {
-        println!("push: {}", value);
+    fn push(&mut self, value: Value) {
+        devout!("push: {}", value);
         unsafe { self.stack_top.write(value) };
         self.stack_top = unsafe { self.stack_top.add(1) };
         self.stack_count += 1;
     }
     /** pop N number of values from stack */
-    pub fn popn(&mut self, n: u8) {
+    fn popn(&mut self, n: u8) {
         unsafe { self.stack_top = self.stack_top.sub(n as usize) };
         self.stack_count -= n as usize;
     }
 
     /** pop and return top of stack */
-    pub fn pop(&mut self) -> Value {
+    fn pop(&mut self) -> Value {
         self.stack_count -= 1;
         unsafe { self.stack_top = self.stack_top.sub(1) };
         let v = unsafe { self.stack_top.read() };
-        println!("pop: {}", v);
+        devout!("pop: {}", v);
         v
+    }
+
+    /** Dangerous!  */
+    fn read_top(&self) -> Value {
+        // match self.peek(0) {
+        //     Some(v) => v.clone(),
+        //     None => Value::Nil,
+        // }
+
+        unsafe { self.stack_top.sub(1).read() }
+    }
+    /** Safer but clones! */
+    fn duplicate(&self) -> Value {
+        self.read_top().clone()
+    }
+
+    fn peek(&self) -> &Value {
+        // self.stack.last()
+        unsafe { &*self.stack_top }
+    }
+
+    // TODO may as well make it unsafe, our compiler should take the burden of correctness
+    // fn peek0(&self) -> &Value {
+    //     // unsafe { *self.stack_top.sub(1) }
+    //     // self.stack.last().unwrap()
+    //     unsafe { &*self.stack }
+    // }
+
+    fn peekn(&self, n: u8) -> &Value {
+        // unsafe { *self.stack_top.sub(n as usize) }
+        // &self.stack[self.stack.len() - n as usize]
+        unsafe { &*self.stack_top.sub(n as usize) }
     }
 
     pub fn interpret(&mut self, object: Rc<FunctionObject>) -> Result<Value, SiltError> {
@@ -219,11 +251,11 @@ impl<'a> VM {
         // frame.ip = object.chunk.code.as_ptr();
         // frame.slots = self.stack ???
         // let rstack = self.stack.as_ptr();
-        self.stack_top = self.stack.as_ptr() as *mut Value;
+        self.stack_top = self.stack.as_mut_ptr() as *mut Value;
         self.body = object.clone();
         let mut frame = CallFrame::new(self.body.clone());
         frame.ip = object.chunk.code.as_ptr();
-        frame.stack = self.stack_top;
+        frame.local_stack = self.stack_top;
         // frame.stack.resize(256, Value::Nil); // TODO
         self.push(Value::Function(object)); // TODO this needs to store the function object itself somehow, RC?
         let frames = vec![frame];
@@ -239,13 +271,10 @@ impl<'a> VM {
         let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)));
         let mut frame = frames.last_mut().unwrap();
         loop {
-            // let instruction = unsafe { &*frame.ip };
-            // self.ip = unsafe { self.ip.add(1) };
             let instruction = frame.current_instruction();
 
             // devout!("ip: {:p} | {}", self.ip, instruction);
             devout!(" | {}", instruction);
-            // let instruction = self.get_chunk().code.get()
 
             // TODO how much faster would it be to order these ops in order of usage, does match hash? probably.
             match instruction {
@@ -284,7 +313,7 @@ impl<'a> VM {
                 OpCode::SET_GLOBAL { constant } => {
                     let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
-                        let v = frame.duplicate();
+                        let v = self.duplicate();
                         // TODO we could take, expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
                         // alternatively we can peek the value, that might be better to prevent side effects
                         // do we want expressions to evaluate to a value? probably? is this is ideal for implicit returns?
@@ -312,7 +341,7 @@ impl<'a> VM {
                     }
                 }
                 OpCode::SET_LOCAL { index } => {
-                    let value = frame.duplicate();
+                    let value = self.duplicate();
                     // frame.stack[*index as usize] = value;
                     frame.set_val(*index, value)
                 }
@@ -353,19 +382,19 @@ impl<'a> VM {
                     }
                 }
                 OpCode::NEGATE => {
-                    match frame.peek() {
-                        Some(Value::Number(n)) => {
+                    match self.peek() {
+                        (Value::Number(n)) => {
                             let f = -n;
                             self.pop();
                             self.push(Value::Number(f))
                         }
-                        Some(Value::Integer(i)) => {
+                        (Value::Integer(i)) => {
                             let f = -i;
                             self.pop();
                             self.push(Value::Integer(f))
                         }
-                        None => Err(SiltError::EarlyEndOfFile)?,
-                        Some(c) => Err(SiltError::ExpInvalidNegation(c.to_error()))?,
+                        // None => Err(SiltError::EarlyEndOfFile)?,
+                        (c) => Err(SiltError::ExpInvalidNegation(c.to_error()))?,
                     }
                     // TODO  test this vs below: unsafe { *self.stack_top = -*self.stack_top };
                 }
@@ -431,13 +460,13 @@ impl<'a> VM {
                 }
                 OpCode::POPN(n) => self.popn(*n), //TODO here's that 255 local limit again
                 OpCode::GOTO_IF_FALSE(offset) => {
-                    let value = frame.peek0();
+                    let value = self.peek();
                     if !Self::is_truthy(value) {
                         frame.forward(*offset);
                     }
                 }
                 OpCode::GOTO_IF_TRUE(offset) => {
-                    let value = frame.peek0();
+                    let value = self.peek();
                     if Self::is_truthy(value) {
                         frame.forward(*offset);
                     }
@@ -449,7 +478,7 @@ impl<'a> VM {
                     frame.rewind(*offset);
                 }
                 OpCode::CALL(param_count) => {
-                    let value = frame.peekn(*param_count);
+                    let value = self.peekn(*param_count);
                     if let Value::Function(f) = value {
                         // let vv = f.as_ref();
                         // let new_frame =
@@ -561,10 +590,15 @@ impl<'a> VM {
     }
 
     pub fn print_stack(&self, frame: &CallFrame) {
-        println!("=== Stack ===");
+        println!("=== Stack ({}) ===", self.stack_count);
         // 0 to stack_top
         print!("[");
+        let mut c = 0;
         for i in self.stack.iter() {
+            c += 1;
+            if c > self.stack_count {
+                break;
+            }
             let s = format!("{:?}", i);
             if s == "nil" {
                 // break;
