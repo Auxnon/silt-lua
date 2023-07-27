@@ -229,7 +229,7 @@ impl<'a> VM {
 
     fn peek(&self) -> &Value {
         // self.stack.last()
-        unsafe { &*self.stack_top }
+        unsafe { &*self.stack_top.sub(1) }
     }
 
     // TODO may as well make it unsafe, our compiler should take the burden of correctness
