@@ -1,7 +1,16 @@
 [package]
-name = "silt-lua"
+name = "silt_lua"
 version = "0.1.0"
+authors = ["me <me@gmail.com>"]
 edition = "2021"
+
+[lib]
+name = "silt_lua"
+path = "src/lib.rs"
+
+[[bin]]
+name = "silt_lua_cli"
+path = "src/main.rs"
 
 [profile.release]
 strip = true  # Automatically strip symbols from the binary.

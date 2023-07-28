@@ -7,8 +7,9 @@ use std::{
 use crate::{
     chunk::Chunk,
     code::OpCode,
+    compiler::Compiler,
     error::{ErrorTypes, SiltError},
-    function::{CallFrame, FunctionObject},
+    function::{CallFrame, FunctionObject, NativeObject},
     standard::print,
     token::Operator,
     value::{Reference, Value},
@@ -156,6 +157,7 @@ macro_rules! binary_op {
 }
 pub struct VM {
     body: Rc<FunctionObject>,
+    compiler: Compiler,
     // frames: Vec<CallFrame>,
     // dummy_frame: CallFrame,
     /** Instruction to be run at start of loop  */
@@ -185,6 +187,7 @@ impl<'a> VM {
         // let stack = vec![];
         // let stack_top = stack.as_ptr() as *mut Value;
         Self {
+            compiler: Compiler::new(),
             body: Rc::new(FunctionObject::new(None, false)),
             // dummy_frame: CallFrame::new(Rc::new(FunctionObject::new(None, false))),
             // frames: vec![],
@@ -205,7 +208,7 @@ impl<'a> VM {
     }
 
     /** pop N number of values from stack */
-    fn popn(&mut self, n: u8) {
+    fn popn_drop(&mut self, n: u8) {
         unsafe { self.stack_top = self.stack_top.sub(n as usize) };
         self.stack_count -= n as usize;
     }
@@ -540,20 +543,20 @@ impl<'a> VM {
                         Value::Function(f) => {
                             let frame_top =
                                 unsafe { self.stack_top.sub((*param_count as usize) + 1) };
-                        let new_frame = CallFrame::new(
-                            f.clone(),
-                            self.stack_count - (*param_count as usize) - 1,
-                        );
-                        devout!("current stack count {}", frame.stack_snapshot);
-                        frames.push(new_frame);
-                        frame_count += 1;
-                        frame = frames.last_mut().unwrap();
+                            let new_frame = CallFrame::new(
+                                f.clone(),
+                                self.stack_count - (*param_count as usize) - 1,
+                            );
+                            devout!("current stack count {}", frame.stack_snapshot);
+                            frames.push(new_frame);
+                            frame_count += 1;
+                            frame = frames.last_mut().unwrap();
 
-                        frame.local_stack = frame_top;
-                        devout!("top of frame stack {}", unsafe { &*frame.local_stack });
-                        // frame.ip = f.chunk.code.as_ptr();
-                        // // frame.stack.resize(256, Value::Nil); // TODO
-                        // self.push(Value::Function(f.clone())); // TODO this needs to store the function object itself somehow, RC?
+                            frame.local_stack = frame_top;
+                            devout!("top of frame stack {}", unsafe { &*frame.local_stack });
+                            // frame.ip = f.chunk.code.as_ptr();
+                            // // frame.stack.resize(256, Value::Nil); // TODO
+                            // self.push(Value::Function(f.clone())); // TODO this needs to store the function object itself somehow, RC?
                         }
                         Value::NativeFunction(_) => {
                             // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
@@ -562,14 +565,14 @@ impl<'a> VM {
                                 let res = ((*f).function)(self, args);
                                 // self.popn_drop(*param_count);
                                 self.push(res);
-                    } else {
+                            } else {
                                 unreachable!();
                             }
                         }
                         _ => {
-                        return Err(SiltError::NotCallable(format!("Value: {}", value)));
+                            return Err(SiltError::NotCallable(format!("Value: {}", value)));
+                        }
                     }
-                }
                 }
                 OpCode::PRINT => {
                     println!("<<<<<< {} >>>>>>>", self.pop());

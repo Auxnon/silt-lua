@@ -40,18 +40,15 @@ impl Environment {
     }
 
     pub fn load_standard_library(&mut self) {
-        self.register_std("clock", crate::standard::clock);
-        self.register_std("print", crate::standard::print);
+        // self.register_std("clock", crate::standard::clock);
+        // self.register_std("print", crate::standard::print);
     }
 
-    fn register_std(
-        &mut self,
-        name: &str,
-        func: fn(&mut Environment, Vec<Value>) -> Value,
-    ) -> usize {
-        let u = self.to_register(name);
-        self.declare_global((u, 0), Value::NativeFunction(func));
-        u
+    fn register_std(&mut self, name: &str, func: fn(Vec<Value>) -> Value) -> usize {
+        // let u = self.to_register(name);
+        // self.declare_global((u, 0), Value::NativeFunction(func));
+        // u
+        todo!()
     }
 
     pub fn declare_global(&mut self, ident: Ident, value: Value) {
