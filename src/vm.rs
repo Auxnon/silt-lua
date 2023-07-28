@@ -1,10 +1,15 @@
-use std::{fmt::format, mem::take, rc::Rc};
+use std::{
+    fmt::format,
+    mem::{forget, take},
+    rc::Rc,
+};
 
 use crate::{
     chunk::Chunk,
     code::OpCode,
     error::{ErrorTypes, SiltError},
     function::{CallFrame, FunctionObject},
+    standard::print,
     token::Operator,
     value::{Reference, Value},
 };
@@ -209,9 +214,33 @@ impl<'a> VM {
     fn pop(&mut self) -> Value {
         self.stack_count -= 1;
         unsafe { self.stack_top = self.stack_top.sub(1) };
-        let v = unsafe { self.stack_top.read() };
+        let v = unsafe { self.stack_top.replace(Value::Nil) };
+        // TODO is there a way to read without segfaulting?
+        // We'd have to list the value to be forggoten, but is this even faster?
+        // let v = unsafe { self.stack_top.read() };
         devout!("pop: {}", v);
         v
+    }
+
+    fn safe_pop(&mut self) -> Value {
+        // let v3 = take(&mut self.stack[3]);
+        // println!("we took {}", v3);
+        // let v0 = take(&mut self.stack[self.stack_count - 1]);
+        // println!("we took {}", v0);
+        // let ve = v0.clone();
+        // std::mem::forget(v3);
+        // drop(v0);
+        // println!("we took {}", ve);
+        // self.print_raw_stack();
+        // core::ptr::read()
+
+        let v0 = take(&mut self.stack[self.stack_count - 1]);
+
+        // for i in self.stack.iter_mut().enumerate() {
+        //     *i = Value::Nil;
+        // }
+
+        v0
     }
 
     /** Dangerous!  */
@@ -258,7 +287,7 @@ impl<'a> VM {
         let frames = vec![frame];
         // self.body = object;
         let res = self.run(frames);
-        // self.frames.clear();
+
         res
     }
 
@@ -277,18 +306,18 @@ impl<'a> VM {
             // TODO how much faster would it be to order these ops in order of usage, does match hash? probably.
             match instruction {
                 OpCode::RETURN => {
-                    let res = self.pop();
                     frame_count -= 1;
                     if frame_count <= 0 {
-                        return Ok(res);
+                        return Ok(self.safe_pop());
                     }
+                    let res = self.pop();
                     self.stack_top = frame.local_stack;
                     devout!("stack top {}", unsafe { &*self.stack_top });
                     self.stack_count = frame.stack_snapshot;
                     frames.pop();
                     frame = frames.last_mut().unwrap();
                     #[cfg(feature = "dev-out")]
-                    self.print_stack(frame);
+                    self.print_stack();
                     self.push(res);
 
                     // println!("<< {}", self.pop());
@@ -530,7 +559,7 @@ impl<'a> VM {
             //stack
             #[cfg(feature = "dev-out")]
             {
-                self.print_stack(&frame);
+                self.print_stack();
                 println!("---");
             }
         }
@@ -614,9 +643,19 @@ impl<'a> VM {
     //     }
     // }
 
-    pub fn print_stack(&self, frame: &CallFrame) {
+    fn print_raw_stack(&self) {
         println!("=== Stack ({}) ===", self.stack_count);
         // 0 to stack_top
+        print!("[");
+        for i in self.stack.iter() {
+            print!("{} ", i);
+        }
+        print!("]");
+        println!("---");
+    }
+
+    pub fn print_stack(&self) {
+        println!("=== Stack ({}) ===", self.stack_count);
         print!("[");
         let mut c = 0;
         for i in self.stack.iter() {
@@ -626,16 +665,12 @@ impl<'a> VM {
             }
             let s = format!("{:?}", i);
             if s == "nil" {
-                // break;
                 print!("_");
             } else {
                 print!("{} ", i);
             }
-            // print!("{} ", i);
         }
         print!("]");
-        // println!("");
-        // println!("stack_top: {:?}", self.stack_top);
         println!("---");
     }
 }
