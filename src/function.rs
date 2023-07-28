@@ -35,17 +35,19 @@ pub struct CallFrame {
     // ip: *const OpCode
     // pub base: usize,
     // pointer point sinto VM values stack
+    pub stack_snapshot: usize,
     pub local_stack: *mut Value,
     pub ip: *const OpCode,
 }
 
 impl<'frame> CallFrame {
-    pub fn new(function: Rc<FunctionObject>) -> Self {
+    pub fn new(function: Rc<FunctionObject>, stack_snapshot: usize) -> Self {
         let ip = function.chunk.code.as_ptr();
         Self {
             function,
             ip,
             local_stack: std::ptr::null_mut(),
+            stack_snapshot,
         }
     }
 
@@ -64,6 +66,8 @@ impl<'frame> CallFrame {
 
     pub fn get_val(&self, index: u8) -> &Value {
         // &self.stack[index as usize]
+        // println!("get_val: {}", index);
+        // println!("top: {}", unsafe { &*self.local_stack });
         unsafe { &*self.local_stack.add(index as usize) }
     }
 

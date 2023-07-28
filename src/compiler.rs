@@ -14,7 +14,6 @@ pub mod compiler {
     use crate::{
         chunk::Chunk,
         code::OpCode,
-        environment::Environment,
         error::{ErrorTuple, Location, SiltError},
         function::FunctionObject,
         lexer::{Lexer, TokenOption, TokenResult, TokenTuple},
@@ -205,7 +204,7 @@ pub mod compiler {
         pub fn new() -> Compiler {
             // assert!(p.len() == p.len());
             Self {
-                body: FunctionObject::new(None, false),
+                body: FunctionObject::new(None, true),
                 iterator: Lexer::new("".to_string()).peekable(),
                 current: Ok(Token::Nil),
                 previous: Ok(Token::Nil),
@@ -267,6 +266,9 @@ pub mod compiler {
 
         fn write_code(&mut self, byte: OpCode, location: Location) -> usize {
             self.body.chunk.write_code(byte, location)
+        }
+        fn read_last_code(&self) -> &OpCode {
+            self.body.chunk.read_last_code()
         }
         fn write_identifier(&mut self, identifier: Box<String>) -> usize {
             self.body.chunk.write_identifier(identifier)
@@ -402,33 +404,32 @@ pub mod compiler {
 
         /** emit op code at token location */
         fn emit(&mut self, op: OpCode, location: Location) {
-            self.write_code(op, location);
             #[cfg(feature = "dev-out")]
             {
-                println!("emit ...");
+                println!("emit ... {}", op);
                 // self.chunk.print_chunk();
             }
+            self.write_code(op, location);
         }
 
         /** emit op code at current token location */
         fn emit_at(&mut self, op: OpCode) {
-            self.write_code(op, self.current_location);
             #[cfg(feature = "dev-out")]
             {
-                println!("emit_at ...");
+                println!("emit_at ...{}", op);
                 // self.chunk.print_chunk()
             }
+            self.write_code(op, self.current_location);
         }
 
         /** emit op code at current token location and return op index */
         fn emit_index(&mut self, op: OpCode) -> usize {
-            let i = self.write_code(op, self.current_location);
             #[cfg(feature = "dev-out")]
             {
-                println!("emit_index ...");
+                println!("emit_index ... {}", op);
                 // frame.chunk.print_chunk()
             }
-            i
+            self.write_code(op, self.current_location)
         }
 
         /** patch the op code that specified index */
@@ -491,10 +492,10 @@ pub mod compiler {
             }
         }
 
-        fn swap_function(&mut self, func: FunctionObject) -> FunctionObject {
-            // swap(&mut self.body, &mut func);
+        /** replaces the conents of func with the compilers body */
+        fn swap_function(&mut self, mut func: &mut FunctionObject) {
+            swap(&mut self.body, func);
             // func
-            todo!()
         }
 
         // fn get_prev_loc(&self) -> Location {
@@ -700,10 +701,10 @@ pub mod compiler {
                     //local
                     //TODO should we warn? redefine_behavior(this,ident)?
                     add_local(this, ident)?;
-                    typing(this, None, location)?;
+                    typing(this, None)?;
                 } else {
                     let ident = this.identifer_constant(ident); //(self.global.to_register(&ident), 0);
-                    typing(this, Some(ident), location)?;
+                    typing(this, Some((ident, location)))?;
                 }
             }
             Token::Function => {
@@ -733,10 +734,10 @@ pub mod compiler {
             //local
             //TODO should we warn? redefine_behavior(this,ident)?
             add_local(this, ident)?;
-            typing(this, None, location)?;
+            typing(this, None)?;
         } else {
             let ident = this.identifer_constant(ident);
-            typing(this, Some(ident), location)?;
+            typing(this, Some((ident, location)))?;
         }
         Ok(())
     }
@@ -792,6 +793,7 @@ pub mod compiler {
         for (i, l) in this.locals.iter().enumerate().rev() {
             if let Some(local_ident) = &l.ident {
                 if local_ident == ident {
+                    #[cfg(feature = "dev-out")]
                     println!("matched local {}->{} at {}", ident, local_ident, i);
                     return Ok(Some(i as u8));
                 }
@@ -800,7 +802,7 @@ pub mod compiler {
         Ok(None)
     }
 
-    fn typing(this: &mut Compiler, ident: Option<Ident>, location: Location) -> Catch {
+    fn typing(this: &mut Compiler, ident_tuple: Option<(Ident, Location)>) -> Catch {
         devnote!(this "typing");
         if let Token::Colon = this.peek()? {
             // typing or self calling
@@ -818,19 +820,19 @@ pub mod compiler {
                 //     // return self.assign(self.peek(), ident);
                 //     Statement::InvalidStatement
                 // }
-                define_declaration(this, ident, location)?;
+                define_declaration(this, ident_tuple)?;
             } else {
                 todo!("typing");
                 // self.error(SiltError::InvalidColonPlacement);
                 // Statement::InvalidStatement
             }
         } else {
-            define_declaration(this, ident, location)?;
+            define_declaration(this, ident_tuple)?;
         }
         Ok(())
     }
 
-    fn define_declaration(this: &mut Compiler, ident: Option<Ident>, location: Location) -> Catch {
+    fn define_declaration(this: &mut Compiler, ident_tuple: Option<(Ident, Location)>) -> Catch {
         devnote!(this "define_declaration");
         this.store();
         let t = this.get_current()?;
@@ -847,77 +849,63 @@ pub mod compiler {
                 // let tt = t.unwrap().clone(); // TODO
                 // self.error(SiltError::InvalidAssignment(tt));
                 // Statement::InvalidStatement
+                todo!()
             }
             _ => this.emit_at(OpCode::NIL), // TODO are more then just declarations hitting this syntactic sugar?
         }
-        define_variable(this, ident, location)?;
+        define_variable(this, ident_tuple)?;
         Ok(())
     }
 
-    fn define_variable(this: &mut Compiler, ident: Option<Ident>, location: Location) -> Catch {
+    fn define_variable(this: &mut Compiler, ident: Option<(Ident, Location)>) -> Catch {
         devnote!(this "define_variable");
 
         if let Some(ident) = ident {
-            this.emit(OpCode::DEFINE_GLOBAL { constant: ident }, location);
+            this.emit(OpCode::DEFINE_GLOBAL { constant: ident.0 }, ident.1);
         }
         Ok(())
     }
 
     fn define_function(this: &mut Compiler, local: bool, pre_ident: Option<usize>) -> Catch {
-        // self.eat(); // parser callers have already eaten token, they're full! lol
-        // let ident = match pre_ident {
-        //     Some(i) => i,
-        //     None => {
-        //         let (res, location) = this.pop();
-        //         let ident = match res? {
-        //             Token::Identifier(ident) => ident,
-        //             _ => {
-        //                 return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
-        //             }
-        //         };
-        //         define_variable(this, ident, location)?;
-        //         0
-        //     }
-        // };
-        let (res, location) = this.pop();
-        let ident = match res? {
-            Token::Identifier(ident) => ident,
-            _ => {
-                // return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
-                Box::new("anonymous".to_string())
+        let (ident, location) = if let &Token::Identifier(_) = this.peek()? {
+            let (res, location) = this.pop();
+            if let Token::Identifier(ident) = res? {
+                (ident, location)
+            } else {
+                unreachable!()
             }
+        } else {
+            (Box::new("anonymous".to_string()), this.current_location)
         };
+
         let ident_clone = *ident.clone();
-        if this.scope_depth > 0 && local {
+        let global_ident = if this.scope_depth > 0 && local {
             //local
             //TODO should we warn? redefine_behavior(this,ident)?
             add_local(this, ident)?;
+            None
         } else {
-            let ident = this.identifer_constant(ident);
-            define_variable(this, Some(ident), location)?;
-        }
+            let ident = Some((this.identifer_constant(ident), location));
+            ident
+        };
 
-        build_function(this, ident_clone, false)?;
-        // let location = self.get_last_loc();
-        // if let Token::Identifier(ident) = self.eat_out() {
-        //     let ident = (self.global.to_register(&ident), 0);
-        //     let func = self.function_expression(location);
-        //     return Statement::Declare {
-        //         ident,
-        //         local,
-        //         expr: Box::new(func),
-        //     };
-        // }
-        // self.error(SiltError::ExpectedLocalIdentifier);
-        // Statement::InvalidStatement
+        build_function(this, ident_clone, global_ident, false, false)?;
+
         Ok(())
     }
 
-    fn build_function(this: &mut Compiler, ident: String, is_script: bool) -> Catch {
+    /** builds function, implicit return specifices whether a nil is return or the last value popped */
+    fn build_function(
+        this: &mut Compiler,
+        ident: String,
+        global_ident: Option<(u8, Location)>,
+        is_script: bool,
+        implicit_return: bool,
+    ) -> Catch {
         // TODO this function could be called called rercursivelly due to the recursive decent nature of the parser, we should add a check to make sure we don't overflow the stack
         devnote!(this "build_function");
-        let f = FunctionObject::new(Some(ident), is_script);
-        let previous = this.swap_function(f);
+        let mut sidelined_func = FunctionObject::new(Some(ident), is_script);
+        this.swap_function(&mut sidelined_func);
         begin_scope(this);
         expect_token!(this OpenParen);
         let mut arity = 0;
@@ -937,13 +925,29 @@ pub mod compiler {
         }
 
         block(this)?;
+        if let &OpCode::RETURN = this.read_last_code() {
+        } else {
+            // TODO if last was semicolon we also push a nil
+            if !implicit_return {
+                this.emit_at(OpCode::NIL);
+            }
+            this.emit_at(OpCode::RETURN);
+        }
 
-        end_scope(this);
-        let lua_fn = this.swap_function(previous);
-        let constant = this
-            .body
-            .chunk
-            .write_constant(Value::Function(Rc::new(lua_fn))) as u8;
+        // TODO why do we need to eat again? This prevents an expression_statement of "End" being called but block should have eaten it?
+        if let Token::End = this.peek()? {
+            this.eat();
+        }
+
+        end_scope(this, true);
+        // When we're done compiling the function object we drop the current body function back in and push the compiled func as a constant within that body
+        this.swap_function(&mut sidelined_func);
+        let func_value = Value::Function(Rc::new(sidelined_func));
+        this.constant_at(func_value);
+        define_variable(this, global_ident)?;
+        // this.body
+        //     .chunk
+        //     .write_constant(func_value) as u8;
 
         Ok(())
     }
@@ -970,13 +974,22 @@ pub mod compiler {
                 this.eat();
                 begin_scope(this);
                 block(this)?;
-                end_scope(this);
+                end_scope(this, false);
             }
             Token::While => while_statement(this)?,
             Token::For => for_statement(this)?,
+            Token::Return => return_statement(this)?,
             // Token::OpenBrace => block(this),
             Token::ColonColon => set_goto_label(this)?,
             Token::Goto => goto_statement(this)?,
+            Token::SemiColon => {
+                this.eat();
+                // TODO ???
+            }
+            // Token::End => {
+            //     // this.eat();
+            //     // TODO ???
+            // }
             _ => expression_statement(this)?,
         }
         Ok(())
@@ -985,21 +998,6 @@ pub mod compiler {
     fn block(this: &mut Compiler) -> Catch {
         devnote!(this "block");
         build_block_until!(this, End);
-        // while match this.peek()? {
-        //     Token::End => {
-        //         this.eat();
-        //         false
-        //     }
-        //     Token::EOF => {
-        //         return Err(this.error_at(SiltError::UnterminatedBlock));
-        //     }
-        //     _ => {
-        //         declaration(this)?;
-        //         true
-        //     }
-        // } {
-        //     // This space for rent!
-        // }
 
         Ok(())
     }
@@ -1008,14 +1006,16 @@ pub mod compiler {
         this.scope_depth += 1;
     }
 
-    fn end_scope(this: &mut Compiler) {
+    fn end_scope(this: &mut Compiler, skip_code: bool) {
         this.scope_depth -= 1;
         let mut i = 0;
         while !this.locals.is_empty() && this.locals.last().unwrap().depth > this.scope_depth {
             this.locals.pop();
             i += 1;
         }
-        this.emit_at(OpCode::POPN(i));
+        if !skip_code {
+            this.emit_at(OpCode::POPN(i));
+        }
     }
 
     fn if_statement(this: &mut Compiler) -> Catch {
@@ -1061,40 +1061,7 @@ pub mod compiler {
         this.emit_at(OpCode::POP);
         Ok(())
     }
-    // fn for_statement(&mut self) -> Statement {
-    //     // Statement::InvalidStatement
-    //     self.eat();
-    //     let ident = self.eat_out();
-    //     if let Token::Identifier(ident_str) = ident {
-    //         let ident = self.global.to_register(&ident_str);
-    //         expect_token!(self Assign);
-    //         let start = Box::new(self.expression());
-    //         expect_token!(self Comma);
-    //         let end = Box::new(self.expression());
-    //         let step = if let Some(&Token::Comma) = self.peek() {
-    //             self.eat();
-    //             Some(Box::new(self.expression()))
-    //         } else {
-    //             None
-    //         };
-    //         return if let Some(&Token::Do) = self.peek() {
-    //             let block = self.eat_block();
-    //             Statement::NumericFor {
-    //                 ident,
-    //                 start,
-    //                 end,
-    //                 step,
-    //                 block,
-    //             }
-    //         } else {
-    //             self.error(SiltError::ExpectedDo);
-    //             Statement::InvalidStatement
-    //         };
-    //     } else {
-    //         self.error(SiltError::ExpectedLocalIdentifier);
-    //     }
-    //     Statement::InvalidStatement
-    // }
+
     fn for_statement(this: &mut Compiler) -> Catch {
         devnote!(this "for_statement");
         this.eat();
@@ -1138,11 +1105,22 @@ pub mod compiler {
             this.emit_rewind(loop_start);
             this.patch(exit_jump)?;
             this.emit_at(OpCode::POP);
-            end_scope(this);
+            end_scope(this, false);
             Ok(())
         } else {
             Err(this.error_at(SiltError::ExpectedLocalIdentifier))
         }
+    }
+    fn return_statement(this: &mut Compiler) -> Catch {
+        devnote!(this "return_statement");
+        this.eat();
+        if let Token::End | Token::EOF = this.peek()? {
+            this.emit_at(OpCode::NIL);
+        } else {
+            expression(this, false)?;
+        }
+        this.emit_at(OpCode::RETURN);
+        Ok(())
     }
 
     fn set_goto_label(this: &mut Compiler) -> Catch {
@@ -1524,17 +1502,19 @@ pub mod compiler {
         //     this.emit(OpCode::CALL { arg_count }, l);
         // }
         let start = this.current_location;
-        this.eat();
         let arg_count = arguments(this, start)?;
+        this.emit(OpCode::CALL(arg_count), start);
         Ok(())
     }
 
     fn arguments(this: &mut Compiler, start: Location) -> Result<u8, ErrorTuple> {
-        this.eat();
+        devnote!(this "arguments");
+        // this.eat();
         let mut args = 0;
         if !matches!(this.peek()?, &Token::CloseParen) {
             while {
                 expression(this, false)?;
+                args += 1;
                 if let &Token::Comma = this.peek()? {
                     this.eat();
                     true
@@ -1542,7 +1522,6 @@ pub mod compiler {
                     false
                 }
             } {
-                args += 1;
                 if args >= 255 {
                     return Err(this.error_at(SiltError::TooManyParameters));
                 }

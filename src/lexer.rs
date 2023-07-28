@@ -69,38 +69,47 @@ impl<'a> Lexer {
             // locations: Vec::new(),
         }
     }
+
     fn set_start(&mut self) {
         self.start = self.current;
         self.column_start = self.column;
     }
+
     fn eat(&mut self) {
         self.current += 1;
         self.column += 1;
         self.iterator.next();
     }
+
     fn eat_out(&mut self) -> Option<char> {
         self.current += 1;
         self.column += 1;
         self.iterator.next()
     }
+
     fn peek(&mut self) -> Option<&char> {
         self.iterator.peek()
     }
+
     fn _error(&mut self, code: SiltError) -> TokenResult {
         Err(ErrorTuple {
             code,
             location: (self.line, self.start),
         })
     }
+
     fn error(&mut self, code: SiltError) -> TokenOption {
         Some(self._error(code))
     }
+
     // pub fn get_errors(&mut self) -> Vec<ErrorTuple> {
     //     self.error_list.drain(..).collect()
     // }
+
     fn _send(&mut self, token: Token) -> TokenResult {
         Ok((token, (self.line, self.column_start + 1)))
     }
+
     fn send(&mut self, token: Token) -> TokenOption {
         // self.tokens.push(token);
         // self.locations.push((self.line, self.column_start + 1)); // add 1 because column_start is 0-indexed
@@ -111,24 +120,29 @@ impl<'a> Lexer {
         self.eat();
         self.send(token)
     }
+
     fn eat_eat_send(&mut self, token: Token) -> TokenOption {
         self.eat();
         self.eat();
         self.send(token)
     }
+
     // fn maybe_add(&mut self, token: Option<Token>) {
     //     if let Some(t) = token {
     //         self.tokens.push(t);
     //         self.locations.push((self.line, self.column));
     //     }
     // }
+
     fn new_line(&mut self) {
         self.line += 1;
         self.column = 0;
     }
+
     fn get_sofar(&self) -> String {
         self.source[self.start..self.current].to_string()
     }
+
     fn number(&mut self, prefix_dot: bool) -> TokenOption {
         if prefix_dot {
             self.start = self.current - 1;
@@ -227,6 +241,7 @@ impl<'a> Lexer {
         let cc = self.source[self.start..self.current - 1].to_string();
         self.send(Token::StringLiteral(cc.into_boxed_str()))
     }
+
     fn multi_line_string(&mut self) -> TokenOption {
         self.column_start = self.column;
         self.eat();
@@ -258,6 +273,7 @@ impl<'a> Lexer {
         let cc = self.source[self.start..self.current - 2].to_string();
         self.send(Token::StringLiteral(cc.into_boxed_str()))
     }
+
     fn word_eater(&mut self) {
         while self.current < self.end {
             match self.peek() {
@@ -269,6 +285,7 @@ impl<'a> Lexer {
             }
         }
     }
+
     fn get_flag(&mut self) -> TokenOption {
         // let mut words = vec![];
         self.mode = Mode::Flag;
@@ -298,6 +315,7 @@ impl<'a> Lexer {
         }
         None
     }
+
     /** Follow up a colon to determine if an identifer is listed, this may be either a typing or a method determined by context */
     fn colon_blow(&mut self) -> TokenOption {
         while let Some(' ' | '\r' | '\t') = self.peek() {
@@ -323,6 +341,7 @@ impl<'a> Lexer {
     //         self.locations.drain(..).collect(),
     //     )
     // }
+
     pub fn step(&mut self) -> TokenOption {
         while self.current < self.end {
             let char = match self.peek() {

@@ -28,6 +28,9 @@ impl Chunk {
         self.locations.push(location);
         self.code.len() - 1
     }
+    pub fn read_last_code(&self) -> &OpCode {
+        self.code.last().unwrap()
+    }
 
     pub fn write_constant(&mut self, value: Value) -> usize {
         self.constants.push(value);
@@ -68,8 +71,11 @@ impl Chunk {
     // fn add_constant(&mut self, value: Value) -> usize {
     //     self.constants.write_value(value)
     // }
-    pub fn print_chunk(&self) {
-        println!("=== Chunk ===");
+    pub fn print_chunk(&self, name: Option<String>) {
+        match name {
+            Some(n) => println!("=== Chunk ({}) ===", n),
+            None => println!("=== Root Chunk ==="),
+        }
         println!("code chunk: {}", self.code.len());
         let mut last = 0;
         for (i, c) in self.code.iter().enumerate() {
@@ -96,6 +102,19 @@ impl Chunk {
             println!(":{:02} | {} {}", l.1, c, constant);
             last = l.0;
         }
+        println!("constants: {}", self.constants.len());
+        self.constants.iter().for_each(|c| {
+            print!("  {},", c);
+        });
+        println!();
+        self.constants.iter().for_each(|c| {
+            if let Value::Function(f) = c {
+                f.chunk.print_chunk(match &f.name {
+                    Some(n) => Some(n.clone()),
+                    None => Some("anon-fn".to_string()),
+                });
+            }
+        });
     }
 
     pub fn free(&mut self) {

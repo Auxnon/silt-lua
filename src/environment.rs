@@ -1,12 +1,11 @@
 // use rustc_hash::FxHashMap as HashMap;
 // use hashbrown::HashMap;
-use ahash::{AHasher, RandomState};
 use std::{cell::RefCell, collections::HashMap, rc::Rc, vec};
 // use std::println;
 
 use crate::{expression::Ident, value::Value};
 
-pub type Scope = Rc<RefCell<HashMap<usize, Value, RandomState>>>;
+pub type Scope = Rc<RefCell<HashMap<usize, Value>>>;
 
 pub struct Environment {
     pub variables: Vec<Scope>,

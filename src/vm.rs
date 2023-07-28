@@ -152,7 +152,7 @@ macro_rules! binary_op {
 pub struct VM {
     body: Rc<FunctionObject>,
     // frames: Vec<CallFrame>,
-    dummy_frame: CallFrame,
+    // dummy_frame: CallFrame,
     /** Instruction to be run at start of loop  */
     // ip: *const OpCode, // TODO usize vs *const OpCode, will rust optimize the same?
     // stack: Vec<Value>, // TODO fixed size array vs Vec
@@ -181,7 +181,7 @@ impl<'a> VM {
         // let stack_top = stack.as_ptr() as *mut Value;
         Self {
             body: Rc::new(FunctionObject::new(None, false)),
-            dummy_frame: CallFrame::new(Rc::new(FunctionObject::new(None, false))),
+            // dummy_frame: CallFrame::new(Rc::new(FunctionObject::new(None, false))),
             // frames: vec![],
             // ip: 0 as *const OpCode,
             // stack, //: unsafe { *stack },
@@ -198,6 +198,7 @@ impl<'a> VM {
         self.stack_top = unsafe { self.stack_top.add(1) };
         self.stack_count += 1;
     }
+
     /** pop N number of values from stack */
     fn popn(&mut self, n: u8) {
         unsafe { self.stack_top = self.stack_top.sub(n as usize) };
@@ -222,27 +223,23 @@ impl<'a> VM {
 
         unsafe { self.stack_top.sub(1).read() }
     }
+
     /** Safer but clones! */
     fn duplicate(&self) -> Value {
         self.read_top().clone()
     }
 
+    /** Look and get immutable reference to top of stack */
     fn peek(&self) -> &Value {
         // self.stack.last()
         unsafe { &*self.stack_top.sub(1) }
     }
 
-    // TODO may as well make it unsafe, our compiler should take the burden of correctness
-    // fn peek0(&self) -> &Value {
-    //     // unsafe { *self.stack_top.sub(1) }
-    //     // self.stack.last().unwrap()
-    //     unsafe { &*self.stack }
-    // }
-
+    /** Look down N amount of stack and return immutable reference */
     fn peekn(&self, n: u8) -> &Value {
         // unsafe { *self.stack_top.sub(n as usize) }
         // &self.stack[self.stack.len() - n as usize]
-        unsafe { &*self.stack_top.sub(n as usize) }
+        unsafe { &*self.stack_top.sub((n as usize) + 1) }
     }
 
     pub fn interpret(&mut self, object: Rc<FunctionObject>) -> Result<Value, SiltError> {
@@ -253,7 +250,7 @@ impl<'a> VM {
         // let rstack = self.stack.as_ptr();
         self.stack_top = self.stack.as_mut_ptr() as *mut Value;
         self.body = object.clone();
-        let mut frame = CallFrame::new(self.body.clone());
+        let mut frame = CallFrame::new(self.body.clone(), 0);
         frame.ip = object.chunk.code.as_ptr();
         frame.local_stack = self.stack_top;
         // frame.stack.resize(256, Value::Nil); // TODO
@@ -268,8 +265,9 @@ impl<'a> VM {
     fn run(&mut self, mut frames: Vec<CallFrame>) -> Result<Value, SiltError> {
         let mut last = Value::Nil; // TODO temporary for testing
                                    // let stack_pointer = self.stack.as_mut_ptr();
-        let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)));
+                                   // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
         let mut frame = frames.last_mut().unwrap();
+        let mut frame_count = 1;
         loop {
             let instruction = frame.current_instruction();
 
@@ -279,15 +277,28 @@ impl<'a> VM {
             // TODO how much faster would it be to order these ops in order of usage, does match hash? probably.
             match instruction {
                 OpCode::RETURN => {
+                    let res = self.pop();
+                    frame_count -= 1;
+                    if frame_count <= 0 {
+                        return Ok(res);
+                    }
+                    self.stack_top = frame.local_stack;
+                    devout!("stack top {}", unsafe { &*self.stack_top });
+                    self.stack_count = frame.stack_snapshot;
+                    frames.pop();
+                    frame = frames.last_mut().unwrap();
+                    #[cfg(feature = "dev-out")]
+                    self.print_stack(frame);
+                    self.push(res);
+
                     // println!("<< {}", self.pop());
                     // match self.pop() {
                     //     Some(v) => return Ok(v),
                     //     None => return Ok(last),
                     // }
-                    return Ok(self.pop());
                 }
                 OpCode::CONSTANT { constant } => {
-                    let value = self.get_chunk().get_constant(*constant);
+                    let value = Self::get_chunk(&frame).get_constant(*constant);
                     devout!("CONSTANT value {}", value);
                     self.push(value.clone());
                     // match value {
@@ -299,8 +310,9 @@ impl<'a> VM {
                 OpCode::DEFINE_GLOBAL { constant } => {
                     let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
-                        unsafe { self.stack_top = self.stack_top.sub(1) };
+                        // DEV inline pop due to self lifetime nonsense
                         self.stack_count -= 1;
+                        unsafe { self.stack_top = self.stack_top.sub(1) };
                         let v = unsafe { self.stack_top.read() };
 
                         // let v = self.pop();
@@ -329,7 +341,7 @@ impl<'a> VM {
                     }
                 }
                 OpCode::GET_GLOBAL { constant } => {
-                    let value = self.get_chunk().get_constant(*constant);
+                    let value = Self::get_chunk(&frame).get_constant(*constant);
                     if let Value::String(s) = value {
                         if let Some(v) = self.globals.get(&**s) {
                             self.push(v.clone());
@@ -461,6 +473,7 @@ impl<'a> VM {
                 OpCode::POPN(n) => self.popn(*n), //TODO here's that 255 local limit again
                 OpCode::GOTO_IF_FALSE(offset) => {
                     let value = self.peek();
+                    // println!("GOTO_IF_FALSE: {}", value);
                     if !Self::is_truthy(value) {
                         frame.forward(*offset);
                     }
@@ -479,18 +492,26 @@ impl<'a> VM {
                 }
                 OpCode::CALL(param_count) => {
                     let value = self.peekn(*param_count);
+                    devout!("CALL: {}", value);
                     if let Value::Function(f) = value {
                         // let vv = f.as_ref();
                         // let new_frame =
                         // drop(frame);
                         // drop(self.ip);
 
-                        frame = &mut dummy_frame;
-                        let new_frame = CallFrame::new(f.clone());
+                        // frame = &mut dummy_frame;
+                        let frame_top = unsafe { self.stack_top.sub((*param_count as usize) + 1) };
+                        let new_frame = CallFrame::new(
+                            f.clone(),
+                            self.stack_count - (*param_count as usize) - 1,
+                        );
+                        devout!("current stack count {}", frame.stack_snapshot);
                         frames.push(new_frame);
+                        frame_count += 1;
                         frame = frames.last_mut().unwrap();
 
-                        // frame.stack = self.stack.as_mut_ptr();
+                        frame.local_stack = frame_top;
+                        devout!("top of frame stack {}", unsafe { &*frame.local_stack });
                         // frame.ip = f.chunk.code.as_ptr();
                         // // frame.stack.resize(256, Value::Nil); // TODO
                         // self.push(Value::Function(f.clone())); // TODO this needs to store the function object itself somehow, RC?
@@ -517,8 +538,8 @@ impl<'a> VM {
 
     // TODO is having a default empty chunk cheaper?
     /** We're operating on the assumtpion a chunk is always present when using this */
-    fn get_chunk(&self) -> &Chunk {
-        &self.body.chunk
+    fn get_chunk(frame: &CallFrame) -> &Chunk {
+        &frame.function.chunk
     }
 
     // pub fn reset_stack(&mut self) {
@@ -529,6 +550,7 @@ impl<'a> VM {
     // }
 
     fn is_truthy(v: &Value) -> bool {
+        // println!("is_truthy: {}", v);
         match v {
             Value::Bool(b) => *b,
             Value::Nil => false,
@@ -567,7 +589,10 @@ impl<'a> VM {
     fn is_greater(l: &Value, r: &Value) -> Result<bool, SiltError> {
         Ok(match (l, r) {
             (Value::Number(left), Value::Number(right)) => left > right,
-            (Value::Integer(left), Value::Integer(right)) => left > right,
+            (Value::Integer(left), Value::Integer(right)) => {
+                // println!(" is {} > {}", left, right);
+                left > right
+            }
             (Value::Number(left), Value::Integer(right)) => *left > *right as f64,
             (Value::Integer(left), Value::Number(right)) => (*left as f64) > (*right),
             (Value::Infinity(left), Value::Infinity(right)) => left != right && !*left,
@@ -579,15 +604,15 @@ impl<'a> VM {
         })
     }
 
-    /** unsafe as hell, we're relying on compiler*/
-    fn read_string(&mut self, constant: u8) -> String {
-        let value = self.get_chunk().get_constant(constant);
-        if let Value::String(s) = value {
-            return s.to_string();
-        } else {
-            unreachable!("Only strings can be identifiers")
-        }
-    }
+    // /** unsafe as hell, we're relying on compiler*/
+    // fn read_string(&mut self, constant: u8) -> String {
+    //     let value = self.get_chunk().get_constant(constant);
+    //     if let Value::String(s) = value {
+    //         return s.to_string();
+    //     } else {
+    //         unreachable!("Only strings can be identifiers")
+    //     }
+    // }
 
     pub fn print_stack(&self, frame: &CallFrame) {
         println!("=== Stack ({}) ===", self.stack_count);

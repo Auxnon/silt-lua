@@ -198,23 +198,66 @@ fn main() {
     end
     sprint a
     "#;
-    // let source_in = r#"
-    // do
-    // local a=3
-    // sprint a
-    // end
-    // sprint a
-    // "#;
+    let source_in = r#"
+    do
+    local a=3
+    sprint a
+    end
+    sprint a
+    "#;
     // REMEMBER 10,000,000 takes about ~6.47 seconds
-    // let source_in = r#"
-    // do
-    // local a=1
-    // while a<= 10 do
-    //     a=a+1
-    // end
-    //     sprint a
-    // end
-    // "#;
+    let source_in = r#"
+    do
+    local a=1
+    while a<= 10_000_000 do
+        a=a+1
+    end
+        sprint a
+    end
+    "#;
+
+    let source_in = r#"
+    "#;
+
+    let source_in = r#"
+    local d=5
+    function sum()
+    local a=1
+    local b=2
+    local c=3
+    return a+b+c+d+8
+    end
+
+    return sum()
+    "#;
+
+    let source_in = r#"
+        function fib(n)
+            if n <= 1 then
+            return n
+            else
+                return fib(n-1) + fib(n-2)
+            end
+        end
+        return fib(2)
+
+        --for i = 1, 25 do
+          --  sprint i..":"..fib(i)
+        --end
+    "#;
+
+    let source_in = r#"
+    global g=2
+    function is1(n)
+        if n==1 then
+            return 'ye'
+        else
+            return 'naw'
+        end
+    end
+    return is1(1)
+    "#;
+
     // let source_in = r#"
     // do
     // local a=5
@@ -243,19 +286,27 @@ fn main() {
     let mut compiler = Compiler::new();
     let o = compiler.compile(source_in.to_string());
 
-    o.chunk.print_chunk();
+    #[cfg(feature = "dev-out")]
+    o.chunk.print_chunk(None);
     compiler.print_errors();
     if o.chunk.is_valid() {
         println!("-----------------");
         let mut vm = VM::new();
-        if let Err(e) = vm.interpret(Rc::new(o)) {
-            println!("{}", e);
+
+        match vm.interpret(Rc::new(o)) {
+            Ok(o) => {
+                println!("-----------------");
+                println!(">> {}", o);
+            }
+            Err(e) => {
+                println!("!!Err:{}", e);
+            }
         }
     }
 }
 
 fn simple(source: &str) -> Value {
-    let mut global = environment::Environment::new();
+    // let mut global = environment::Environment::new();
     let mut compiler = Compiler::new();
     let o = compiler.compile(source.to_string());
     if o.chunk.is_valid() {
@@ -461,7 +512,34 @@ mod tests {
         // };
         // assert!(n < 2.14)
     }
+    #[test]
+    fn fibby() {
+        let source_in = r#"
+        function fib(n)
+            if n <= 1 then
+            return n
+            else
+                return fib(n-1) + fib(n-2)
+            end
+        end
+      
+        for i = 1, 25 do
+            sprint i..":"..fib(i)
+        end
+    "#;
+        println!("{}", simple(source_in));
 
+        // let n = if let crate::value::Value::Number(n) = crate::cli(
+        //     source_in,
+        //     &mut crate::environment::Environment::new_with_std(),
+        // ) {
+        //     println!("{} seconds", n);
+        //     n
+        // } else {
+        //     999999.
+        // };
+        // assert!(n < 3.4)
+    }
     #[test]
     fn fib() {
         let source_in = r#"
@@ -480,6 +558,8 @@ mod tests {
       elapsed=clock()-start
       elapsed
     "#;
+        println!("{}", simple(source_in));
+
         // let n = if let crate::value::Value::Number(n) = crate::cli(
         //     source_in,
         //     &mut crate::environment::Environment::new_with_std(),
@@ -501,7 +581,7 @@ mod tests {
         c.write_code(OpCode::DIVIDE, (1, 5));
         c.write_code(OpCode::NEGATE, (1, 1));
         c.write_code(OpCode::RETURN, (1, 3));
-        c.print_chunk();
+        c.print_chunk(None);
         println!("-----------------");
         let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);

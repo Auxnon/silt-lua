@@ -46,11 +46,19 @@ impl std::fmt::Display for Value {
             Value::Infinity(_) => write!(f, "inf"),
             Value::NativeFunction(_) => write!(f, "native_function"),
             Value::Function(ff) => {
-                write!(
-                    f,
-                    "fn {}()",
-                    ff.name.as_ref().unwrap_or(&"anonymous".to_string())
-                )
+                if ff.is_script {
+                    write!(
+                        f,
+                        "module {}",
+                        ff.name.as_ref().unwrap_or(&"root".to_string())
+                    )
+                } else {
+                    write!(
+                        f,
+                        "fn {}()",
+                        ff.name.as_ref().unwrap_or(&"anonymous".to_string())
+                    )
+                }
             }
             Value::Table(t) => write!(f, "table: {}", t.id),
         }
