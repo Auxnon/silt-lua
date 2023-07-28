@@ -239,24 +239,24 @@ fn main() {
                 return fib(n-1) + fib(n-2)
             end
         end
-        return fib(2)
+        -- return fib(21)
 
-        --for i = 1, 25 do
-          --  sprint i..":"..fib(i)
-        --end
-    "#;
-
-    let source_in = r#"
-    global g=2
-    function is1(n)
-        if n==1 then
-            return 'ye'
-        else
-            return 'naw'
+        for i = 1, 35 do
+            sprint i..":"..fib(i)
         end
-    end
-    return is1(1)
     "#;
+
+    // let source_in = r#"
+    // global g=2
+    // function is1(n)
+    //     if n==1 then
+    //         return 'ye'
+    //     else
+    //         return 'naw'
+    //     end
+    // end
+    // return is1(1)
+    // "#;
 
     // let source_in = r#"
     // do
@@ -523,7 +523,7 @@ mod tests {
             end
         end
       
-        for i = 1, 25 do
+        for i = 1, 35 do
             sprint i..":"..fib(i)
         end
     "#;
