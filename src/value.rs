@@ -2,7 +2,11 @@ use std::rc::Rc;
 
 use hashbrown::HashMap;
 
-use crate::{environment::Environment, error::ErrorTypes, function::FunctionObject};
+use crate::{
+    error::ErrorTypes,
+    function::{FunctionObject, NativeObject},
+    vm::VM,
+};
 
 pub enum Value {
     Nil,
@@ -23,7 +27,7 @@ pub enum Value {
     Function(Rc<FunctionObject>), // closure: Environment,
 
     // Func(fn(Vec<Value>) -> Value)
-    NativeFunction(fn(&mut Environment, Vec<Value>) -> Value),
+    NativeFunction(Rc<NativeObject>),
     // UserData
 }
 
@@ -116,7 +120,7 @@ impl Clone for Value {
             Value::Nil => Value::Nil,
             Value::String(s) => Value::String(s.clone()),
             Value::Infinity(b) => Value::Infinity(*b),
-            Value::NativeFunction(f) => Value::NativeFunction(*f),
+            Value::NativeFunction(f) => Value::NativeFunction(f.clone()),
             // TODO: implement this
             Value::Function(r) => Value::Function(Rc::clone(r)),
             Value::Table(t) => Value::Table(Reference {
@@ -137,8 +141,8 @@ impl PartialEq for Value {
             (Value::String(i), Value::String(j)) => i == j,
             (Value::Infinity(i), Value::Infinity(j)) => i == j,
             (Value::NativeFunction(i), Value::NativeFunction(j)) => {
-                i as *const fn(&mut Environment, Vec<Value>) -> Value
-                    == j as *const fn(&mut Environment, Vec<Value>) -> Value
+                i.function as *const fn(&mut VM, Vec<Value>) -> Value
+                    == j.function as *const fn(&mut VM, Vec<Value>) -> Value
             }
             (Value::Function(i), Value::Function(j)) => Rc::ptr_eq(i, j),
             (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i.value, &j.value),

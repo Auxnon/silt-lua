@@ -222,6 +222,17 @@ impl<'a> VM {
         v
     }
 
+    // TODO can we make this faster with slices? can we slice a pointer? 🤔
+    fn popn(&mut self, n: u8) -> Vec<Value> {
+        println!("popn: {}", n);
+        let mut values = vec![];
+        for _ in 0..n {
+            values.push(self.pop());
+        }
+        values.reverse();
+        values
+    }
+
     fn safe_pop(&mut self) -> Value {
         // let v3 = take(&mut self.stack[3]);
         // println!("we took {}", v3);
@@ -308,6 +319,9 @@ impl<'a> VM {
                 OpCode::RETURN => {
                     frame_count -= 1;
                     if frame_count <= 0 {
+                        if self.stack_count <= 1 {
+                            return Ok(Value::Nil);
+                        }
                         return Ok(self.safe_pop());
                     }
                     let res = self.pop();
@@ -424,18 +438,18 @@ impl<'a> VM {
                 }
                 OpCode::NEGATE => {
                     match self.peek() {
-                        (Value::Number(n)) => {
+                        Value::Number(n) => {
                             let f = -n;
                             self.pop();
                             self.push(Value::Number(f))
                         }
-                        (Value::Integer(i)) => {
+                        Value::Integer(i) => {
                             let f = -i;
                             self.pop();
                             self.push(Value::Integer(f))
                         }
                         // None => Err(SiltError::EarlyEndOfFile)?,
-                        (c) => Err(SiltError::ExpInvalidNegation(c.to_error()))?,
+                        c => Err(SiltError::ExpInvalidNegation(c.to_error()))?,
                     }
                     // TODO  test this vs below: unsafe { *self.stack_top = -*self.stack_top };
                 }
@@ -499,7 +513,7 @@ impl<'a> VM {
                 OpCode::POP => {
                     last = self.pop();
                 }
-                OpCode::POPN(n) => self.popn(*n), //TODO here's that 255 local limit again
+                OpCode::POPN(n) => self.popn_drop(*n), //TODO here's that 255 local limit again
                 OpCode::GOTO_IF_FALSE(offset) => {
                     let value = self.peek();
                     // println!("GOTO_IF_FALSE: {}", value);
@@ -522,14 +536,10 @@ impl<'a> VM {
                 OpCode::CALL(param_count) => {
                     let value = self.peekn(*param_count);
                     devout!("CALL: {}", value);
-                    if let Value::Function(f) = value {
-                        // let vv = f.as_ref();
-                        // let new_frame =
-                        // drop(frame);
-                        // drop(self.ip);
-
-                        // frame = &mut dummy_frame;
-                        let frame_top = unsafe { self.stack_top.sub((*param_count as usize) + 1) };
+                    match value {
+                        Value::Function(f) => {
+                            let frame_top =
+                                unsafe { self.stack_top.sub((*param_count as usize) + 1) };
                         let new_frame = CallFrame::new(
                             f.clone(),
                             self.stack_count - (*param_count as usize) - 1,
@@ -544,11 +554,22 @@ impl<'a> VM {
                         // frame.ip = f.chunk.code.as_ptr();
                         // // frame.stack.resize(256, Value::Nil); // TODO
                         // self.push(Value::Function(f.clone())); // TODO this needs to store the function object itself somehow, RC?
-
-                        // self.frames.push(frame);
+                        }
+                        Value::NativeFunction(_) => {
+                            // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
+                            let mut args = self.popn(*param_count + 1);
+                            if let Value::NativeFunction(f) = args.remove(0) {
+                                let res = ((*f).function)(self, args);
+                                // self.popn_drop(*param_count);
+                                self.push(res);
                     } else {
+                                unreachable!();
+                            }
+                        }
+                        _ => {
                         return Err(SiltError::NotCallable(format!("Value: {}", value)));
                     }
+                }
                 }
                 OpCode::PRINT => {
                     println!("<<<<<< {} >>>>>>>", self.pop());
@@ -642,6 +663,16 @@ impl<'a> VM {
     //         unreachable!("Only strings can be identifiers")
     //     }
     // }
+
+    pub fn register_native_function(
+        &mut self,
+        name: &str,
+        function: fn(&mut Self, Vec<Value>) -> Value,
+    ) {
+        let fn_obj = Rc::new(NativeObject::new(name.to_string(), function));
+        self.globals
+            .insert(name.to_string(), Value::NativeFunction(fn_obj));
+    }
 
     fn print_raw_stack(&self) {
         println!("=== Stack ({}) ===", self.stack_count);

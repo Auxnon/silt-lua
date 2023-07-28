@@ -6,27 +6,8 @@ use crate::{
     environment::{Environment, Scope},
     statement::Statement,
     value::Value,
+    vm::VM,
 };
-
-trait Callable {
-    fn call(&self, global: &mut Environment, args: Vec<Value>) -> Value;
-}
-
-pub struct Function {
-    pub params: Vec<usize>,
-    pub body: Vec<Statement>,
-}
-
-impl Function {
-    pub fn new(params: Vec<usize>, body: Vec<Statement>) -> Self {
-        Self { params, body }
-    }
-}
-
-pub struct ScopedFunction {
-    pub func: Rc<Function>,
-    pub scope: Vec<Scope>,
-}
 
 /////////////
 ///
@@ -153,12 +134,21 @@ impl FunctionObject {
     }
 }
 
-impl ScopedFunction {
-    pub fn new(scope: Vec<Scope>, func: Rc<Function>) -> Self {
-        Self { func, scope }
-    }
+// NATIVE
+trait Callable {
+    fn call(&self, global: &mut Environment, args: Vec<Value>) -> Value;
 }
 
+pub struct Function {
+    pub params: Vec<usize>,
+    pub body: Vec<Statement>,
+}
+
+impl Function {
+    pub fn new(params: Vec<usize>, body: Vec<Statement>) -> Self {
+        Self { params, body }
+    }
+}
 impl Callable for Function {
     fn call(&self, global: &mut Environment, args: Vec<Value>) -> Value {
         // let mut env = Environment::new();
@@ -174,5 +164,16 @@ impl Callable for Function {
         //     }
         // }
         Value::Nil
+    }
+}
+
+pub struct NativeObject {
+    name: String,
+    pub function: fn(&mut VM, Vec<Value>) -> Value,
+}
+
+impl NativeObject {
+    pub fn new(name: String, function: fn(&mut VM, Vec<Value>) -> Value) -> Self {
+        Self { name, function }
     }
 }
