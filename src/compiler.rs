@@ -434,7 +434,7 @@ pub mod compiler {
 
         /** patch the op code that specified index */
         fn patch(&mut self, offset: usize) -> Catch {
-            let jump = self.get_chunk().code.len() - offset;
+            let jump = self.get_chunk().code.len() - offset - 1;
             if jump > u16::MAX as usize {
                 self.error_at(SiltError::TooManyOperations);
             }
@@ -1027,11 +1027,13 @@ pub mod compiler {
         // statement(this)?;
         this.emit_at(OpCode::POP);
         build_block_until!(this, End | Else | ElseIf);
+        // let else_jump = this.emit_index(OpCode::FORWARD(0));
         this.patch(index)?;
+        this.emit_at(OpCode::POP);
         match this.peek()? {
             Token::Else => {
                 this.eat();
-                this.emit_at(OpCode::POP);
+                // this.emit_at(OpCode::POP);
                 let index = this.emit_index(OpCode::FORWARD(0));
                 build_block_until!(this, End);
                 this.patch(index)?;
