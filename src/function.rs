@@ -4,9 +4,9 @@ use crate::{
     chunk::Chunk,
     code::OpCode,
     environment::{Environment, Scope},
+    silt::SiltLua,
     statement::Statement,
     value::Value,
-    vm::VM,
 };
 
 /////////////
@@ -169,11 +169,11 @@ impl Callable for Function {
 
 pub struct NativeObject {
     name: String,
-    pub function: fn(&mut VM, Vec<Value>) -> Value,
+    pub function: fn(&mut SiltLua, Vec<Value>) -> Value,
 }
 
 impl NativeObject {
-    pub fn new(name: String, function: fn(&mut VM, Vec<Value>) -> Value) -> Self {
+    pub fn new(name: String, function: fn(&mut SiltLua, Vec<Value>) -> Value) -> Self {
         Self { name, function }
     }
 }

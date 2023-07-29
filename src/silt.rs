@@ -154,7 +154,7 @@ macro_rules! binary_op {
         }
     };
 }
-pub struct VM {
+pub struct SiltLua {
     body: Rc<FunctionObject>,
     compiler: Compiler,
     // frames: Vec<CallFrame>,
@@ -173,7 +173,7 @@ pub struct VM {
                                                 // TODO should we store all strings in their own table/array for better equality checks? is this cheaper?
 }
 
-impl<'a> VM {
+impl<'a> SiltLua {
     pub fn new() -> Self {
         // TODO try the hard way
         // force array to be 256 Values

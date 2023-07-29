@@ -1,7 +1,7 @@
 use core::panic;
 use std::{rc::Rc, vec};
 
-use silt_lua::{compiler::Compiler, standard, vm::VM};
+use silt_lua::{compiler::Compiler, silt::SiltLua, standard};
 
 fn main() {
     {
@@ -285,7 +285,7 @@ fn main() {
     // o.chunk.print_chunk(None);
     // compiler.print_errors();
 
-    let mut vm = VM::new();
+    let mut vm = SiltLua::new();
     vm.load_standard_library();
     match vm.run(source_in) {
         Ok(o) => {

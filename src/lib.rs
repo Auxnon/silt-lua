@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use compiler::Compiler;
+use silt::SiltLua;
 use value::Value;
-use vm::VM;
 
 mod chunk;
 mod code;
@@ -14,15 +14,15 @@ mod function;
 mod lexer;
 mod parser;
 mod resolver;
+pub mod silt;
 pub mod standard;
 mod statement;
 mod token;
 mod userdata;
 pub mod value;
-pub mod vm;
 
 fn simple(source: &str) -> Value {
-    let mut vm = VM::new();
+    let mut vm = SiltLua::new();
     vm.load_standard_library();
     match vm.run(source) {
         Ok(v) => v,
@@ -53,10 +53,11 @@ mod tests {
         chunk::Chunk,
         code::{self, OpCode},
         function::FunctionObject,
-        parser, simple,
+        parser,
+        silt::SiltLua,
+        simple,
         token::Token,
         value::Value,
-        vm::VM,
     };
     use std::{mem::size_of, println, rc::Rc};
 
@@ -232,7 +233,7 @@ mod tests {
         let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
-        let mut vm = VM::new();
+        let mut vm = SiltLua::new();
         if let Err(e) = vm.execute(Rc::new(tester)) {
             println!("{}", e);
         }

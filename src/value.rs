@@ -5,7 +5,7 @@ use hashbrown::HashMap;
 use crate::{
     error::ErrorTypes,
     function::{FunctionObject, NativeObject},
-    vm::VM,
+    silt::SiltLua,
 };
 
 pub enum Value {
@@ -141,8 +141,8 @@ impl PartialEq for Value {
             (Value::String(i), Value::String(j)) => i == j,
             (Value::Infinity(i), Value::Infinity(j)) => i == j,
             (Value::NativeFunction(i), Value::NativeFunction(j)) => {
-                i.function as *const fn(&mut VM, Vec<Value>) -> Value
-                    == j.function as *const fn(&mut VM, Vec<Value>) -> Value
+                i.function as *const fn(&mut SiltLua, Vec<Value>) -> Value
+                    == j.function as *const fn(&mut SiltLua, Vec<Value>) -> Value
             }
             (Value::Function(i), Value::Function(j)) => Rc::ptr_eq(i, j),
             (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i.value, &j.value),

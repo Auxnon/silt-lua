@@ -19,6 +19,28 @@ This has been written from the ground up with observations of the lua langauge a
 
 ## Examples
 
-```lua
+```rust
 
+let source_in = r#"
+local d=5
+function sum()
+local a=1
+local b=2
+local c=3
+return a+b+c+d+8
+end
+
+return sum()
+"#;
+
+let mut vm = SiltLua::new();
+vm.load_standard_library();
+match vm.run(source_in) {
+    Ok(value) => {
+        println!(">> {}", value);
+    }
+    Err(e) => {
+        e.iter().for_each(|e| println!("!!Err: {}", e));
+    }
+}
 ```
