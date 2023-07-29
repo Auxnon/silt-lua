@@ -198,6 +198,7 @@ pub struct Compiler {
     pending_gotos: Vec<(String, usize, Location)>,
     extra: bool, // pub global: &'a mut Environment,
 }
+
 impl<'a> Compiler {
     pub fn new() -> Compiler {
         // assert!(p.len() == p.len());
@@ -223,6 +224,7 @@ impl<'a> Compiler {
             extra: true,
         }
     }
+
     /** syntax error with code at location */
     fn error_syntax(&mut self, code: SiltError, location: Location) -> ErrorTuple {
         self.valid = false;
@@ -241,6 +243,7 @@ impl<'a> Compiler {
             println!("!!{} at {}:{}", e.code, e.location.0, e.location.1);
         }
     }
+
     pub fn error_string(&self) -> String {
         let mut s = String::new();
         for e in &self.errors {
@@ -261,15 +264,19 @@ impl<'a> Compiler {
     pub fn get_errors(&self) -> &Vec<ErrorTuple> {
         &self.errors
     }
+
     pub fn pop_errors(&mut self) -> Vec<ErrorTuple> {
         std::mem::replace(&mut self.errors, vec![])
     }
+
     fn get_chunk(&self) -> &Chunk {
         &self.body.chunk
     }
+
     fn get_chunk_mut(&mut self) -> &mut Chunk {
         &mut self.body.chunk
     }
+
     fn get_chunk_size(&self) -> usize {
         self.body.chunk.code.len()
     }
@@ -277,9 +284,11 @@ impl<'a> Compiler {
     fn write_code(&mut self, byte: OpCode, location: Location) -> usize {
         self.body.chunk.write_code(byte, location)
     }
+
     fn read_last_code(&self) -> &OpCode {
         self.body.chunk.read_last_code()
     }
+
     fn write_identifier(&mut self, identifier: Box<String>) -> usize {
         self.body.chunk.write_identifier(identifier)
     }
@@ -483,10 +492,18 @@ impl<'a> Compiler {
         self.write_identifier(ident) as u8
     }
 
+    /** write to constant table  */
+    fn write_constant(&mut self, value: Value) -> u8 {
+        self.body.chunk.write_constant(value) as u8
+    }
+
+    /** write to constant table and emit the op code at location */
     fn constant(&mut self, value: Value, location: Location) {
-        let constant = self.body.chunk.write_constant(value) as u8;
+        let constant = self.write_constant(value);
         self.emit(OpCode::CONSTANT { constant }, location);
     }
+
+    /** write to constant table and emit the op code at the current location */
     fn constant_at(&mut self, value: Value) {
         self.constant(value, self.current_location);
     }
@@ -1634,56 +1651,6 @@ pub fn void(_this: &mut Compiler, _can_assign: bool) -> Catch {
 // /// Statements
 // //////////////////////////////
 
-// fn statement(&mut self) -> Statement {
-//     devout!(self "statement");
-//     match self.peek() {
-//         Some(&Token::If) => self.if_statement(),
-//         Some(&Token::While) => self.while_statement(),
-//         Some(&Token::For) => self.for_statement(),
-//         Some(&Token::Print) => Statement::Print(Box::new(self.next_expression())),
-//         Some(&Token::Do) => Statement::Block(self.eat_block()),
-//         Some(&Token::Return) => self.return_statement(),
-//         // Some(&Token::Function) => self.define_function(false, None),
-//         Some(&Token::SemiColon) => {
-//             self.eat();
-//             // worked our way into a corner with this one huh?
-//             Statement::Skip
-//         }
-
-//         _ => Statement::Expression(Box::new(self.expression())), // don't eat
-//     }
-// }
-
-// /** eat token, collect statements until hitting end, error if no end hit */
-// fn eat_block(&mut self) -> Vec<Statement> {
-//     self.eat();
-//     self.block()
-// }
-
-// /** collect statements until hitting end, error if no end hit */
-// fn block(&mut self) -> Vec<Statement> {
-//     let statements = build_block_until!(self End);
-
-//     if !matches!(self.eat_out(), Token::End) {
-//         self.error(SiltError::UnterminatedBlock);
-//     }
-//     statements
-// }
-// fn while_statement(&mut self) -> Statement {
-//     self.eat();
-//     let cond = self.expression();
-//     if let Some(&Token::Do) = self.peek() {
-//         let block = self.eat_block();
-//         Statement::While {
-//             cond: Box::new(cond),
-//             block,
-//         }
-//     } else {
-//         self.error(SiltError::ExpectedDo);
-//         Statement::InvalidStatement
-//     }
-// }
-
 // fn for_statement(&mut self) -> Statement {
 //     // Statement::InvalidStatement
 //     self.eat();
@@ -1818,24 +1785,6 @@ pub fn void(_this: &mut Compiler, _can_assign: bool) -> Catch {
 //     exp
 // }
 
-// fn factor(&mut self) -> Expression {
-//     let mut exp = self.unary();
-//     while let Some(&Token::Op(Operator::Multiply | Operator::Divide | Operator::Modulus)) =
-//         self.peek()
-//     {
-//         let operator = Self::de_op(self.eat_out());
-//         let right = self.unary();
-//         let location = self.get_last_loc();
-//         exp = Expression::Binary {
-//             left: Box::new(exp),
-//             operator,
-//             right: Box::new(right),
-//             location,
-//         };
-//     }
-//     exp
-// }
-
 // fn anonymous_check(&mut self) -> Expression {
 //     let exp = self.primary();
 //     if let Some(&Token::ArrowFunction) = self.peek() {
@@ -1855,126 +1804,4 @@ pub fn void(_this: &mut Compiler, _can_assign: bool) -> Catch {
 //     } else {
 //         self.call(exp)
 //     }
-// }
-
-// fn call(&mut self, mut exp: Expression) -> Expression {
-//     while match self.peek() {
-//         Some(&Token::OpenParen) => {
-//             devout!(self "call");
-//             //TODO while(true) with break but also calls the finishCall func?
-//             let start = self.get_loc();
-//             match self.arguments(start) {
-//                 Ok(args) => {
-//                     exp = Expression::Call {
-//                         callee: Box::new(exp),
-//                         args,
-//                         location: start,
-//                     }
-//                 }
-//                 Err(e) => {
-//                     self.error(e);
-//                     return Expression::InvalidExpression;
-//                 }
-//             }
-//             true
-//         }
-//         Some(&Token::StringLiteral(_)) => {
-//             devout!(self "call");
-//             let start = self.get_loc();
-//             if let Some(Token::StringLiteral(s)) = self.eat() {
-//                 let args = vec![Expression::Literal {
-//                     value: Value::String(s),
-//                     location: start,
-//                 }];
-//                 exp = Expression::Call {
-//                     callee: Box::new(exp),
-//                     args,
-//                     location: start,
-//                 }
-//             }
-//             true
-//         }
-//         _ => false,
-//     } {}
-//     exp
-// }
-
-// fn primary(&mut self) -> Expression {
-//     // Err(code) => {
-//     //     println!("Error Heere: {} :{}", code, self.current);
-//     //     self.error(code);
-//     //     Expression::InvalidExpression
-//     // }
-//     devout!(self "primary");
-
-//     let t = self.next();
-//     let location = self.get_last_loc();
-//     // errors will 1 ahead, use error_last
-//     match t {
-//         Some(Token::Number(n)) => Expression::Literal {
-//             value: Value::Number(n),
-//             location,
-//         },
-//         Some(Token::StringLiteral(s)) => Expression::Literal {
-//             value: Value::String(s),
-//             location,
-//         },
-//         Some(Token::Integer(i)) => Expression::Literal {
-//             value: Value::Integer(i),
-//             location,
-//         },
-//         Some(Token::True) => Expression::Literal {
-//             value: Value::Bool(true),
-//             location,
-//         },
-//         Some(Token::False) => Expression::Literal {
-//             value: Value::Bool(false),
-//             location,
-//         },
-//         Some(Token::Nil) => Expression::Literal {
-//             value: Value::Nil,
-//             location,
-//         },
-
-//         Some(Token::OpenParen) => {
-//             let start = self.get_last_loc(); // we're ahead normally, in this func we're ahead by 2 as we already ate, yummers
-//             let exp = self.expression();
-//             if let Some(Token::CloseParen) = self.peek() {
-//                 self.eat();
-//                 Expression::GroupingExpression {
-//                     expression: Box::new(exp),
-//                     location: start,
-//                 }
-//             } else {
-//                 self.error(SiltError::UnterminatedParenthesis(start.0, start.1));
-//                 Expression::InvalidExpression
-//             }
-//         }
-//         Some(Token::Identifier(ident)) => Expression::Variable {
-//             ident: (self.global.to_register(&ident), 0),
-//             location,
-//         },
-//         Some(Token::Function) => self.function_expression(location),
-//         // Some(Token::EOF) => Ok(Expression::EndOfFile),
-//         Some(Token::Op(o)) => {
-//             self.error(SiltError::ExpInvalidOperator(o));
-//             Expression::InvalidExpression
-//         }
-//         Some(tt) => {
-//             // TODO nil?
-//             self.error(SiltError::InvalidTokenPlacement(tt));
-//             Expression::InvalidExpression
-//         }
-//         None => {
-//             self.error_last(SiltError::EarlyEndOfFile);
-//             Expression::InvalidExpression
-//         }
-//     }
-// }
-
-// fn de_op(t: Token) -> Operator {
-//     if let Token::Op(o) = t {
-//         return o;
-//     }
-//     panic!("Bad operator") // can this happen
 // }

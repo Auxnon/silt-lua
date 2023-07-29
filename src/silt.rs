@@ -161,7 +161,7 @@ pub struct SiltLua {
     // dummy_frame: CallFrame,
     /** Instruction to be run at start of loop  */
     // ip: *const OpCode, // TODO usize vs *const OpCode, will rust optimize the same?
-    // stack: Vec<Value>, // TODO fixed size array vs Vec
+    // stack: Vec<Value>, // TODO fixed size array vs Vec, how much less overhead is there?
     stack: [Value; 256],
     stack_top: *mut Value,
     stack_count: usize,

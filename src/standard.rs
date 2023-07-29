@@ -1,4 +1,4 @@
-use crate::{environment::Environment, silt::SiltLua, value::Value};
+use crate::{silt::SiltLua, value::Value};
 
 pub fn clock(_: &mut SiltLua, _: Vec<Value>) -> Value {
     Value::Number(

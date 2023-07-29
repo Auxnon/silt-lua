@@ -1,22 +1,14 @@
-use std::rc::Rc;
-
-use compiler::Compiler;
 use silt::SiltLua;
 use value::Value;
 
 mod chunk;
 mod code;
 pub mod compiler;
-mod environment;
 mod error;
-mod expression;
 mod function;
 mod lexer;
-mod parser;
-mod resolver;
 pub mod silt;
 pub mod standard;
-mod statement;
 mod token;
 mod userdata;
 pub mod value;
@@ -53,7 +45,6 @@ mod tests {
         chunk::Chunk,
         code::{self, OpCode},
         function::FunctionObject,
-        parser,
         silt::SiltLua,
         simple,
         token::Token,
@@ -91,50 +82,9 @@ mod tests {
             "size of error_types: {}",
             size_of::<crate::error::ErrorTypes>()
         );
-        println!(
-            "size of statement: {}",
-            size_of::<crate::statement::Statement>()
-        );
-        println!(
-            "size of expression: {}",
-            size_of::<crate::expression::Expression>()
-        );
-        println!(
-            "size of option expression: {}",
-            size_of::<Option<crate::expression::Expression>>()
-        );
-        println!(
-            "size of boxed statement: {}",
-            size_of::<Box<crate::statement::Statement>>()
-        );
-        println!(
-            "size of boxed expression: {}",
-            size_of::<Box<crate::expression::Expression>>()
-        );
-        println!(
-            "size of vec expression: {}",
-            size_of::<Vec<crate::expression::Expression>>()
-        );
-        println!(
-            "size of native function: {}",
-            size_of::<
-                fn(
-                    &mut crate::environment::Environment,
-                    Vec<crate::value::Value>,
-                ) -> crate::value::Value,
-            >()
-        );
-        //Rc<Function>
-        println!(
-            "size of function: {}",
-            size_of::<std::rc::Rc<crate::function::Function>>()
-        );
+
         println!("size of value: {}", size_of::<crate::value::Value>());
         println!("size of OpCode: {}", size_of::<crate::code::OpCode>());
-        println!(
-            "size of environment: {}",
-            size_of::<crate::environment::Environment>()
-        );
 
         assert!(size_of::<Token>() == 24);
         assert!(size_of::<crate::code::OpCode>() == 3);

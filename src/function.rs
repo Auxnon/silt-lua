@@ -1,13 +1,6 @@
 use std::rc::Rc;
 
-use crate::{
-    chunk::Chunk,
-    code::OpCode,
-    environment::{Environment, Scope},
-    silt::SiltLua,
-    statement::Statement,
-    value::Value,
-};
+use crate::{chunk::Chunk, code::OpCode, silt::SiltLua, value::Value};
 
 /////////////
 ///
@@ -134,46 +127,14 @@ impl FunctionObject {
     }
 }
 
-// NATIVE
-trait Callable {
-    fn call(&self, global: &mut Environment, args: Vec<Value>) -> Value;
-}
-
-pub struct Function {
-    pub params: Vec<usize>,
-    pub body: Vec<Statement>,
-}
-
-impl Function {
-    pub fn new(params: Vec<usize>, body: Vec<Statement>) -> Self {
-        Self { params, body }
-    }
-}
-impl Callable for Function {
-    fn call(&self, global: &mut Environment, args: Vec<Value>) -> Value {
-        // let mut env = Environment::new();
-
-        // for (i, arg) in self.params.iter().enumerate() {
-        //     env.define(arg, args[i].clone());
-        // }
-        // match self.body.evaluate(&mut env) {
-        //     Ok(v) => v,
-        //     Err(e) => {
-        //         eprintln!("{}", e);
-        //         Value::Nil
-        //     }
-        // }
-        Value::Nil
-    }
-}
-
+pub type NativeFunction = fn(&mut SiltLua, Vec<Value>) -> Value; // TODO should be Result<Value,SiltError> for runtime errors
 pub struct NativeObject {
     name: String,
     pub function: fn(&mut SiltLua, Vec<Value>) -> Value,
 }
 
 impl NativeObject {
-    pub fn new(name: String, function: fn(&mut SiltLua, Vec<Value>) -> Value) -> Self {
+    pub fn new(name: String, function: NativeFunction) -> Self {
         Self { name, function }
     }
 }
