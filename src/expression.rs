@@ -1,74 +1,59 @@
-use std::{f32::consts::E, rc::Rc};
+use std::rc::Rc;
 
-use crate::{
-    error::Location,
-    function::Function,
-    statement::Statement,
-    token::{Operator, Token},
-    value::Value,
-};
+use crate::{error::Location, function::Function, token::Operator, value::Value};
 
+/** first usize is mapped to environment hash for name, can be reversed for debug. Second usize is scope depth */
+pub type Ident = (usize, usize);
+
+#[derive(Clone)]
 pub enum Expression {
+    /** expression + expression */
     Binary {
         left: Box<Expression>,
         operator: Operator,
         right: Box<Expression>,
         location: Location,
     },
+    /** +expression | !expression */
     Unary {
         operator: Operator,
         right: Box<Expression>,
         location: Location,
     },
-    // Primary {
-    //     literal: Token,
-    // },
-    Literal {
-        value: Value,
-        location: Location,
-    },
+    /** true | 1 | nil | etc*/
+    Literal { value: Value, location: Location },
+    /** ( expression ) */
     GroupingExpression {
         expression: Box<Expression>,
         location: Location,
     },
-    Variable {
-        ident: usize,
-        location: Location,
-    },
+    /** get <- ident */
+    Variable { ident: Ident, location: Location },
+    /** put expression -> ident */
     Assign {
-        ident: usize,
+        ident: Ident,
         value: Box<Expression>,
         location: Location,
     },
+    /** expression OR expression AND expression */
     Logical {
         left: Box<Expression>,
         operator: Operator,
         right: Box<Expression>,
         location: Location,
     },
-
+    /** ident() */
     Call {
         callee: Box<Expression>,
         args: Vec<Expression>,
         location: Location,
     },
-    Function(Rc<Function>, Location),
-    // GetExpression {
-    //     object: Box<Expression>,
-    //     name: Token,
-    // },
-    // SetExpression {
-    //     object: Box<Expression>,
-    //     name: Token,
-    //     value: Box<Expression>,
-    // },
-    // ThisExpression {
-    //     keyword: Token,
-    // },
-    // SuperExpression {
-    //     keyword: Token,
-    //     method: Token,
-    // },
+    /** <- fn(){} */
+    Function {
+        value: Rc<Function>,
+        location: Location,
+    },
+    /** shrug  */
     InvalidExpression,
 }
 impl std::fmt::Display for Expression {
@@ -96,12 +81,12 @@ impl std::fmt::Display for Expression {
                 expression,
                 location,
             } => write!(f, "G({})", expression),
-            Expression::Variable { ident, location } => write!(f, "{}", ident),
+            Expression::Variable { ident, location } => write!(f, "{}:{}", ident.0, ident.1),
             Expression::Assign {
                 ident,
                 value,
                 location,
-            } => write!(f, "({} := {})", ident, value),
+            } => write!(f, "({}:{} := {})", ident.0, ident.1, value),
             Expression::Call {
                 callee,
                 args: arguments,
@@ -114,45 +99,8 @@ impl std::fmt::Display for Expression {
                 s.push_str("))");
                 write!(f, "{}", s)
             }
-            Expression::Function(_, _) => write!(f, "function"),
+            Expression::Function { value, .. } => write!(f, "function"),
 
-            // Expression::Function { params, block } => {
-            //     let mut s = format!("(fn(");
-            //     for param in params {
-            //         s.push_str(&format!("{},", param));
-            //     }
-            //     s.push_str(") {");
-            //     for statement in block {
-            //         s.push_str(&format!("\n||{}", statement));
-            //     }
-            //     s.push_str("})");
-            //     write!(f, "{}", s)
-            // }
-            // Expression::AssignmentExpression { name, value } => {
-            //     write!(f, "({} := {})", name, value)
-            // }
-            // Expression::LogicalExpression {
-            //     left,
-            //     operator,
-            //     right,
-            // } => write!(f, "({} {} {})", operator, left, right),
-            // Expression::CallExpression { callee, arguments } => {
-            //     let mut s = format!("({}(", callee);
-            //     for arg in arguments {
-            //         s.push_str(&format!("{},", arg));
-            //     }
-            //     s.push_str("))");
-            //     write!(f, "{}", s)
-            // }
-            // Expression::GetExpression { object, name } => write!(f, "({}.{})", object, name),
-            // Expression::SetExpression {
-            //     object,
-            //     name,
-            //     value,
-            // } => write!(f, "({}.{}={})", object, name, value),
-            // Expression::ThisExpression { keyword } => write!(f, "{}", keyword),
-            // Expression::SuperExpression { keyword, method } => write!(f, "{}.{}", keyword, method),
-            // Expression::EndOfFile => write!(f, "EOF"),
             Expression::InvalidExpression => write!(f, "!Invalid_Expression!"),
         }
     }

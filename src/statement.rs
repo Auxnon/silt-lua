@@ -1,12 +1,13 @@
-use crate::expression::Expression;
+use crate::expression::{Expression, Ident};
 
+#[derive(Clone)]
 pub enum Statement {
     Expression(Box<Expression>),
     Print(Box<Expression>),
     Declare {
-        ident: usize,
+        ident: Ident,
         local: bool,
-        value: Box<Expression>,
+        expr: Box<Expression>,
     },
     // Var(Token, Expression),
     Block(Vec<Statement>),
@@ -20,12 +21,14 @@ pub enum Statement {
         block: Vec<Statement>,
     },
     NumericFor {
+        /** no need to track variable depth */
         ident: usize,
         start: Box<Expression>,
         end: Box<Expression>,
         step: Option<Box<Expression>>,
         block: Vec<Statement>,
     },
+    Return(Box<Expression>),
     // Break,
     // Continue,
     // Function {
@@ -39,6 +42,7 @@ pub enum Statement {
     // Class(Token, Option<Expression>, Vec<Statement>),
     // Import(Token, Option<Token>),
     // EOF,
+    Skip,
     InvalidStatement,
 }
 
@@ -46,16 +50,19 @@ impl std::fmt::Display for Statement {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Statement::Expression(expr) => write!(f, "$${}", expr),
+            Statement::Skip => write!(f, ";"),
             Statement::Print(expr) => write!(f, "$print$ {}", expr),
+            Self::Return(expr) => write!(f, "$return$ {}", expr),
             Statement::Declare {
                 ident,
                 local,
-                value,
+                expr: value,
             } => write!(
                 f,
-                "$declare$ {} {} := {}",
+                "$declare$ {} {}:{} := {}",
                 if *local { "local" } else { "global" },
-                ident,
+                ident.0,
+                ident.1,
                 value
             ),
             Statement::InvalidStatement => write!(f, "!invalid!"),

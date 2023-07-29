@@ -4,6 +4,7 @@ mt.__call = function(self, a)
 end
 debug.setmetatable(0, mt)
 
-b = 0(3)
+b = 0
+(3)
 
 -- print(b) -- 5

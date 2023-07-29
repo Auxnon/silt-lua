@@ -1,7 +1,16 @@
 [package]
-name = "silt-lua"
+name = "silt_lua"
 version = "0.1.0"
+authors = ["me <me@gmail.com>"]
 edition = "2021"
+
+[lib]
+name = "silt_lua"
+path = "src/lib.rs"
+
+[[bin]]
+name = "silt_lua_cli"
+path = "src/main.rs"
 
 [profile.release]
 strip = true  # Automatically strip symbols from the binary.
@@ -12,11 +21,13 @@ panic ="abort"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default=["silt"]
-silt=["bang","global"]
+silt=["bang","global","implicit-return"]
 bang=[]
 global=[]
+implicit-return=[]
 dev-out=[]
 
 [dependencies]
 hashbrown = "0.14"
-rustc-hash="1.1.0"
+# rustc-hash="1.1.0"
+# ahash="0.8.3"
