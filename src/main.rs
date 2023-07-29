@@ -201,18 +201,6 @@ fn main() {
     "#;
 
     let source_in = r#"
-    local d=5
-    function sum()
-    local a=1
-    local b=2
-    local c=3
-    return a+b+c+d+8
-    end
-
-    return sum()
-    "#;
-
-    let source_in = r#"
         function fib(n)
             if n <= 1 then
             return n
@@ -243,6 +231,17 @@ fn main() {
     print "done"
     print ("elapsed: "..elapsed)
     return elapsed
+    "#;
+    let source_in = r#"
+    local d=5
+    function sum()
+    local a=1
+    local b=2
+    local c=3
+    return a+b+c+d+8
+    end
+
+    return sum()
     "#;
     // let source_in = r#"
     // global g=2
@@ -279,26 +278,22 @@ fn main() {
     // end
     // "#;
 
-    let mut compiler = Compiler::new();
-    let o = compiler.compile(source_in.to_string());
+    // let mut compiler = Compiler::new();
+    // let o = compiler.compile(source_in.to_string());
 
-    #[cfg(feature = "dev-out")]
-    o.chunk.print_chunk(None);
-    compiler.print_errors();
-    if o.chunk.is_valid() {
-        println!("-----------------");
-        let mut vm = VM::new();
-        vm.register_native_function("clock", standard::clock);
-        vm.register_native_function("print", standard::print);
+    // #[cfg(feature = "dev-out")]
+    // o.chunk.print_chunk(None);
+    // compiler.print_errors();
 
-        match vm.interpret(Rc::new(o)) {
-            Ok(o) => {
-                println!("-----------------");
-                println!(">> {}", o);
-            }
-            Err(e) => {
-                println!("!!Err:{}", e);
-            }
+    let mut vm = VM::new();
+    vm.load_standard_library();
+    match vm.run(source_in) {
+        Ok(o) => {
+            println!("-----------------");
+            println!(">> {}", o);
+        }
+        Err(e) => {
+            e.iter().for_each(|e| println!("!!Err: {}", e));
         }
     }
 }

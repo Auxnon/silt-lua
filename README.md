@@ -19,6 +19,6 @@ This has been written from the ground up with observations of the lua langauge a
 
 ## Examples
 
-```rust
-let test= 5*5;
+```lua
+
 ```

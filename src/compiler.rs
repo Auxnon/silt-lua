@@ -241,6 +241,16 @@ impl<'a> Compiler {
             println!("!!{} at {}:{}", e.code, e.location.0, e.location.1);
         }
     }
+    pub fn error_string(&self) -> String {
+        let mut s = String::new();
+        for e in &self.errors {
+            s.push_str(&format!(
+                "!!{} at {}:{}",
+                e.code, e.location.0, e.location.1
+            ));
+        }
+        s
+    }
 
     /** push error and location on to error stack */
     fn push_error(&mut self, code: ErrorTuple) {
@@ -250,6 +260,9 @@ impl<'a> Compiler {
     /** return current array of errors */
     pub fn get_errors(&self) -> &Vec<ErrorTuple> {
         &self.errors
+    }
+    pub fn pop_errors(&mut self) -> Vec<ErrorTuple> {
+        std::mem::replace(&mut self.errors, vec![])
     }
     fn get_chunk(&self) -> &Chunk {
         &self.body.chunk

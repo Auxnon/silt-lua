@@ -22,24 +22,18 @@ pub mod value;
 pub mod vm;
 
 fn simple(source: &str) -> Value {
-    // let mut global = environment::Environment::new();
-    let mut compiler = Compiler::new();
-    let o = compiler.compile(source.to_string());
-    if o.chunk.is_valid() {
-        let mut vm = VM::new();
-        vm.register_native_function("clock", standard::clock);
-        vm.register_native_function("print", standard::print);
-        match vm.interpret(Rc::new(o)) {
-            Ok(v) => v,
-            Err(e) => Value::String(Box::new(e.to_string())),
-        }
-    } else {
-        let e = compiler.get_errors();
-        if e.len() > 0 {
-            return Value::String(Box::new(e[0].to_string()));
-        }
-        Value::String(Box::new("Unknown error".to_string()))
+    let mut vm = VM::new();
+    vm.load_standard_library();
+    match vm.run(source) {
+        Ok(v) => v,
+        Err(e) => Value::String(Box::new(e[0].to_string())),
     }
+
+    // let e = compiler.get_errors();
+    // if e.len() > 0 {
+    //     return Value::String(Box::new(e[0].to_string()));
+    // }
+    // Value::String(Box::new("Unknown error".to_string()))
 }
 
 macro_rules! valeq {
@@ -239,7 +233,7 @@ mod tests {
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
         let mut vm = VM::new();
-        if let Err(e) = vm.interpret(Rc::new(tester)) {
+        if let Err(e) = vm.execute(Rc::new(tester)) {
             println!("{}", e);
         }
     }

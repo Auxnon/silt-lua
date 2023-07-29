@@ -8,9 +8,8 @@ use crate::{
     chunk::Chunk,
     code::OpCode,
     compiler::Compiler,
-    error::{ErrorTypes, SiltError},
+    error::{ErrorTuple, ErrorTypes, SiltError},
     function::{CallFrame, FunctionObject, NativeObject},
-    standard::print,
     token::Operator,
     value::{Reference, Value},
 };
@@ -285,7 +284,26 @@ impl<'a> VM {
         unsafe { &*self.stack_top.sub((n as usize) + 1) }
     }
 
-    pub fn interpret(&mut self, object: Rc<FunctionObject>) -> Result<Value, SiltError> {
+    pub fn evaluate(&mut self, source: &str) -> FunctionObject {
+        self.compiler.compile(source.to_owned())
+    }
+
+    pub fn run(&mut self, source: &str) -> Result<Value, Vec<ErrorTuple>> {
+        let object = self.compiler.compile(source.to_owned());
+        if object.chunk.is_valid() {
+            match self.execute(object.into()) {
+                Ok(v) => Ok(v),
+                Err(e) => Err(vec![ErrorTuple {
+                    code: e,
+                    location: (0, 0),
+                }]),
+            }
+        } else {
+            Err(self.compiler.pop_errors())
+        }
+    }
+
+    pub fn execute(&mut self, object: Rc<FunctionObject>) -> Result<Value, SiltError> {
         // TODO param is a reference of &'a
         // self.ip = object.chunk.code.as_ptr();
         // frame.ip = object.chunk.code.as_ptr();
@@ -300,12 +318,12 @@ impl<'a> VM {
         self.push(Value::Function(object)); // TODO this needs to store the function object itself somehow, RC?
         let frames = vec![frame];
         // self.body = object;
-        let res = self.run(frames);
+        let res = self.process(frames);
 
         res
     }
 
-    fn run(&mut self, mut frames: Vec<CallFrame>) -> Result<Value, SiltError> {
+    fn process(&mut self, mut frames: Vec<CallFrame>) -> Result<Value, SiltError> {
         let mut last = Value::Nil; // TODO temporary for testing
                                    // let stack_pointer = self.stack.as_mut_ptr();
                                    // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
@@ -667,6 +685,7 @@ impl<'a> VM {
     //     }
     // }
 
+    /** Register a native function on the global table  */
     pub fn register_native_function(
         &mut self,
         name: &str,
@@ -675,6 +694,12 @@ impl<'a> VM {
         let fn_obj = Rc::new(NativeObject::new(name.to_string(), function));
         self.globals
             .insert(name.to_string(), Value::NativeFunction(fn_obj));
+    }
+
+    /** Load standard library functions */
+    pub fn load_standard_library(&mut self) {
+        self.register_native_function("clock", crate::standard::clock);
+        self.register_native_function("print", crate::standard::print);
     }
 
     fn print_raw_stack(&self) {
