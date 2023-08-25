@@ -1,11 +1,13 @@
-
-local a="global"
 do
+    local a = "global"
     function f1()
         print(a)
     end
 
+    -- local b = "2"
+
     f1()
-    local a="block"
+    a = "block"
     f1()
+    -- a = "2"
 end

@@ -2,12 +2,15 @@ use std::fmt::{self, Display, Formatter};
 
 pub enum OpCode {
     CONSTANT { constant: u8 },
+    CLOSURE { constant: u8 },
     DEFINE_GLOBAL { constant: u8 },
     GET_GLOBAL { constant: u8 },
     SET_GLOBAL { constant: u8 },
     DEFINE_LOCAL { constant: u8 },
     GET_LOCAL { index: u8 },
     SET_LOCAL { index: u8 },
+    GET_UPVALUE { index: u8 },
+    SET_UPVALUE { index: u8 },
     // TODO this the size bottleneck but we were considering word size anyway soooooo
     // TODO also we could explore a popless goto_if for if statements while conditionals still use the pop variant
     GOTO_IF_FALSE(u16),
@@ -16,7 +19,8 @@ pub enum OpCode {
     REWIND(u16),
     RETURN,
     POP,
-    POPN(u8),
+    POPS(u8),
+    CLOSE_UPVALUES(u8),
     ADD,
     SUB,
     MULTIPLY,
@@ -36,6 +40,7 @@ pub enum OpCode {
     PRINT,
     META(u8),
     CALL(u8),
+    REGISTER_UPVALUE { index: u8, neighboring: bool },
 
     LITERAL { dest: u8, literal: u8 },
 }
@@ -47,7 +52,17 @@ pub enum Tester {
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CALL(i) => write!(f, "call({})", i),
+            Self::CALL(i) => write!(f, "OP_CALL({})", i),
+            Self::REGISTER_UPVALUE {
+                index: i,
+                neighboring: n,
+            } => write!(f, "OP_REG_UPVALUE {}", i),
+            Self::GET_UPVALUE { index: i } => {
+                write!(f, "OP_GET_UPVALUE {}", i)
+            }
+            Self::SET_UPVALUE { index: i } => {
+                write!(f, "OP_SET_UPVALUE {}", i)
+            }
             Self::META(_) => write!(f, "META"),
             Self::GOTO_IF_FALSE(offset) => {
                 write!(f, "OP_GOTO_IF_FALSE {}", offset)
@@ -68,11 +83,17 @@ impl Display for OpCode {
             }
             Self::RETURN => write!(f, "OP_RETURN"),
             Self::POP => write!(f, "OP_POP"),
-            Self::POPN(n) => {
+            Self::POPS(n) => {
                 write!(f, "OP_POPx{}", n)
+            }
+            Self::CLOSE_UPVALUES(n) => {
+                write!(f, "OP_CLOSE_UPVALUEx{}", n)
             }
             Self::CONSTANT { constant } => {
                 write!(f, "OP_CONSTANT {}", constant)
+            }
+            Self::CLOSURE { constant } => {
+                write!(f, "OP_CLOSURE {}", constant)
             }
             Self::ADD => {
                 write!(f, "OP_ADD")

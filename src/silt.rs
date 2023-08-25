@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     fmt::format,
     mem::{forget, take},
     rc::Rc,
@@ -9,7 +10,7 @@ use crate::{
     code::OpCode,
     compiler::Compiler,
     error::{ErrorTuple, ErrorTypes, SiltError},
-    function::{CallFrame, FunctionObject, NativeObject},
+    function::{CallFrame, Closure, FunctionObject, NativeObject, UpValue},
     token::Operator,
     value::{Reference, Value},
 };
@@ -168,9 +169,14 @@ pub struct SiltLua {
     /** Next empty location */
     // stack_top: *mut Value,
     globals: hashbrown::HashMap<String, Value>, // TODO store strings as identifer usize and use that as key
-                                                // references: Vec<Reference>,
-                                                // obj
-                                                // TODO should we store all strings in their own table/array for better equality checks? is this cheaper?
+    // original CI code uses linked list, most recent closed upvalue is the first and links to previous closed values down the chain
+    // allegedly performance of a linked list is heavier then an array and shifting values but is that true here or the opposite?
+    // resizing a sequential array is faster then non sequential heap items, BUT since we'll USUALLY resolve the upvalue on the top of the list we're derefencing once to get our Upvalue vs an index lookup which is slightly slower.
+    // TODO TLDR: becnhmark this
+    open_upvalues: Vec<Rc<RefCell<UpValue>>>,
+    // references: Vec<Reference>,
+    // obj
+    // TODO should we store all strings in their own table/array for better equality checks? is this cheaper?
 }
 
 impl<'a> SiltLua {
@@ -196,6 +202,7 @@ impl<'a> SiltLua {
             stack,
             stack_top,
             globals: hashbrown::HashMap::new(),
+            open_upvalues: vec![],
         }
     }
 
@@ -206,10 +213,34 @@ impl<'a> SiltLua {
         self.stack_count += 1;
     }
 
+    fn reserve(&mut self) -> *mut Value {
+        self.stack_count += 1;
+        let old = self.stack_top;
+        self.stack_top = unsafe { self.stack_top.add(1) };
+        old
+    }
+
     /** pop N number of values from stack */
     fn popn_drop(&mut self, n: u8) {
         unsafe { self.stack_top = self.stack_top.sub(n as usize) };
         self.stack_count -= n as usize;
+    }
+
+    fn close_n_upvalues(&mut self, n: u8) {
+        // remove n from end of list
+        if n > 1 {
+            self.open_upvalues
+                .drain(self.open_upvalues.len() - n as usize..)
+                .rev()
+                .for_each(|up| {
+                    let mut upvalue = up.borrow_mut();
+                    upvalue.close(unsafe { self.stack_top.replace(Value::Nil) });
+                });
+            unsafe { self.stack_top = self.stack_top.sub(n as usize) };
+        } else {
+            let upvalue = self.open_upvalues.pop().unwrap();
+            upvalue.borrow_mut().close(self.pop());
+        }
     }
 
     /** pop and return top of stack */
@@ -268,7 +299,7 @@ impl<'a> SiltLua {
 
     /** Safer but clones! */
     fn duplicate(&self) -> Value {
-        self.read_top().clone()
+        unsafe { (*self.stack_top.sub(1)).clone() }
     }
 
     /** Look and get immutable reference to top of stack */
@@ -309,9 +340,12 @@ impl<'a> SiltLua {
         // frame.ip = object.chunk.code.as_ptr();
         // frame.slots = self.stack ???
         // let rstack = self.stack.as_ptr();
+        object.chunk.print_chunk(None);
         self.stack_top = self.stack.as_mut_ptr() as *mut Value;
         self.body = object.clone();
-        let mut frame = CallFrame::new(self.body.clone(), 0);
+        let closure = Rc::new(Closure::new(object.clone(), vec![]));
+
+        let mut frame = CallFrame::new(closure, 0);
         frame.ip = object.chunk.code.as_ptr();
         frame.local_stack = self.stack_top;
         // frame.stack.resize(256, Value::Nil); // TODO
@@ -382,7 +416,7 @@ impl<'a> SiltLua {
                         // let v = self.pop();
                         self.globals.insert(s.to_string(), v);
                     } else {
-                        return Err(SiltError::VmRuntimeError);
+                        return Err(SiltError::VmCorruptConstant);
                     }
                 }
                 // TODO does this need to exist?
@@ -401,7 +435,7 @@ impl<'a> SiltLua {
                         // }
                         self.globals.insert(s.to_string(), v);
                     } else {
-                        return Err(SiltError::VmRuntimeError);
+                        return Err(SiltError::VmCorruptConstant);
                     }
                 }
                 OpCode::GET_GLOBAL { constant } => {
@@ -413,7 +447,7 @@ impl<'a> SiltLua {
                             self.push(Value::Nil);
                         }
                     } else {
-                        return Err(SiltError::VmRuntimeError);
+                        return Err(SiltError::VmCorruptConstant);
                     }
                 }
                 OpCode::SET_LOCAL { index } => {
@@ -534,7 +568,10 @@ impl<'a> SiltLua {
                 OpCode::POP => {
                     last = self.pop();
                 }
-                OpCode::POPN(n) => self.popn_drop(*n), //TODO here's that 255 local limit again
+                OpCode::POPS(n) => self.popn_drop(*n), //TODO here's that 255 local limit again
+                OpCode::CLOSE_UPVALUES(n) => {
+                    self.close_n_upvalues(*n);
+                }
                 OpCode::GOTO_IF_FALSE(offset) => {
                     let value = self.peek();
                     // println!("GOTO_IF_FALSE: {}", value);
@@ -554,24 +591,96 @@ impl<'a> SiltLua {
                 OpCode::REWIND(offset) => {
                     frame.rewind(*offset);
                 }
+                OpCode::CLOSURE { constant } => {
+                    let value = Self::get_chunk(&frame).get_constant(*constant);
+                    devout!("CLOSURE: {}", value);
+                    if let Value::Function(f) = value {
+                        // f.upvalue_count
+                        let mut closure =
+                            Closure::new(f.clone(), Vec::with_capacity(f.upvalue_count as usize));
+                        // let reserved_value = self.reserve();
+                        if f.upvalue_count >= 0 {
+                            let next_instruction = frame.get_next_n_codes(f.upvalue_count as usize);
+                            for i in 0..f.upvalue_count {
+                                if let OpCode::REGISTER_UPVALUE { index, neighboring } =
+                                    next_instruction[i as usize]
+                                {
+                                    closure.upvalues.push(if neighboring {
+                                        // insert at i
+                                        self.capture_upvalue(index, frame)
+                                        // closure.upvalues.insert(
+                                        //     i as usize,
+                                        //     frame.function.upvalues[index as usize].clone(),
+                                        // );
+                                        // *slots.add(index) ?
+                                    } else {
+                                        frame.function.upvalues[index as usize].clone()
+                                    });
+                                } else {
+                                    println!(
+                                        "next instruction is not CLOSE_UPVALUE {}",
+                                        next_instruction[i as usize]
+                                    );
+                                    unreachable!()
+                                }
+                            }
+
+                            self.push(Value::Closure(Rc::new(closure)));
+                        } else {
+                            // devout!("closure is of type {}", closure.function.function.name);
+                            return Err(SiltError::VmRuntimeError);
+                        }
+                        frame.shift(f.upvalue_count as usize);
+                    }
+                }
+                OpCode::GET_UPVALUE { index } => {
+                    let value = frame.function.upvalues[*index as usize]
+                        .borrow()
+                        .copy_value();
+
+                    devout!("GET_UPVALUE: {}", value);
+                    self.push(value);
+                }
+                OpCode::SET_UPVALUE { index } => {
+                    let value = self.pop();
+                    let ff = &frame.function.upvalues;
+                    ff[*index as usize].borrow_mut().close(value);
+                    // unsafe { *upvalue.value = value };
+                }
                 OpCode::CALL(param_count) => {
                     let value = self.peekn(*param_count);
                     devout!("CALL: {}", value);
                     match value {
-                        Value::Function(f) => {
+                        Value::Closure(c) => {
+                            // TODO this logic is identical to function, but to make this a function causes some lifetime issues. A macro would work but we're already a little macro heavy aren't we?
                             let frame_top =
                                 unsafe { self.stack_top.sub((*param_count as usize) + 1) };
                             let new_frame = CallFrame::new(
-                                f.clone(),
+                                c.clone(),
                                 self.stack_count - (*param_count as usize) - 1,
                             );
-                            devout!("current stack count {}", frame.stack_snapshot);
                             frames.push(new_frame);
-                            frame_count += 1;
                             frame = frames.last_mut().unwrap();
 
                             frame.local_stack = frame_top;
                             devout!("top of frame stack {}", unsafe { &*frame.local_stack });
+                            frame_count += 1;
+                        }
+                        Value::Function(func) => {
+                            // let frame_top =
+                            //     unsafe { self.stack_top.sub((*param_count as usize) + 1) };
+                            // let new_frame = CallFrame::new(
+                            //     func.clone(),
+                            //     self.stack_count - (*param_count as usize) - 1,
+                            // );
+                            // frames.push(new_frame);
+                            // frame = frames.last_mut().unwrap();
+
+                            // frame.local_stack = frame_top;
+                            // devout!("top of frame stack {}", unsafe { &*frame.local_stack });
+                            // frame_count += 1;
+
+                            // devout!("current stack count {}", frame.stack_snapshot);
                             // frame.ip = f.chunk.code.as_ptr();
                             // // frame.stack.resize(256, Value::Nil); // TODO
                             // self.push(Value::Function(f.clone())); // TODO this needs to store the function object itself somehow, RC?
@@ -596,6 +705,10 @@ impl<'a> SiltLua {
                     println!("<<<<<< {} >>>>>>>", self.pop());
                 }
                 OpCode::META(_) => todo!(),
+                OpCode::REGISTER_UPVALUE {
+                    index: _,
+                    neighboring: _,
+                } => unreachable!(),
             }
             frame.iterate();
             //stack
@@ -610,7 +723,7 @@ impl<'a> SiltLua {
     // TODO is having a default empty chunk cheaper?
     /** We're operating on the assumtpion a chunk is always present when using this */
     fn get_chunk(frame: &CallFrame) -> &Chunk {
-        &frame.function.chunk
+        &frame.function.function.chunk
     }
 
     // pub fn reset_stack(&mut self) {
@@ -684,6 +797,93 @@ impl<'a> SiltLua {
     //         unreachable!("Only strings can be identifiers")
     //     }
     // }
+
+    fn call(&self, function: &Rc<Closure>, param_count: u8) -> CallFrame {
+        let frame_top = unsafe { self.stack_top.sub((param_count as usize) + 1) };
+        let new_frame = CallFrame::new(
+            function.clone(),
+            self.stack_count - (param_count as usize) - 1,
+        );
+        new_frame
+    }
+
+    fn capture_upvalue(&mut self, index: u8, frame: &CallFrame) -> Rc<RefCell<UpValue>> {
+        //, stack: *mut Value,
+        //stack
+        // self.print_stack();
+        frame.print_local_stack();
+        let value = unsafe { frame.local_stack.add(index as usize) };
+        devout!("2capture_upvalue at index {} : {}", index, unsafe {
+            &*value
+        });
+        let mut ind = 0;
+        for (i, up) in self.open_upvalues.iter().enumerate() {
+            let upvalue = up.borrow();
+            if upvalue.index == index {
+                return up.clone();
+            }
+            ind = i;
+
+            if upvalue.index > index {
+                break;
+            }
+        }
+
+        let u = Rc::new(RefCell::new(UpValue::new(index, value)));
+
+        self.open_upvalues.insert(ind, u.clone());
+        u
+
+        //   self
+        //     .open_upvalues
+        //     .iter()
+        //     // DEV originally we loop through until the pointer is not greater then the stack pointer
+        //     .find(|upvalue| upvalue.index == index)
+        // {
+        //     Some(u) => u.clone(),
+        //     None => {
+        //         // let v = unsafe { stack.sub(index as usize) };
+        //         let u = Rc::new(UpValue::new(index));
+        //         self.open_upvalues.push(u.clone());
+        //         u
+        //     }
+        // }
+
+        // let mut prev = stack;
+        // for _ in 0..index {
+        //     prev = unsafe { prev.sub(1) };
+        // }
+        // unsafe { prev.read() }
+    }
+
+    fn close_upvalue(&mut self, value: Value) {
+        devout!("close_upvalue: {}", value);
+
+        // for up in
+        // self.open_upvalues
+        //     .iter()
+        //     .find(|up| {
+        //         let mut upvalue = up.borrow_mut();
+        //         if upvalue.index >= self.stack_count as u8 {
+        //             false
+        //         } else {
+        //             true
+        //         }
+        //     })
+        //     .unwrap()
+        //     .borrow_mut()
+        //     .close(value);
+        // TODO
+        // self.open_upvalues.retain(|up| {
+        //     let mut upvalue = up.borrow_mut();
+        //     if upvalue.index >= self.stack_count as u8 {
+        //         upvalue.close(value);
+        //         false
+        //     } else {
+        //         true
+        //     }
+        // });
+    }
 
     /** Register a native function on the global table  */
     pub fn register_native_function(

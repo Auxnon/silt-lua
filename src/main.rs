@@ -243,6 +243,9 @@ fn main() {
 
     return sum()
     "#;
+    // load string from scripts/closure4.lua
+    let file = std::fs::read_to_string("scripts/closure4.lua").unwrap();
+    let source_in = file.as_str();
     // let source_in = r#"
     // global g=2
     // function is1(n)

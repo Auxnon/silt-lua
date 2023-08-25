@@ -1,6 +1,6 @@
 use crate::{
     token::{Operator, Token},
-    value::Value,
+    value::{self, Value},
 };
 
 #[derive(Clone)]
@@ -48,6 +48,8 @@ pub enum SiltError {
     //vm
     VmCompileError,
     VmRuntimeError,
+    VmCorruptConstant,
+    VmUpvalueResolveError,
 
     Unknown,
 }
@@ -63,6 +65,7 @@ pub enum ErrorTypes {
     Infinity,
     NativeFunction,
     Function,
+    Closure,
     Table,
 }
 
@@ -71,6 +74,9 @@ pub type Location = (usize, usize);
 impl std::fmt::Display for SiltError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::VmUpvalueResolveError => {
+                write!(f, "Unexpected issue resolving upvalue for closure")
+            }
             Self::UndefinedLabel(s) => write!(f, "No matching goto label for '{}'", s),
             Self::ExpectedGotoIdentifier => write!(f, "Expected identifier following goto keyword"),
             Self::ChunkCorrupt => write!(f, "Invalid chunk due compilation corruption"),
@@ -123,6 +129,7 @@ impl std::fmt::Display for SiltError {
             Self::ExpInvalid => write!(f, "Invalid expression"),
             Self::VmCompileError => write!(f, "Error compiling chunk"),
             Self::VmRuntimeError => write!(f, "Runtime error for chunk"),
+            Self::VmCorruptConstant => write!(f, "Constant store corrupted"),
             Self::Unknown => write!(f, "Unknown error"),
             // Self::ResReadInOwnInit => write!(f, "Cannot read variable in its own initializer"),
         }
@@ -140,6 +147,7 @@ impl std::fmt::Display for ErrorTypes {
             ErrorTypes::Infinity => write!(f, "infinity"),
             ErrorTypes::NativeFunction => write!(f, "native_function"),
             ErrorTypes::Function => write!(f, "function"),
+            ErrorTypes::Closure => write!(f, "(function)"),
             ErrorTypes::Table => write!(f, "table"),
         }
     }

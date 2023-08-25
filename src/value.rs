@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 
 use crate::{
     error::ErrorTypes,
-    function::{FunctionObject, NativeObject},
+    function::{Closure, FunctionObject, NativeObject},
     silt::SiltLua,
 };
 
@@ -25,7 +25,7 @@ pub enum Value {
     // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
     // Boxed()
     Function(Rc<FunctionObject>), // closure: Environment,
-
+    Closure(Rc<Closure>),
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(Rc<NativeObject>),
     // UserData
@@ -49,21 +49,8 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Infinity(_) => write!(f, "inf"),
             Value::NativeFunction(_) => write!(f, "native_function"),
-            Value::Function(ff) => {
-                if ff.is_script {
-                    write!(
-                        f,
-                        "module {}",
-                        ff.name.as_ref().unwrap_or(&"root".to_string())
-                    )
-                } else {
-                    write!(
-                        f,
-                        "fn {}()",
-                        ff.name.as_ref().unwrap_or(&"anonymous".to_string())
-                    )
-                }
-            }
+            Value::Closure(c) => write!(f, "(clojure= {})", c.function),
+            Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(t) => write!(f, "table: {}", t.id),
         }
     }
@@ -86,6 +73,7 @@ impl Value {
             Value::Infinity(_) => ErrorTypes::Infinity,
             Value::NativeFunction(_) => ErrorTypes::NativeFunction,
             Value::Function { .. } => ErrorTypes::Function,
+            Value::Closure(_) => ErrorTypes::Closure,
             Value::Table(_) => ErrorTypes::Table,
         }
     }
@@ -105,6 +93,7 @@ impl Value {
             }
             Value::NativeFunction(_) => "native_function".to_string(),
             Value::Function { .. } => "function".to_string(),
+            Value::Closure(_) => "(function)".to_string(),
             Value::String(s) => s.to_string(),
             Value::Table(t) => format!("table: {}", t.id),
         }
@@ -123,6 +112,7 @@ impl Clone for Value {
             Value::NativeFunction(f) => Value::NativeFunction(f.clone()),
             // TODO: implement this
             Value::Function(r) => Value::Function(Rc::clone(r)),
+            Value::Closure(c) => Value::Closure(Rc::clone(c)),
             Value::Table(t) => Value::Table(Reference {
                 value: Rc::clone(&t.value),
                 id: t.id,
