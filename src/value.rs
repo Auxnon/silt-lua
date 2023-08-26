@@ -146,3 +146,9 @@ impl Default for Value {
         Value::Nil
     }
 }
+
+// impl Drop for Value {
+//     fn drop(&mut self) {
+//         println!("dropping value: {}", self);
+//     }
+// }

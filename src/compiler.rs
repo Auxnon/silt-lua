@@ -1184,6 +1184,10 @@ fn end_scope(this: &mut Compiler, skip_code: bool) {
             count += 1;
         }
     }
+    // if we're not dealing with upvalues and we're skipping code due to functional scope our stack will get moved off anyway
+    if skip_code {
+        return;
+    }
     if count > 0 {
         v.push(count);
     }
@@ -1191,11 +1195,6 @@ fn end_scope(this: &mut Compiler, skip_code: bool) {
     //     this.emit_at(OpCode::POPS(i));
     // }
 
-    // if we're not dealing with upvalues and we're skipping code due to functional scope our stack will get moved off anyway
-    // TODO make sure this is still correct assumption with upvalues
-    if skip_code && v.len() <= 1 {
-        return;
-    }
     // index 0 is always OP_POPS but could be count of 0 if the first local is captured. Otherwise we can safely stagger even as pop, odds as close
     v.iter().enumerate().for_each(|(i, c)| {
         if i % 2 == 0 {

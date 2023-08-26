@@ -207,12 +207,19 @@ impl UpValue {
             location,
         }
     }
-    pub fn close(&mut self, value: Value) {
+    pub fn close_around(&mut self, value: Value) {
         self.closed = value;
+        self.location = &mut self.closed as *mut Value;
+    }
+    pub fn close(&mut self) {
+        self.closed = unsafe { self.location.replace(Value::Nil) };
         self.location = &mut self.closed as *mut Value;
     }
     pub fn copy_value(&self) -> Value {
         unsafe { (*self.location).clone() }
+    }
+    pub fn get_location(&self) -> *mut Value {
+        self.location
     }
     // pub fn get(&self) -> &Value {
     //     unsafe { &*self.value }

@@ -172,11 +172,14 @@ pub struct SiltLua {
     // original CI code uses linked list, most recent closed upvalue is the first and links to previous closed values down the chain
     // allegedly performance of a linked list is heavier then an array and shifting values but is that true here or the opposite?
     // resizing a sequential array is faster then non sequential heap items, BUT since we'll USUALLY resolve the upvalue on the top of the list we're derefencing once to get our Upvalue vs an index lookup which is slightly slower.
-    // TODO TLDR: becnhmark this
+    // TODO TLDR: benchmark this
     open_upvalues: Vec<Rc<RefCell<UpValue>>>,
     // references: Vec<Reference>,
-    // obj
     // TODO should we store all strings in their own table/array for better equality checks? is this cheaper?
+    // obj
+
+    // TODO GC gray_stack
+    // gray_stack: Vec<Value>,
 }
 
 impl<'a> SiltLua {
@@ -234,12 +237,22 @@ impl<'a> SiltLua {
                 .rev()
                 .for_each(|up| {
                     let mut upvalue = up.borrow_mut();
-                    upvalue.close(unsafe { self.stack_top.replace(Value::Nil) });
+                    upvalue.close_around(unsafe { self.stack_top.replace(Value::Nil) });
                 });
             unsafe { self.stack_top = self.stack_top.sub(n as usize) };
         } else {
             let upvalue = self.open_upvalues.pop().unwrap();
-            upvalue.borrow_mut().close(self.pop());
+            upvalue.borrow_mut().close_around(self.pop());
+        }
+    }
+
+    fn close_upvalues_by_return(&mut self, last: *mut Value) {
+        for upvalue in self.open_upvalues.iter().rev() {
+            let mut up = upvalue.borrow_mut();
+            up.close();
+            if up.get_location() <= last {
+                break;
+            }
         }
     }
 
@@ -381,10 +394,12 @@ impl<'a> SiltLua {
                     }
                     let res = self.pop();
                     self.stack_top = frame.local_stack;
+                    self.close_upvalues_by_return(self.stack_top);
                     devout!("stack top {}", unsafe { &*self.stack_top });
                     self.stack_count = frame.stack_snapshot;
                     frames.pop();
                     frame = frames.last_mut().unwrap();
+                    devout!("next instruction {}", frame.current_instruction());
                     #[cfg(feature = "dev-out")]
                     self.print_stack();
                     self.push(res);
@@ -644,7 +659,7 @@ impl<'a> SiltLua {
                 OpCode::SET_UPVALUE { index } => {
                     let value = self.pop();
                     let ff = &frame.function.upvalues;
-                    ff[*index as usize].borrow_mut().close(value);
+                    ff[*index as usize].borrow_mut().close_around(value);
                     // unsafe { *upvalue.value = value };
                 }
                 OpCode::CALL(param_count) => {
