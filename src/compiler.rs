@@ -540,17 +540,6 @@ impl<'a> Compiler {
         // func
     }
 
-    // fn get_prev_loc(&self) -> Location {
-    //     #[cfg(feature = "dev-out")]
-    //     println!(
-    //         "get index {} is loc {}:{}",
-    //         self.current, self.locations[self.current].0, self.locations[self.current].1
-    //     );
-    //     // self.locations[self.current]
-    //     // TODO current?
-    //     self.previous.1
-    // }
-
     fn get_rule(token: &Token) -> ParseRule {
         // ParseRule {
         //     prefix: Some(|self| self.grouping()),
@@ -565,6 +554,7 @@ impl<'a> Compiler {
         // func(self);
         match token {
             Token::OpenParen => rule!(grouping, call, Call),
+            Token::OpenBrace => rule!(tabulate, call_table, Call),
             Token::Assign => rule!(void, void, None),
             Token::Op(op) => match op {
                 Operator::Sub => rule!(unary, binary, Term),
@@ -581,11 +571,13 @@ impl<'a> Compiler {
                 Operator::Concat => rule!(void, concat, Term),
                 Operator::And => rule!(void, and, And),
                 Operator::Or => rule!(void, or, Or),
+                Operator::Length => rule!(unary, void, None),
                 _ => rule!(void, void, None),
             },
             Token::Identifier(_) => rule!(variable, void, None),
+            Token::OpenBracket => rule!(void, indexer, None),
             Token::Integer(_) => rule!(integer, void, None),
-            Token::StringLiteral(_) => rule!(string, void, None),
+            Token::StringLiteral(_) => rule!(string, call_string, None),
             Token::Nil => rule!(literal, void, None),
             Token::True => rule!(literal, void, None),
             Token::False => rule!(literal, void, None),
@@ -653,8 +645,6 @@ impl<'a> Compiler {
         // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
         let can_assign = precedence <= Precedence::Assignment;
         (rule.prefix)(self, can_assign)?;
-        // self.store();
-        // let c = &self.current?.0;
 
         loop {
             let c = self.peek_result();
@@ -665,9 +655,6 @@ impl<'a> Compiler {
                     return Err(e.clone());
                 }
             };
-            // let c = self.get_current()?;
-            // let rule = Self::get_rule(c);
-            // #[cfg(feature = "dev-out")]
             devout!(
                 "loop target precedence for :  {}, current precedence for  : {}",
                 precedence,
@@ -692,12 +679,6 @@ impl<'a> Compiler {
             return Err(self.error_at(SiltError::InvalidAssignment(res)));
         }
 
-        // while precedence <= Self::get_rule(&self.current?.0).precedence {
-        //     self.store_and_return()
-        //     let rule = Self::get_rule(&self.current?.0);
-        //     (rule.infix)(self);
-        // }
-        // self.store();
         if skip_step {
             self.store();
         }
@@ -724,8 +705,6 @@ fn declaration(this: &mut Compiler) -> Catch {
 fn declaration_keyword(this: &mut Compiler, local: bool, already_function: bool) -> Catch {
     devnote!(this "declaration_keyword");
     this.eat();
-    // this.advance();
-    // this.store();
     let (res, location) = this.pop();
     match res? {
         Token::Identifier(ident) => {
@@ -1173,9 +1152,7 @@ fn end_scope(this: &mut Compiler, skip_code: bool) {
             }
             last_was_pop = false;
             count += 1;
-            // this.emit_at(OpCode::CLOSE_UPVALUES());
         } else {
-            // this.emit_at(OpCode::POPS(i));
             if !last_was_pop {
                 v.push(count);
                 count = 0;
@@ -1191,9 +1168,6 @@ fn end_scope(this: &mut Compiler, skip_code: bool) {
     if count > 0 {
         v.push(count);
     }
-    // if !skip_code {
-    //     this.emit_at(OpCode::POPS(i));
-    // }
 
     // index 0 is always OP_POPS but could be count of 0 if the first local is captured. Otherwise we can safely stagger even as pop, odds as close
     v.iter().enumerate().for_each(|(i, c)| {
@@ -1218,7 +1192,6 @@ fn if_statement(this: &mut Compiler) -> Catch {
     expression(this, false)?;
     expect_token!(this Then);
     let index = this.emit_index(OpCode::GOTO_IF_FALSE(0));
-    // statement(this)?;
     this.emit_at(OpCode::POP);
     build_block_until!(this, End | Else | ElseIf);
     // let else_jump = this.emit_index(OpCode::FORWARD(0));
@@ -1227,7 +1200,6 @@ fn if_statement(this: &mut Compiler) -> Catch {
     match this.peek()? {
         Token::Else => {
             this.eat();
-            // this.emit_at(OpCode::POP);
             let index = this.emit_index(OpCode::FORWARD(0));
             build_block_until!(this, End);
             this.patch(index)?;
@@ -1250,7 +1222,6 @@ fn while_statement(this: &mut Compiler) -> Catch {
     expect_token!(this Do);
     let exit_jump = this.emit_index(OpCode::GOTO_IF_FALSE(0));
     this.emit_at(OpCode::POP);
-    // statement(this)?;
     build_block_until!(this, End);
     this.emit_rewind(loop_start);
     this.patch(exit_jump)?;
@@ -1561,6 +1532,64 @@ fn grouping(this: &mut Compiler, can_assign: bool) -> Catch {
     Ok(())
 }
 
+fn tabulate(this: &mut Compiler, can_assign: bool) -> Catch {
+    devnote!(this "tabulate");
+    this.emit_at(OpCode::NEW_TABLE);
+    if !matches!(this.peek()?, &Token::CloseBrace) {
+        while {
+            let start = this.current_location;
+            if match this.get_current()? {
+                Token::StringLiteral(_) => {
+                    expression(this, false)?;
+                    expect_token!(this, Assign, this.error_at(SiltError::ExpectedAssign));
+                    expression(this, false)?;
+                    true
+                }
+                Token::OpenBracket => {
+                    this.eat();
+                    expression(this, false)?;
+                    expect_token!(
+                        this,
+                        CloseBracket,
+                        this.error_at(SiltError::UnterminatedBracket(start.0, start.1))
+                    );
+                    expect_token!(this, Assign, this.error_at(SiltError::ExpectedAssign));
+                    expression(this, false)?;
+                    true
+                }
+                _ => {
+                    expression(this, false)?;
+                    false
+                }
+            } {
+                this.emit_at(OpCode::TABLE_INSERT);
+            } else {
+                this.emit_at(OpCode::TABLE_PUSH);
+            }
+
+            match this.peek()? {
+                Token::Comma => {
+                    this.eat();
+                    true
+                }
+                Token::CloseBrace => false,
+                _ => return Err(this.error_at(SiltError::TableExpectedCommaOrCloseBrace)),
+            }
+        } {
+            // if args >= 255 {
+            //     return Err(this.error_at(SiltError::TooManyParameters));
+            // }
+        }
+    }
+
+    expect_token!(
+        this,
+        CloseBrace,
+        this.error_at(SiltError::TableExpectedCommaOrCloseBrace)
+    );
+    Ok(())
+}
+
 /** op unary or primary */
 fn unary(this: &mut Compiler, can_assign: bool) -> Catch {
     devnote!(this "unary");
@@ -1571,6 +1600,7 @@ fn unary(this: &mut Compiler, can_assign: bool) -> Catch {
     match t {
         Token::Op(Operator::Sub) => this.emit_at(OpCode::NEGATE),
         Token::Op(Operator::Not) => this.emit_at(OpCode::NOT),
+        Token::Op(Operator::Length) => this.emit_at(OpCode::LENGTH),
         _ => {}
     }
     //     let operator = Self::de_op(self.eat_out());
@@ -1584,6 +1614,32 @@ fn unary(this: &mut Compiler, can_assign: bool) -> Catch {
     // } else {
     //     self.anonymous_check()
     // }
+    Ok(())
+}
+
+fn indexer(this: &mut Compiler, _can_assign: bool) -> Catch {
+    devnote!(this "indexer");
+    this.eat();
+    expression(this, false)?;
+    expect_token!(
+        this,
+        CloseBracket,
+        this.error_at(SiltError::UnterminatedBracket(0, 0))
+    );
+    this.emit_at(OpCode::TABLE_GET);
+    Ok(())
+}
+
+fn table_getter(this: &mut Compiler, _can_assign: bool) -> Catch {
+    devnote!(this "table_getter");
+    this.eat();
+    expression(this, false)?;
+    expect_token!(
+        this,
+        CloseBracket,
+        this.error_at(SiltError::UnterminatedBracket(0, 0))
+    );
+    this.emit_at(OpCode::TABLE_GET);
     Ok(())
 }
 
@@ -1671,6 +1727,7 @@ fn integer(this: &mut Compiler, can_assign: bool) -> Catch {
     this.constant_at(value);
     Ok(())
 }
+
 fn string(this: &mut Compiler, can_assign: bool) -> Catch {
     devnote!(this "string");
     let t = this.take_store()?;
@@ -1711,9 +1768,17 @@ fn call(this: &mut Compiler, can_assign: bool) -> Catch {
     Ok(())
 }
 
+fn call_table(this: &mut Compiler, can_assign: bool) -> Catch {
+    todo!();
+    Ok(())
+}
+
+fn call_string(this: &mut Compiler, can_assign: bool) -> Catch {
+    todo!();
+    Ok(())
+}
 fn arguments(this: &mut Compiler, start: Location) -> Result<u8, ErrorTuple> {
     devnote!(this "arguments");
-    // this.eat();
     let mut args = 0;
     if !matches!(this.peek()?, &Token::CloseParen) {
         while {

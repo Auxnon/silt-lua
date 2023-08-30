@@ -54,7 +54,6 @@ pub enum Token {
     MultiplyAssign,
     DivideAssign,
     ModulusAssign,
-    LengthOp,                  //#
     Colon,                     //:
     ColonColon,                //::
     ColonIdentifier(Box<str>), // :ident (for types and calls)
@@ -62,6 +61,8 @@ pub enum Token {
     CloseParen,
     OpenBracket,
     CloseBracket,
+    OpenBrace,
+    CloseBrace,
     SemiColon,
     Comma,
 
@@ -102,6 +103,8 @@ pub enum Operator {
     LessEqual,
     Greater,
     GreaterEqual,
+    Length,
+    ColonEquals,
 }
 
 #[derive(Debug, Clone)]
@@ -149,7 +152,6 @@ impl Display for Token {
             Token::MultiplyAssign => write!(f, "*="),
             Token::DivideAssign => write!(f, "/="),
             Token::ModulusAssign => write!(f, "%="),
-            Token::LengthOp => write!(f, "#"),
             Token::Colon => write!(f, ":"),
             Token::ColonColon => write!(f, "::"),
             Token::Class => write!(f, "class"),
@@ -158,6 +160,8 @@ impl Display for Token {
             Token::Identifier(ref s) => write!(f, "ident({})", s),
             Token::OpenParen => write!(f, "("),
             Token::CloseParen => write!(f, ")"),
+            Token::OpenBrace => write!(f, "{{"),
+            Token::CloseBrace => write!(f, "}}"),
             Token::SemiColon => write!(f, ";"),
             Token::Comma => write!(f, ","),
             Token::StringLiteral(ref s) => write!(f, "string({})", s),
@@ -196,6 +200,8 @@ impl Display for Operator {
             Operator::Greater => write!(f, ">"),
             Operator::GreaterEqual => write!(f, ">="),
             Operator::Tilde => write!(f, "~"),
+            Operator::Length => write!(f, "#"),
+            Operator::ColonEquals => write!(f, ":="),
         }
     }
 }

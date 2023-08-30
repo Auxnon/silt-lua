@@ -11,6 +11,7 @@ use crate::{
     compiler::Compiler,
     error::{ErrorTuple, ErrorTypes, SiltError},
     function::{CallFrame, Closure, FunctionObject, NativeObject, UpValue},
+    table::Table,
     token::Operator,
     value::{Reference, Value},
 };
@@ -180,6 +181,8 @@ pub struct SiltLua {
 
     // TODO GC gray_stack
     // gray_stack: Vec<Value>,
+    // TODO temporary solution to a hash id
+    table_counter: usize,
 }
 
 impl<'a> SiltLua {
@@ -206,6 +209,7 @@ impl<'a> SiltLua {
             stack_top,
             globals: hashbrown::HashMap::new(),
             open_upvalues: vec![],
+            table_counter: 1,
         }
     }
 
@@ -319,6 +323,11 @@ impl<'a> SiltLua {
     fn peek(&self) -> &Value {
         // self.stack.last()
         unsafe { &*self.stack_top.sub(1) }
+    }
+
+    /** Look and get mutable reference to top of stack */
+    fn peek_mut(&mut self) -> &mut Value {
+        unsafe { &mut *self.stack_top.sub(1) }
     }
 
     /** Look down N amount of stack and return immutable reference */
@@ -724,6 +733,69 @@ impl<'a> SiltLua {
                     index: _,
                     neighboring: _,
                 } => unreachable!(),
+                OpCode::LENGTH => {
+                    let value = self.pop();
+                    match value {
+                        Value::String(s) => self.push(Value::Integer(s.len() as i64)),
+                        Value::Table(t) => self.push(Value::Integer(t.borrow().len() as i64)),
+                        _ => Err(SiltError::ExpInvalidLength(value.to_error()))?,
+                    }
+                }
+                OpCode::NEW_TABLE => {
+                    self.push(self.new_table());
+                    self.table_counter += 1;
+                }
+                OpCode::TABLE_INSERT => todo!(),
+                OpCode::TABLE_PUSH => {
+                    let value = self.pop();
+                    let table = self.peek_mut();
+                    if let Value::Table(t) = table {
+                        t.borrow_mut().push(value);
+                    } else {
+                        return Err(SiltError::VmNonTableOperations);
+                    }
+                }
+                OpCode::TABLE_SET => {
+                    let value = self.pop();
+                    let key = self.pop();
+                    let table = self.peek_mut();
+                    if let Value::Table(t) = table {
+                        t.borrow_mut().insert(key, value);
+                    } else {
+                        return Err(SiltError::VmNonTableOperations);
+                    }
+                }
+                OpCode::TABLE_SET_BY_CONSTANT { constant } => {
+                    let value = self.pop();
+                    let key = Self::get_chunk(&frame).get_constant(*constant);
+                    let table = self.peek_mut();
+                    if let Value::Table(t) = table {
+                        // TODO can we pre-hash this to avoid a clone?
+                        t.borrow_mut().insert(key.clone(), value);
+                    } else {
+                        return Err(SiltError::VmNonTableOperations);
+                    }
+                }
+                OpCode::TABLE_GET => {
+                    let key = self.pop();
+                    let table = self.peek_mut();
+                    if let Value::Table(t) = table {
+                        let v = t.borrow().get_value(&key);
+                        self.push(v);
+                    } else {
+                        return Err(SiltError::VmNonTableOperations);
+                    }
+                }
+                OpCode::TABLE_GET_BY_CONSTANT { constant } => {
+                    let key = Self::get_chunk(&frame).get_constant(*constant);
+                    let table = self.peek_mut();
+                    if let Value::Table(t) = table {
+                        let v = t.borrow().get_value(&key);
+                        self.push(v);
+                    } else {
+                        return Err(SiltError::VmNonTableOperations);
+                    }
+                }
             }
             frame.iterate();
             //stack
@@ -898,6 +970,11 @@ impl<'a> SiltLua {
         //         true
         //     }
         // });
+    }
+
+    fn new_table(&self) -> Value {
+        let t = Table::new(self.table_counter);
+        Value::Table(Rc::new(RefCell::new(t)))
     }
 
     /** Register a native function on the global table  */

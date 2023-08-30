@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use hashbrown::HashMap;
 
@@ -6,6 +6,7 @@ use crate::{
     error::ErrorTypes,
     function::{Closure, FunctionObject, NativeObject},
     silt::SiltLua,
+    table::Table,
 };
 
 pub enum Value {
@@ -21,7 +22,7 @@ pub enum Value {
     String(Box<String>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
-    Table(Reference<HashMap<Value, Value>>),
+    Table(Rc<RefCell<Table>>),
     // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
     // Boxed()
     Function(Rc<FunctionObject>), // closure: Environment,
@@ -51,7 +52,7 @@ impl std::fmt::Display for Value {
             Value::NativeFunction(_) => write!(f, "native_function"),
             Value::Closure(c) => write!(f, "(clojure= {})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
-            Value::Table(t) => write!(f, "table: {}", t.id),
+            Value::Table(t) => write!(f, "{}", t.borrow().to_string()),
         }
     }
 }
@@ -95,7 +96,7 @@ impl Value {
             Value::Function { .. } => "function".to_string(),
             Value::Closure(_) => "(function)".to_string(),
             Value::String(s) => s.to_string(),
-            Value::Table(t) => format!("table: {}", t.id),
+            Value::Table(t) => t.borrow().to_string(),
         }
     }
 }
@@ -113,10 +114,11 @@ impl Clone for Value {
             // TODO: implement this
             Value::Function(r) => Value::Function(Rc::clone(r)),
             Value::Closure(c) => Value::Closure(Rc::clone(c)),
-            Value::Table(t) => Value::Table(Reference {
-                value: Rc::clone(&t.value),
-                id: t.id,
-            }),
+            // Value::Table(t) => Value::Table(Reference {
+            //     value: Rc::clone(&t.value),
+            //     id: t.id,
+            // }),
+            Value::Table(t) => Value::Table(Rc::clone(t)),
         }
     }
 }
@@ -135,7 +137,7 @@ impl PartialEq for Value {
                     == j.function as *const fn(&mut SiltLua, Vec<Value>) -> Value
             }
             (Value::Function(i), Value::Function(j)) => Rc::ptr_eq(i, j),
-            (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i.value, &j.value),
+            (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i, &j),
             _ => false,
         }
     }
@@ -146,6 +148,14 @@ impl Default for Value {
         Value::Nil
     }
 }
+
+impl core::hash::Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+    }
+}
+
+impl Eq for Value {}
 
 // impl Drop for Value {
 //     fn drop(&mut self) {

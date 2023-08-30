@@ -7,6 +7,7 @@ enum Mode {
     Normal,
     Flag,
     Typer,
+    // LookAhead,
 }
 pub struct Lexer {
     pub source: String,
@@ -18,9 +19,7 @@ pub struct Lexer {
     pub column: usize,
     pub column_start: usize,
     mode: Mode,
-    // pub error_list: Vec<ErrorTuple>,
-    // pub tokens: Vec<Token>,
-    // pub locations: Vec<Location>,
+    // ahead_buffer: Vec<TokenOption>,
 }
 
 pub type TokenTuple = (Token, Location);
@@ -43,6 +42,14 @@ impl Iterator for Lexer {
                     self.step()
                 }
             },
+            // Mode::LookAhead => {
+            //     if self.ahead_buffer.is_empty() {
+            //         self.mode = Mode::Normal;
+            //         self.step()
+            //     } else {
+            //         self.ahead_buffer.remove(0)
+            //     }
+            // }
             Mode::Typer => self.colon_blow(),
         }
     }
@@ -64,9 +71,7 @@ impl<'a> Lexer {
             line: 1,
             iterator: chars,
             mode: Mode::Normal,
-            // error_list: Vec::new(),
-            // tokens: Vec::new(),
-            // locations: Vec::new(),
+            // ahead_buffer: Vec::new(),
         }
     }
 
@@ -332,14 +337,35 @@ impl<'a> Lexer {
         self.send(Token::ColonIdentifier(cc.into()))
     }
 
-    // pub fn parse(&mut self) -> (Vec<Token>, Vec<Location>) {
-    //     // while self.current < self.end {
-    //     self.step();
-    //     // }
-    //     (
-    //         self.tokens.drain(..).collect(),
-    //         self.locations.drain(..).collect(),
-    //     )
+    // fn look_ahead(&mut self, token: Token) -> TokenOption {
+    //     match token{
+    //         Token::Identifier(_)=>{
+    //             match self.step(){
+    //                 Some(Token::ArrowFunction)=>{
+    //                     self.mode = Mode::LookAhead;
+    //                     self.eat();
+    //                     self.ahead_buffer.push(self.send(token));
+    //                     return self.send(Token::ArrowFunction);
+    //                 }
+    //             }
+    //         }
+    //         Token::OpenParen
+    //     }else{
+
+    //     }
+    //     while self.current < self.end {
+    //         match self.step() {
+    //             Some(Ok((tuple))) => {
+    //                 if let Token::Identifier(_) | Token::Comma= tuple{
+    //                     self.look_ahead( Some(Ok(tuple)));
+    //                 }else{
+    //                     break;
+    //                 }
+    //                 // continue
+
+    //         }
+    //     }
+    //     self.send(token)
     // }
 
     pub fn step(&mut self) -> TokenOption {
@@ -383,7 +409,7 @@ impl<'a> Lexer {
                         "goto" => Token::Goto,
                         "class" => Token::Class,
                         "sprint" => Token::Print,
-                        _ => Token::Identifier(Box::new(cc.to_string())),
+                        _ => Token::Identifier(Box::new(cc.to_string())), //return self.look_ahead(Token::Identifier(Box::new(cc.to_string()))),
                     })
                 }
                 '0'..='9' => self.number(false),
@@ -532,6 +558,14 @@ impl<'a> Lexer {
                     self.eat();
                     self.send(Token::CloseBracket)
                 }
+                '{' => {
+                    self.eat();
+                    self.send(Token::OpenBrace)
+                }
+                '}' => {
+                    self.eat();
+                    self.send(Token::CloseBrace)
+                }
                 ' ' | '\r' | '\t' => {
                     self.eat();
                     None
@@ -543,7 +577,7 @@ impl<'a> Lexer {
                 }
                 '#' => {
                     self.eat();
-                    self.send(Token::LengthOp)
+                    self.send(Token::Op(Operator::Length))
                 }
                 ':' => {
                     self.eat();
@@ -551,6 +585,11 @@ impl<'a> Lexer {
                         Some(':') => {
                             self.eat();
                             self.send(Token::ColonColon)
+                        }
+                        #[cfg(feature = "short-declare")]
+                        Some('=') => {
+                            self.eat();
+                            self.send(Token::Op(Operator::ColonEquals))
                         }
                         _ => {
                             self.send(Token::Colon)

@@ -43,6 +43,14 @@ pub enum OpCode {
     REGISTER_UPVALUE { index: u8, neighboring: bool },
 
     LITERAL { dest: u8, literal: u8 },
+    LENGTH,
+    NEW_TABLE,
+    TABLE_INSERT,
+    TABLE_PUSH,
+    TABLE_GET,
+    TABLE_GET_BY_CONSTANT { constant: u8 },
+    TABLE_SET,
+    TABLE_SET_BY_CONSTANT { constant: u8 },
 }
 pub enum Tester {
     CONSTANT(u8),
@@ -132,6 +140,18 @@ impl Display for OpCode {
             }
             Self::SET_LOCAL { index } => {
                 write!(f, "OP_SET_LOCAL {}", index)
+            }
+            Self::LENGTH => write!(f, "OP_LENGTH"),
+            Self::NEW_TABLE => write!(f, "OP_NEW_TABLE"),
+            Self::TABLE_INSERT => write!(f, "OP_TABLE_INSERT"),
+            Self::TABLE_PUSH => write!(f, "OP_TABLE_PUSH"),
+            Self::TABLE_GET => write!(f, "OP_TABLE_GET"),
+            Self::TABLE_GET_BY_CONSTANT { constant } => {
+                write!(f, "OP_TABLE_GET_BY_CONSTANT {}", constant)
+            }
+            Self::TABLE_SET => write!(f, "OP_TABLE_SET"),
+            Self::TABLE_SET_BY_CONSTANT { constant } => {
+                write!(f, "OP_TABLE_SET_BY_CONSTANT {}", constant)
             }
         }
     }

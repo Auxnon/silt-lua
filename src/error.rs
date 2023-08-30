@@ -11,11 +11,13 @@ pub enum SiltError {
     UnexpectedCharacter(char),
     UnterminatedString,
     UnterminatedParenthesis(usize, usize),
+    UnterminatedBracket(usize, usize),
     InvalidTokenPlacement(Token),
     InvalidColonPlacement, // more specific to types and calls
     ExpectedLocalIdentifier,
     ExpectedLabelIdentifier,
     ExpectedGotoIdentifier,
+    TableExpectedCommaOrCloseBrace,
     UndefinedLabel(String),
     InvalidAssignment(Token),
     UnterminatedBlock,
@@ -30,10 +32,12 @@ pub enum SiltError {
     //expression errors
     ExpInvalidOperator(Operator),
     ExpInvalidBitwise(ErrorTypes),
+    ExpInvalidLength(ErrorTypes),
     ExpOpValueWithValue(ErrorTypes, Operator, ErrorTypes),
     ExpInvalidNegation(ErrorTypes),
     EarlyEndOfFile,
     ExpInvalid,
+    ExpectedAssign,
 
     // resolver errors
     // ResReadInOwnInit,
@@ -50,6 +54,7 @@ pub enum SiltError {
     VmRuntimeError,
     VmCorruptConstant,
     VmUpvalueResolveError,
+    VmNonTableOperations,
 
     Unknown,
 }
@@ -77,6 +82,13 @@ impl std::fmt::Display for SiltError {
             Self::VmUpvalueResolveError => {
                 write!(f, "Unexpected issue resolving upvalue for closure")
             }
+            Self::ExpectedAssign => write!(f, "Expected assignment operator '='"),
+            Self::TableExpectedCommaOrCloseBrace => {
+                write!(
+                    f,
+                    "Table expected a comma or termination by closing brace '}}'"
+                )
+            }
             Self::UndefinedLabel(s) => write!(f, "No matching goto label for '{}'", s),
             Self::ExpectedGotoIdentifier => write!(f, "Expected identifier following goto keyword"),
             Self::ChunkCorrupt => write!(f, "Invalid chunk due compilation corruption"),
@@ -98,10 +110,20 @@ impl std::fmt::Display for SiltError {
                     x, y
                 )
             }
+            Self::UnterminatedBracket(x, y) => {
+                write!(
+                    f,
+                    "Expected closing bracket due to open bracket '[' here {}:{}",
+                    x, y
+                )
+            }
             Self::ExpInvalidOperator(t) => write!(f, "Invalid expression token: {}", t),
             Self::EarlyEndOfFile => write!(f, "File ended early"),
             Self::ExpOpValueWithValue(v1, op, v2) => {
                 write!(f, "Cannot {} '{}' and '{}'", op, v1, v2)
+            }
+            Self::VmNonTableOperations => {
+                write!(f, "Cannot perform table operations on a non-table value")
             }
             SiltError::ExpInvalidNegation(v) => write!(f, "Cannot negate '{}'", v),
             SiltError::InvalidTokenPlacement(t) => write!(f, "Invalid token placement: {}", t),
@@ -109,6 +131,7 @@ impl std::fmt::Display for SiltError {
                 write!(f, "Colon must be followed by type and assigned or a call")
             }
             SiltError::ExpInvalidBitwise(v) => write!(f, "Cannot bitwise on '{}'", v),
+            Self::ExpInvalidLength(v) => write!(f, "Cannot get length of '{}'", v),
             SiltError::EvalNoInteger(v) => {
                 write!(f, "{} has no direct integer conversion for operation", v)
             }
