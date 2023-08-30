@@ -9,9 +9,12 @@ mod function;
 mod lexer;
 pub mod silt;
 pub mod standard;
+pub mod table;
 mod token;
 mod userdata;
 pub mod value;
+
+use wasm_bindgen::prelude::*;
 
 fn simple(source: &str) -> Value {
     let mut vm = SiltLua::new();
@@ -28,6 +31,20 @@ fn simple(source: &str) -> Value {
     // Value::String(Box::new("Unknown error".to_string()))
 }
 
+#[wasm_bindgen]
+extern "C" {
+    pub fn jprintln(s: &str);
+}
+
+#[wasm_bindgen]
+pub fn run(source: &str) -> String {
+    let mut vm = SiltLua::new();
+    vm.load_standard_library();
+    match vm.run(source) {
+        Ok(v) => v.to_string(),
+        Err(e) => e[0].to_string(),
+    }
+}
 macro_rules! valeq {
     ($source:literal, $val:expr) => {
         assert_eq!(simple($source), $val);

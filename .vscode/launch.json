@@ -7,15 +7,35 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'silt-lua'",
+            "name": "Debug unit tests in library 'silt_lua'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=silt_lua"
+                ],
+                "filter": {
+                    "name": "silt_lua",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'silt_lua_cli'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=silt-lua",
-                    "--package=silt-lua"
+                    "--bin=silt_lua_cli",
+                    "--package=silt_lua",
+                    "--features=dev-out"
                 ],
                 "filter": {
-                    "name": "silt-lua",
+                    "name": "silt_lua_cli",
                     "kind": "bin"
                 }
             },
@@ -25,16 +45,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'silt-lua'",
+            "name": "Debug unit tests in executable 'silt_lua_cli'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=silt-lua",
-                    "--package=silt-lua"
+                    "--bin=silt_lua_cli",
+                    "--package=silt_lua"
                 ],
                 "filter": {
-                    "name": "silt-lua",
+                    "name": "silt_lua_cli",
                     "kind": "bin"
                 }
             },

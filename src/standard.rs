@@ -1,4 +1,4 @@
-use crate::{silt::SiltLua, value::Value};
+use crate::{jprintln, silt::SiltLua, value::Value};
 
 pub fn clock(_: &mut SiltLua, _: Vec<Value>) -> Value {
     Value::Number(
@@ -10,9 +10,13 @@ pub fn clock(_: &mut SiltLua, _: Vec<Value>) -> Value {
 }
 
 pub fn print(_: &mut SiltLua, args: Vec<Value>) -> Value {
-    for arg in args {
-        print!("> {}", arg);
-    }
-    println!();
+    let s = args
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<String>>()
+        .join("\t");
+    println!("> {}", s);
+    jprintln(s.as_str());
+
     Value::Nil
 }

@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="utf-8" />
+    <title>hello-wasm example</title>
+  </head>
+  <body>
+    <script type="module">
+      import init, { run } from "../pkg/silt_lua.js";
+      init().then(() => {
+        window.go = (s) => run(s);
+        // let a = run("1+2");
+        // alert(a);
+      });
+    </script>
+  </body>
+</html>
