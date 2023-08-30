@@ -1,11 +1,11 @@
 use core::panic;
 use std::{rc::Rc, vec};
 
-use silt_lua::{compiler::Compiler, silt::SiltLua, standard};
+use silt_lua::silt::SiltLua;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
     {
-
         // cli(source_in, &mut global);
 
         // match cli(source_in, &mut global) {
@@ -244,7 +244,11 @@ fn main() {
     return sum()
     "#;
     // load string from scripts/closure4.lua
-    let file = std::fs::read_to_string("scripts/closure4.lua").unwrap();
+    let file = if args.len() > 1 {
+        std::fs::read_to_string(args[1].as_str()).unwrap()
+    } else {
+        std::fs::read_to_string("scripts/table.lua").unwrap()
+    };
     let source_in = file.as_str();
     // let source_in = r#"
     // global g=2
