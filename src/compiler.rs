@@ -211,6 +211,8 @@ pub struct Compiler {
     // pre_previous: TokenTuple,
     pending_gotos: Vec<(String, usize, Location)>,
     extra: bool, // pub global: &'a mut Environment,
+    /** hack to flip off a pop when an expression takes on statement properties, used only for := right now */
+    override_pop: bool,
 }
 
 impl<'a> Compiler {
@@ -241,6 +243,7 @@ impl<'a> Compiler {
             // previous: (Token::Nil, (0, 0)),
             // pre_previous: (Token::Nil, (0, 0)),
             extra: true,
+            override_pop: false,
         }
     }
 
@@ -1434,7 +1437,11 @@ fn next_expression(this: &mut Compiler) -> Catch {
 fn expression_statement(this: &mut Compiler) -> Catch {
     devnote!(this "expression_statement");
     expression(this, false)?;
-    this.emit_at(OpCode::POP);
+    if this.override_pop {
+        this.override_pop = false;
+    } else {
+        this.emit_at(OpCode::POP);
+    }
     devnote!(this "expression_statement end");
     Ok(())
 }
@@ -1454,6 +1461,7 @@ fn variable(this: &mut Compiler, can_assign: bool) -> Catch {
     // } else {
     //     this.emit(OpCode::LITERAL { dest: ident, literal: ident }, t.1);
     // }
+
     named_variable(this, can_assign, false)?;
     Ok(())
 }
@@ -1461,56 +1469,74 @@ fn variable(this: &mut Compiler, can_assign: bool) -> Catch {
 fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Catch {
     devnote!(this "named_variables");
     let t = this.take_store()?;
-    let (setter, getter) = if let Token::Identifier(ident) = t {
-        devout!("assigning to identifier: {}", ident);
-        // TODO currently this mechanism searches the entire local stack to determine local and then up values,  ideally we check up values first once we raise out of the functional scope instead of continuing to walk the local stack, but this will work for now.
-        match resolve_local(this, &ident) {
-            Some((i, is_up)) => {
-                if is_up {
-                    // let ind = match resolve_upvalue(this, i) {
-                    //     Some(i) => i,
-                    //     None => add_upvalue(this, i, neighboring),
-                    // };
-                    (
-                        OpCode::SET_UPVALUE { index: i },
-                        OpCode::GET_UPVALUE { index: i },
-                    )
-                } else {
-                    (
-                        OpCode::SET_LOCAL { index: i },
-                        OpCode::GET_LOCAL { index: i },
-                    )
-                }
-            }
-            None => {
-                let ident = this.identifer_constant(ident);
-                // add_upvalue(this, ident, this.scope_depth);
-                (
-                    OpCode::SET_GLOBAL { constant: ident },
-                    OpCode::GET_GLOBAL { constant: ident },
-                )
-            }
-        }
-    } else {
-        unreachable!()
-    };
 
-    // if i!=-1 {
-    // set local or get local
-    //    this.emit(OpCode::GET_LOCAL { local: i }, t.1); its local
-
-    if can_assign
-        && if let Token::Assign = this.peek()? {
+    // declare shortcut only valid if we're above scope 0 otherwise it's redundant
+    // TODO should we send a warning that 0 scoped declares are redundant?
+    if this.scope_depth > 0
+        && if let Token::Op(Operator::ColonEquals) = this.peek()? {
             true
         } else {
             false
         }
     {
-        this.eat();
-        expression(this, false)?;
-        this.emit_at(setter);
+        if let Token::Identifier(ident) = t {
+            // short declare
+            add_local(this, ident)?;
+            this.override_pop = true;
+            this.eat();
+            expression(this, false)?;
+        } else {
+            unreachable!()
+        }
     } else {
-        this.emit_at(getter);
+        //normal assigment
+        let (setter, getter) = if let Token::Identifier(ident) = t {
+            devout!("assigning to identifier: {}", ident);
+            // TODO currently this mechanism searches the entire local stack to determine local and then up values,  ideally we check up values first once we raise out of the functional scope instead of continuing to walk the local stack, but this will work for now.
+            match resolve_local(this, &ident) {
+                Some((i, is_up)) => {
+                    if is_up {
+                        (
+                            OpCode::SET_UPVALUE { index: i },
+                            OpCode::GET_UPVALUE { index: i },
+                        )
+                    } else {
+                        (
+                            OpCode::SET_LOCAL { index: i },
+                            OpCode::GET_LOCAL { index: i },
+                        )
+                    }
+                }
+                None => {
+                    let ident = this.identifer_constant(ident);
+                    // add_upvalue(this, ident, this.scope_depth);
+                    (
+                        OpCode::SET_GLOBAL { constant: ident },
+                        OpCode::GET_GLOBAL { constant: ident },
+                    )
+                }
+            }
+        } else {
+            unreachable!()
+        };
+
+        // if i!=-1 {
+        // set local or get local
+        //    this.emit(OpCode::GET_LOCAL { local: i }, t.1); its local
+
+        if can_assign
+            && if let Token::Assign = this.peek()? {
+                true
+            } else {
+                false
+            }
+        {
+            this.eat();
+            expression(this, false)?;
+            this.emit_at(setter);
+        } else {
+            this.emit_at(getter);
+        }
     }
 
     // if let &Token::Assign = this.get_current()? {
