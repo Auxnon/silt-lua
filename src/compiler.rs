@@ -119,7 +119,8 @@ enum Precedence {
     And,        // and
     Equality,   // == ~= !=
     Comparison, // < > <= >=
-    Term,       // + - ..
+    Concat,     // ..
+    Term,       // + -
     Factor,     // * /
     Unary,      // ~ - !
     Call,       // . ()
@@ -139,7 +140,8 @@ impl Precedence {
             Precedence::Or => Precedence::And,
             Precedence::And => Precedence::Equality,
             Precedence::Equality => Precedence::Comparison,
-            Precedence::Comparison => Precedence::Term,
+            Precedence::Comparison => Precedence::Concat,
+            Precedence::Concat => Precedence::Term,
             Precedence::Term => Precedence::Factor,
             Precedence::Factor => Precedence::Unary,
             Precedence::Unary => Precedence::Call,
@@ -158,6 +160,7 @@ impl Display for Precedence {
             Precedence::And => write!(f, "And"),
             Precedence::Equality => write!(f, "Equality"),
             Precedence::Comparison => write!(f, "Comparison"),
+            Precedence::Concat => write!(f, "Concat"),
             Precedence::Term => write!(f, "Term"),
             Precedence::Factor => write!(f, "Factor"),
             Precedence::Unary => write!(f, "Unary"),
@@ -184,8 +187,12 @@ struct Local {
 }
 
 struct UpLocal {
+    /** location on the overall stack */
     ident: u8,
+    /** location on the immediately scoped stack, 1 if it's the first declared value in scope (after closure) */
+    // scoped_ident: u8,
     neighboring: bool,
+    universal_ident: u8,
 }
 
 pub struct Compiler {
@@ -571,7 +578,7 @@ impl<'a> Compiler {
                 Operator::LessEqual => rule!(void, binary, Comparison),
                 Operator::Greater => rule!(void, binary, Comparison),
                 Operator::GreaterEqual => rule!(void, binary, Comparison),
-                Operator::Concat => rule!(void, concat, Term),
+                Operator::Concat => rule!(void, concat, Concat),
                 Operator::And => rule!(void, and, And),
                 Operator::Or => rule!(void, or, Or),
                 Operator::Length => rule!(unary, void, None),
