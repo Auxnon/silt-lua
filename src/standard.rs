@@ -16,6 +16,8 @@ pub fn print(_: &mut SiltLua, args: Vec<Value>) -> Value {
         .collect::<Vec<String>>()
         .join("\t");
     println!("> {}", s);
+
+    #[cfg(profile = "wasm")]
     jprintln(s.as_str());
 
     Value::Nil

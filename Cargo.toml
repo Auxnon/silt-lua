@@ -19,6 +19,10 @@ opt-level = "z"  # Optimize for size.
 lto = true
 panic ="abort"
 
+
+[profile.wasm]
+inherits="release"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default=["silt"]
