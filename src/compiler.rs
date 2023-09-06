@@ -46,7 +46,7 @@ macro_rules! devnote {
 
 macro_rules! devout {
         ($($arg:tt)*) => {
-            #[cfg(feature = "devout")]
+            #[cfg(feature = "dev-out")]
             println!($($arg)*);
         }
     }
