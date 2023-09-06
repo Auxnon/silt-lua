@@ -7,6 +7,7 @@ use crate::{
     function::{Closure, FunctionObject, NativeObject},
     silt::SiltLua,
     table::Table,
+    userdata::UserData,
 };
 
 pub enum Value {
@@ -29,7 +30,7 @@ pub enum Value {
     Closure(Rc<Closure>),
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(Rc<NativeObject>),
-    // UserData
+    UserData(Rc<dyn UserData>),
 }
 
 pub enum ReferneceStore {
@@ -43,8 +44,8 @@ pub struct Reference<T> {
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Integer(i) => write!(f, "{}i", i),
-            Value::Number(n) => write!(f, "{}f", n),
+            Value::Integer(i) => write!(f, "{}", i),
+            Value::Number(n) => write!(f, "{}", n),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Nil => write!(f, "nil"),
             Value::String(s) => write!(f, "\"{}\"", s),
@@ -53,6 +54,7 @@ impl std::fmt::Display for Value {
             Value::Closure(c) => write!(f, "(clojure= {})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(t) => write!(f, "{}", t.borrow().to_string()),
+            Value::UserData(u) => write!(f, "{}", u.to_string()),
         }
     }
 }
@@ -76,29 +78,31 @@ impl Value {
             Value::Function { .. } => ErrorTypes::Function,
             Value::Closure(_) => ErrorTypes::Closure,
             Value::Table(_) => ErrorTypes::Table,
+            Value::UserData(_) => ErrorTypes::UserData,
         }
     }
 
-    fn to_string(&self) -> String {
-        match self {
-            Value::Integer(i) => i.to_string(),
-            Value::Number(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Nil => "nil".to_string(),
-            Value::Infinity(b) => {
-                if *b {
-                    "-ing".to_string()
-                } else {
-                    "inf".to_string()
-                }
-            }
-            Value::NativeFunction(_) => "native_function".to_string(),
-            Value::Function { .. } => "function".to_string(),
-            Value::Closure(_) => "(function)".to_string(),
-            Value::String(s) => s.to_string(),
-            Value::Table(t) => t.borrow().to_string(),
-        }
-    }
+    // fn to_string(&self) -> String {
+    //     match self {
+    //         Value::Integer(i) => i.to_string(),
+    //         Value::Number(n) => n.to_string(),
+    //         Value::Bool(b) => b.to_string(),
+    //         Value::Nil => "nil".to_string(),
+    //         Value::Infinity(b) => {
+    //             if *b {
+    //                 "-ing".to_string()
+    //             } else {
+    //                 "inf".to_string()
+    //             }
+    //         }
+    //         Value::NativeFunction(_) => "native_function".to_string(),
+    //         Value::Function { .. } => "function".to_string(),
+    //         Value::Closure(_) => "(function)".to_string(),
+    //         Value::String(s) => s.to_string(),
+    //         Value::Table(t) => t.borrow().to_string(),
+    //         Value::UserData(u) => u.to_string(),
+    //     }
+    // }
 }
 
 impl Clone for Value {
@@ -119,6 +123,7 @@ impl Clone for Value {
             //     id: t.id,
             // }),
             Value::Table(t) => Value::Table(Rc::clone(t)),
+            Value::UserData(u) => Value::UserData(Rc::clone(u)),
         }
     }
 }

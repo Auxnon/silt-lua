@@ -72,6 +72,7 @@ pub enum ErrorTypes {
     Function,
     Closure,
     Table,
+    UserData,
 }
 
 pub type Location = (usize, usize);
@@ -172,6 +173,7 @@ impl std::fmt::Display for ErrorTypes {
             ErrorTypes::Function => write!(f, "function"),
             ErrorTypes::Closure => write!(f, "(function)"),
             ErrorTypes::Table => write!(f, "table"),
+            ErrorTypes::UserData => write!(f, "userdata"),
         }
     }
 }

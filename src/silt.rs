@@ -151,6 +151,14 @@ macro_rules! binary_op {
                 (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp)?,
                 (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
                 (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
+                // TODO userdata
+                // (Value::UserData(left), Value::UserData(right)) => {
+                //     if let Some(f) = left.get_meta_method($opp) {
+                //         f(left, right)?
+                //     } else {
+                //         op_error!(left.to_error(), $opp, right.to_error())
+                //     }
+                // }
                 (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
             });
         }
