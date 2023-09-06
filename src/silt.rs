@@ -241,7 +241,15 @@ impl<'a> SiltLua {
         self.stack_count -= n as usize;
     }
 
+    fn print_upvalues(&self) {
+        self.open_upvalues.iter().for_each(|up| {
+            up.borrow().print();
+        });
+    }
+
     fn close_n_upvalues(&mut self, n: u8) {
+        #[cfg(feature = "dev-out")]
+        self.print_upvalues();
         // remove n from end of list
         if n > 1 {
             self.open_upvalues
@@ -259,7 +267,9 @@ impl<'a> SiltLua {
     }
 
     fn close_upvalues_by_return(&mut self, last: *mut Value) {
-        for upvalue in self.open_upvalues.iter().rev() {
+        #[cfg(feature = "dev-out")]
+        self.print_upvalues();
+        for upvalue in self.open_upvalues.iter() {
             let mut up = upvalue.borrow_mut();
             up.close();
             if up.get_location() <= last {
@@ -282,7 +292,7 @@ impl<'a> SiltLua {
 
     // TODO can we make this faster with slices? can we slice a pointer? 🤔
     fn popn(&mut self, n: u8) -> Vec<Value> {
-        println!("popn: {}", n);
+        // println!("popn: {}", n);
         let mut values = vec![];
         for _ in 0..n {
             values.push(self.pop());
@@ -370,6 +380,7 @@ impl<'a> SiltLua {
         // frame.ip = object.chunk.code.as_ptr();
         // frame.slots = self.stack ???
         // let rstack = self.stack.as_ptr();
+        #[cfg(feature = "dev-out")]
         object.chunk.print_chunk(None);
         self.stack_top = self.stack.as_mut_ptr() as *mut Value;
         self.body = object.clone();
@@ -670,6 +681,14 @@ impl<'a> SiltLua {
                         .borrow()
                         .copy_value();
 
+                    #[cfg(feature = "dev-out")]
+                    {
+                        frame.print_local_stack();
+                        frame.function.upvalues.iter().for_each(|f| {
+                            f.borrow().print();
+                        });
+                    }
+
                     devout!("GET_UPVALUE: {}", value);
                     self.push(value);
                 }
@@ -786,7 +805,8 @@ impl<'a> SiltLua {
                 }
                 OpCode::TABLE_GET => {
                     let key = self.pop();
-                    let table = self.peek_mut();
+                    let table = self.pop();
+                    // println!("table get: {}", table);
                     if let Value::Table(t) = table {
                         let v = t.borrow().get_value(&key);
                         self.push(v);
@@ -906,6 +926,7 @@ impl<'a> SiltLua {
         //, stack: *mut Value,
         //stack
         // self.print_stack();
+        #[cfg(feature = "dev-out")]
         frame.print_local_stack();
         let value = unsafe { frame.local_stack.add(index as usize) };
         devout!("2capture_upvalue at index {} : {}", index, unsafe {
@@ -914,12 +935,12 @@ impl<'a> SiltLua {
         let mut ind = 0;
         for (i, up) in self.open_upvalues.iter().enumerate() {
             let upvalue = up.borrow();
-            if upvalue.index == index {
+            if upvalue.location == value {
                 return up.clone();
             }
             ind = i;
 
-            if upvalue.index > index {
+            if upvalue.location > value {
                 break;
             }
         }
@@ -927,6 +948,11 @@ impl<'a> SiltLua {
         let u = Rc::new(RefCell::new(UpValue::new(index, value)));
 
         self.open_upvalues.insert(ind, u.clone());
+
+        #[cfg(feature = "dev-out")]
+        self.open_upvalues.iter().for_each(|up| {
+            up.borrow().print();
+        });
         u
 
         //   self

@@ -247,7 +247,7 @@ fn main() {
     let file = if args.len() > 1 {
         std::fs::read_to_string(args[1].as_str()).unwrap()
     } else {
-        std::fs::read_to_string("scripts/table.lua").unwrap()
+        std::fs::read_to_string("scripts/ex.lua").unwrap()
     };
     let source_in = file.as_str();
     // let source_in = r#"

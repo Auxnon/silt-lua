@@ -643,7 +643,7 @@ impl<'a> Compiler {
         devout!(
             "target precedence:  {}, current precedence: {}",
             precedence,
-            rule.precedence
+            rule.precedence,
         );
         // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
         let can_assign = precedence <= Precedence::Assignment;
@@ -690,6 +690,7 @@ impl<'a> Compiler {
 }
 
 fn declaration(this: &mut Compiler) -> Catch {
+    devout!("----------------------------");
     devnote!(this "declaration");
 
     let t = this.peek()?;
@@ -812,34 +813,36 @@ fn resolve_local(this: &mut Compiler, ident: &Box<String>) -> Option<(u8, bool)>
                 #[cfg(feature = "dev-out")]
                 println!("matched local {}->{} at {}", ident, local_ident, i);
                 let ident_byte = i as u8;
+
                 // first establish we're accessing a value by a closure, it exists outside this function
                 let is_upvalue = l.functional_depth < this.functional_depth;
                 return if is_upvalue {
                     (*l).is_captured = true;
-
-                    // println!(
-                    //     "is upvalue depth:{}, fn_depth:{}",
-                    //     l.depth, l.functional_depth
-                    // );
-                    // l.functional_depth + 1 == this.functional_depth
+                    let offset_ident = if l.functional_depth > 0 {
+                        let offset = this.local_functional_offset[l.functional_depth - 1];
+                        i - offset
+                    } else {
+                        i
+                    } as u8;
                     // MARK we're passing in a target depth of 0, huh?? that's global isnt it? our upvals dont exist there
                     Some((
                         resolve_upvalue(
                             &mut this.up_values,
                             ident_byte,
+                            offset_ident,
                             this.functional_depth,
                             l.functional_depth,
                         ),
                         is_upvalue,
                     ))
                 } else {
-                    let ident = if this.functional_depth > 0 {
+                    let offset_ident = if this.functional_depth > 0 {
                         let offset = this.local_functional_offset[this.functional_depth - 1];
                         i - offset
                     } else {
                         i
-                    };
-                    Some((ident as u8, false))
+                    } as u8;
+                    Some((offset_ident as u8, false))
                 };
             }
         }
@@ -847,46 +850,49 @@ fn resolve_local(this: &mut Compiler, ident: &Box<String>) -> Option<(u8, bool)>
     None
 }
 
-fn add_upvalue(this: &mut Compiler, ident: u8, neighboring: bool) -> u8 {
-    let m = this.up_values.last_mut().unwrap();
-    let i = m.len();
-    m.push(UpLocal { ident, neighboring });
-    i as u8
-}
+// fn add_upvalue(this: &mut Compiler, ident: u8, neighboring: bool) -> u8 {
+//     let m = this.up_values.last_mut().unwrap();
+//     let i = m.len();
+//     m.push(UpLocal { ident, neighboring });
+//     i as u8
+// }
 
-fn register_upvalue_at(this: &mut Compiler, ident: u8, neighboring: bool, level: usize) -> u8 {
-    let mut m = &mut this.up_values[level];
-    let i = m.len();
-    m.push(UpLocal { ident, neighboring });
-    i as u8
-}
+// fn register_upvalue_at(this: &mut Compiler, ident: u8, neighboring: bool, level: usize) -> u8 {
+//     let mut m = &mut this.up_values[level];
+//     let i = m.len();
+//     m.push(UpLocal { ident, neighboring });
+//     i as u8
+// }
 
 /** check if upvalue is registered at this closest level and decend down until reach destination, registiner upvalues as we go if not already*/
 fn resolve_upvalue(
     up_values: &mut Vec<Vec<UpLocal>>,
     ident: u8,
+    scoped_ident: u8,
     level: usize,
     target: usize,
 ) -> u8 {
     let m = &mut up_values[level];
     for (u, i) in m.iter().enumerate() {
-        if i.ident == ident {
+        if i.universal_ident == ident {
             return u as u8;
         }
     }
     // if level is equal to or no greater than target +1
     if level <= target + 1 {
         m.push(UpLocal {
-            ident,
+            ident: scoped_ident,
+            universal_ident: ident,
             neighboring: true,
         });
         (m.len() - 1) as u8
     } else {
-        drop(m);
-        let higher = resolve_upvalue(up_values, ident, level - 1, target);
+        // drop(m);
+        let higher = resolve_upvalue(up_values, ident, scoped_ident, level - 1, target);
         let m = &mut up_values[level];
         m.push(UpLocal {
             ident: higher,
+            universal_ident: ident,
             neighboring: false,
         });
         (m.len() - 1) as u8
@@ -1070,9 +1076,6 @@ fn build_function(
         this.constant_at(func_value);
     }
     define_variable(this, global_ident)?;
-    // this.body
-    //     .chunk
-    //     .write_constant(func_value) as u8;
 
     Ok(())
 }
@@ -1164,12 +1167,13 @@ fn end_scope(this: &mut Compiler, skip_code: bool) {
             count += 1;
         }
     }
-    // if we're not dealing with upvalues and we're skipping code due to functional scope our stack will get moved off anyway
-    if skip_code {
-        return;
-    }
     if count > 0 {
         v.push(count);
+    }
+    // if we're not dealing with upvalues and we're skipping code due to functional scope our stack will get moved off anyway
+    if skip_code {
+        //&& v.len() <= 1 {
+        return;
     }
 
     // index 0 is always OP_POPS but could be count of 0 if the first local is captured. Otherwise we can safely stagger even as pop, odds as close

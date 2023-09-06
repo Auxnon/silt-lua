@@ -61,6 +61,10 @@ impl<'frame> CallFrame {
         unsafe { &*self.local_stack.add(index as usize) }
     }
 
+    pub fn get_val_mut(&self, index: u8) -> &mut Value {
+        unsafe { &mut *self.local_stack.add(index as usize) }
+    }
+
     pub fn print_local_stack(&self) {
         println!("local stack: {:?}", unsafe {
             std::slice::from_raw_parts(self.local_stack, 10)
@@ -196,7 +200,7 @@ pub struct UpValue {
     // obj?
     pub index: u8,
     closed: Value,
-    location: *mut Value,
+    pub location: *mut Value,
     // pub value: *mut Value, // TODO oshould be a RC mutex of the value ideally
 }
 impl UpValue {
@@ -212,14 +216,23 @@ impl UpValue {
         self.location = &mut self.closed as *mut Value;
     }
     pub fn close(&mut self) {
+        #[cfg(feature = "dev-out")]
+        println!("closing: {}", unsafe { &*self.location });
         self.closed = unsafe { self.location.replace(Value::Nil) };
+        #[cfg(feature = "dev-out")]
+        println!("closed: {}", self.closed);
         self.location = &mut self.closed as *mut Value;
     }
     pub fn copy_value(&self) -> Value {
+        #[cfg(feature = "dev-out")]
+        println!("copying: {}", unsafe { &*self.location });
         unsafe { (*self.location).clone() }
     }
     pub fn get_location(&self) -> *mut Value {
         self.location
+    }
+    pub fn print(&self) {
+        println!("upvalue: {}", unsafe { &*self.location });
     }
     // pub fn get(&self) -> &Value {
     //     unsafe { &*self.value }
