@@ -564,7 +564,7 @@ impl<'a> Compiler {
         // func(self);
         match token {
             Token::OpenParen => rule!(grouping, call, Call),
-            Token::OpenBrace => rule!(tabulate, call_table, Call),
+            Token::OpenBrace => rule!(tabulate, call_table, None),
             Token::Assign => rule!(void, void, None),
             Token::Op(op) => match op {
                 Operator::Sub => rule!(unary, binary, Term),
@@ -585,8 +585,9 @@ impl<'a> Compiler {
                 _ => rule!(void, void, None),
             },
             Token::Identifier(_) => rule!(variable, void, None),
-            Token::OpenBracket => rule!(void, indexer, None),
+            Token::OpenBracket => rule!(void, indexer, Call),
             Token::Integer(_) => rule!(integer, void, None),
+            Token::Number(_) => rule!(number, void, None),
             Token::StringLiteral(_) => rule!(string, call_string, None),
             Token::Nil => rule!(literal, void, None),
             Token::True => rule!(literal, void, None),
@@ -1758,6 +1759,18 @@ fn integer(this: &mut Compiler, can_assign: bool) -> Catch {
     let t = this.take_store()?;
     let value = if let Token::Integer(i) = t {
         Value::Integer(i)
+    } else {
+        unreachable!()
+    };
+    this.constant_at(value);
+    Ok(())
+}
+
+fn number(this: &mut Compiler, can_assign: bool) -> Catch {
+    devnote!(this "number");
+    let t = this.take_store()?;
+    let value = if let Token::Number(n) = t {
+        Value::Number(n)
     } else {
         unreachable!()
     };
