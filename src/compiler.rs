@@ -1656,7 +1656,7 @@ fn unary(this: &mut Compiler, can_assign: bool) -> Catch {
 
 fn indexer(this: &mut Compiler, _can_assign: bool) -> Catch {
     devnote!(this "indexer");
-    this.eat();
+    // this.eat();
     expression(this, false)?;
     expect_token!(
         this,

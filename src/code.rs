@@ -49,6 +49,7 @@ pub enum OpCode {
     TABLE_PUSH,
     TABLE_GET,
     TABLE_GET_BY_CONSTANT { constant: u8 },
+    TABLE_GET_FROM { index: u8 },
     TABLE_SET,
     TABLE_SET_BY_CONSTANT { constant: u8 },
 }
@@ -148,6 +149,9 @@ impl Display for OpCode {
             Self::TABLE_GET => write!(f, "OP_TABLE_GET"),
             Self::TABLE_GET_BY_CONSTANT { constant } => {
                 write!(f, "OP_TABLE_GET_BY_CONSTANT {}", constant)
+            }
+            Self::TABLE_GET_FROM { index } => {
+                write!(f, "OP_TABLE_GET_FROM {}", index)
             }
             Self::TABLE_SET => write!(f, "OP_TABLE_SET"),
             Self::TABLE_SET_BY_CONSTANT { constant } => {

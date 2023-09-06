@@ -814,6 +814,18 @@ impl<'a> SiltLua {
                         return Err(SiltError::VmNonTableOperations);
                     }
                 }
+                OpCode::TABLE_GET_FROM { index } => {
+                    let key = self.pop();
+
+                    let table = frame.get_val_mut(*index);
+                    if let Value::Table(t) = table {
+                        let v = t.borrow().get_value(&key);
+                        self.push(v);
+                    } else {
+                        return Err(SiltError::VmNonTableOperations);
+                    }
+                }
+
                 OpCode::TABLE_GET_BY_CONSTANT { constant } => {
                     let key = Self::get_chunk(&frame).get_constant(*constant);
                     let table = self.peek_mut();
