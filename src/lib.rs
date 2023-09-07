@@ -259,4 +259,50 @@ mod tests {
             Value::Integer(2)
         );
     }
+    #[test]
+    fn closures() {
+        valeq!(
+            r#"
+do
+    local a = 1
+    function f1()
+       return a
+    end
+
+    local b=f1()
+    a = 3
+    b=b+ f1()
+   return b
+end
+"#,
+            Value::Integer(4)
+        );
+        valeq!(
+            r#"
+do
+function outer()
+    local y=0
+    local x = 2
+    local function middle()
+        local function inner()
+            return x
+        end
+        y = y + 1
+        return inner
+    end
+
+    y = y + 1
+    x=x + y
+    return middle
+end
+
+a = outer()
+b = a()
+return b
+end
+
+"#,
+            Value::Integer(4)
+        );
+    }
 }

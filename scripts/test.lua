@@ -1,11 +1,21 @@
+do
+    function outer()
+        local y = 0
+        local x = 2
+        local function middle()
+            local function inner()
+                return x
+            end
+            y = y + 1
+            return inner
+        end
 
-n=1
-function b(h) print 'b'..n n=h print 'c'..n end
+        y = y + 1
+        x = x + y
+        return middle
+    end
 
-function a() print 'e'..n  n=3 print 'f'..n b(10) print 'g'..n end
-
-print 'a'..n
-b()
-print 'd'..n
-a(5,5)
-print 'h'.. n
+    local a = outer()
+    local b = a()
+    return b()
+end

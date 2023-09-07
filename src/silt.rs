@@ -271,10 +271,10 @@ impl<'a> SiltLua {
         self.print_upvalues();
         for upvalue in self.open_upvalues.iter() {
             let mut up = upvalue.borrow_mut();
-            up.close();
-            if up.get_location() <= last {
+            if up.get_location() < last {
                 break;
             }
+            up.close();
         }
     }
 
