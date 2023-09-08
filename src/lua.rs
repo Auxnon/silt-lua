@@ -159,7 +159,7 @@ macro_rules! binary_op {
         }
     };
 }
-pub struct SiltLua {
+pub struct Lua {
     body: Rc<FunctionObject>,
     compiler: Compiler,
     // frames: Vec<CallFrame>,
@@ -188,7 +188,8 @@ pub struct SiltLua {
     table_counter: usize,
 }
 
-impl<'a> SiltLua {
+impl<'a> Lua {
+    /** Create a new lua compiler and runtime */
     pub fn new() -> Self {
         // TODO try the hard way
         // force array to be 256 Values
@@ -279,7 +280,7 @@ impl<'a> SiltLua {
         unsafe { self.stack_top = self.stack_top.sub(1) };
         let v = unsafe { self.stack_top.replace(Value::Nil) };
         // TODO is there a way to read without segfaulting?
-        // We'd have to list the value to be forggoten, but is this even faster?
+        // We'd have to list the value to be forgotten, but is this even faster?
         // let v = unsafe { self.stack_top.read() };
         devout!("pop: {}", v);
         v
@@ -772,8 +773,6 @@ impl<'a> SiltLua {
                 }
                 OpCode::TABLE_BUILD(n) => {
                     self.build_table(*n)?;
-                    self.print_stack();
-                    println!("top of stack: {}", unsafe { &*self.stack_top });
                 }
                 OpCode::TABLE_SET { depth } => {
                     let value = self.pop();
@@ -841,7 +840,6 @@ impl<'a> SiltLua {
     // }
 
     fn is_truthy(v: &Value) -> bool {
-        // println!("is_truthy: {}", v);
         match v {
             Value::Bool(b) => *b,
             Value::Nil => false,
@@ -1043,7 +1041,6 @@ impl<'a> SiltLua {
         // let value = unsafe { self.stack_top.replace(Value::Nil) };
 
         let u = index as usize + 1;
-        self.print_stack();
         let table_point = unsafe { self.stack_top.sub(u) };
         let table = unsafe { &*table_point };
         if let Value::Table(t) = table {
@@ -1060,12 +1057,10 @@ impl<'a> SiltLua {
                         Some(value) => {
                             current.borrow_mut().insert(key, value);
                             unsafe { table_point.replace(Value::Nil) };
-                            self.print_stack();
                         }
                         None => {
                             let out = current.borrow().get_value(&key);
                             unsafe { table_point.replace(out) };
-                            self.print_stack();
                         }
                     }
                     return Ok(());

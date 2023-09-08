@@ -1,4 +1,4 @@
-use silt_lua::silt::SiltLua;
+use silt_lua::prelude::Lua;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -289,7 +289,7 @@ fn main() {
     // o.chunk.print_chunk(None);
     // compiler.print_errors();
 
-    let mut vm = SiltLua::new();
+    let mut vm = Lua::new();
     vm.load_standard_library();
     match vm.run(source_in) {
         Ok(o) => {

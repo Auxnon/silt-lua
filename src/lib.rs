@@ -1,4 +1,4 @@
-use silt::SiltLua;
+use lua::Lua;
 use value::Value;
 
 mod chunk;
@@ -7,7 +7,8 @@ pub mod compiler;
 mod error;
 mod function;
 mod lexer;
-pub mod silt;
+pub mod lua;
+pub mod prelude;
 pub mod standard;
 pub mod table;
 mod token;
@@ -17,7 +18,7 @@ pub mod value;
 use wasm_bindgen::prelude::*;
 
 fn simple(source: &str) -> Value {
-    let mut vm = SiltLua::new();
+    let mut vm = Lua::new();
     vm.load_standard_library();
     match vm.run(source) {
         Ok(v) => v,
@@ -38,7 +39,7 @@ extern "C" {
 
 #[wasm_bindgen]
 pub fn run(source: &str) -> String {
-    let mut vm = SiltLua::new();
+    let mut vm = Lua::new();
     vm.load_standard_library();
     match vm.run(source) {
         Ok(v) => v.to_string(),
@@ -62,7 +63,7 @@ mod tests {
         chunk::Chunk,
         code::{self, OpCode},
         function::FunctionObject,
-        silt::SiltLua,
+        lua::Lua,
         simple,
         token::Token,
         value::Value,
@@ -200,7 +201,7 @@ mod tests {
         let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
-        let mut vm = SiltLua::new();
+        let mut vm = Lua::new();
         if let Err(e) = vm.execute(Rc::new(tester)) {
             println!("{}", e);
         }

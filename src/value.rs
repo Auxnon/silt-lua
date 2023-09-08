@@ -5,11 +5,12 @@ use hashbrown::HashMap;
 use crate::{
     error::ErrorTypes,
     function::{Closure, FunctionObject, NativeObject},
-    silt::SiltLua,
+    lua::Lua,
     table::Table,
     userdata::UserData,
 };
 
+/** Lua value enum representing different data types within a VM */
 pub enum Value {
     Nil,
     Integer(i64),
@@ -66,6 +67,7 @@ impl core::fmt::Debug for Value {
 }
 
 impl Value {
+    /** Condense value into a tiny enum for passing to errors*/
     pub fn to_error(&self) -> ErrorTypes {
         match self {
             Value::Integer(_) => ErrorTypes::Integer,
@@ -142,8 +144,8 @@ impl PartialEq for Value {
             (Value::String(i), Value::String(j)) => i == j,
             (Value::Infinity(i), Value::Infinity(j)) => i == j,
             (Value::NativeFunction(i), Value::NativeFunction(j)) => {
-                i.function as *const fn(&mut SiltLua, Vec<Value>) -> Value
-                    == j.function as *const fn(&mut SiltLua, Vec<Value>) -> Value
+                i.function as *const fn(&mut Lua, Vec<Value>) -> Value
+                    == j.function as *const fn(&mut Lua, Vec<Value>) -> Value
             }
             (Value::Function(i), Value::Function(j)) => Rc::ptr_eq(i, j),
             (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i, &j),

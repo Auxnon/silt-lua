@@ -1,6 +1,6 @@
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
-use crate::{chunk::Chunk, code::OpCode, silt::SiltLua, value::Value};
+use crate::{chunk::Chunk, code::OpCode, lua::Lua, value::Value};
 
 /////////////
 ///
@@ -172,10 +172,10 @@ impl Display for FunctionObject {
     }
 }
 
-pub type NativeFunction = fn(&mut SiltLua, Vec<Value>) -> Value; // TODO should be Result<Value,SiltError> for runtime errors
+pub type NativeFunction = fn(&mut Lua, Vec<Value>) -> Value; // TODO should be Result<Value,SiltError> for runtime errors
 pub struct NativeObject {
     name: String,
-    pub function: fn(&mut SiltLua, Vec<Value>) -> Value,
+    pub function: fn(&mut Lua, Vec<Value>) -> Value,
 }
 
 impl NativeObject {
