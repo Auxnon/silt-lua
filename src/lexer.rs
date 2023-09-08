@@ -164,6 +164,7 @@ impl<'a> Lexer {
                     '0'..='9' => {
                         self.eat();
                     }
+                    #[cfg(feature = "under-number")]
                     '_' => {
                         self.eat();
                         strip = true;

@@ -25,8 +25,9 @@ inherits="release"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default=["silt"]
-silt=["bang","global","implicit-return","short-declare"]
+default=[]
+silt=["bang","under-number","global","implicit-return","short-declare"]
+under-number=[]
 bang=[]
 global=[]
 short-declare=[]

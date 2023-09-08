@@ -223,6 +223,7 @@ pub struct Compiler {
 }
 
 impl<'a> Compiler {
+    /** Create a new compiler instance */
     pub fn new() -> Compiler {
         // assert!(p.len() == p.len());
         Self {
@@ -254,7 +255,7 @@ impl<'a> Compiler {
         }
     }
 
-    /** syntax error with code at location */
+    /** Syntax error with code at location */
     fn error_syntax(&mut self, code: SiltError, location: Location) -> ErrorTuple {
         self.valid = false;
         self.body.chunk.invalidate();
@@ -266,7 +267,7 @@ impl<'a> Compiler {
         self.error_syntax(code, self.current_location)
     }
 
-    /** print all syntax errors */
+    /** Print all syntax errors */
     pub fn print_errors(&self) {
         for e in &self.errors {
             println!("!!{} at {}:{}", e.code, e.location.0, e.location.1);
@@ -284,12 +285,12 @@ impl<'a> Compiler {
         s
     }
 
-    /** push error and location on to error stack */
+    /** Push error and location on to error stack */
     fn push_error(&mut self, code: ErrorTuple) {
         self.errors.push(code);
     }
 
-    /** return current array of errors */
+    /** Return current array of errors */
     pub fn get_errors(&self) -> &Vec<ErrorTuple> {
         &self.errors
     }
