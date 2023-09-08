@@ -17,6 +17,7 @@ pub enum SiltError {
     ExpectedLocalIdentifier,
     ExpectedLabelIdentifier,
     ExpectedGotoIdentifier,
+    ExpectedFieldIdentifier,
     TableExpectedCommaOrCloseBrace,
     UndefinedLabel(String),
     InvalidAssignment(Token),
@@ -54,7 +55,7 @@ pub enum SiltError {
     VmRuntimeError,
     VmCorruptConstant,
     VmUpvalueResolveError,
-    VmNonTableOperations,
+    VmNonTableOperations(ErrorTypes),
 
     Unknown,
 }
@@ -92,6 +93,9 @@ impl std::fmt::Display for SiltError {
             }
             Self::UndefinedLabel(s) => write!(f, "No matching goto label for '{}'", s),
             Self::ExpectedGotoIdentifier => write!(f, "Expected identifier following goto keyword"),
+            Self::ExpectedFieldIdentifier => {
+                write!(f, "Expected identifier following field accessor '.'")
+            }
             Self::ChunkCorrupt => write!(f, "Invalid chunk due compilation corruption"),
             Self::TooManyOperations => write!(
                 f,
@@ -123,8 +127,12 @@ impl std::fmt::Display for SiltError {
             Self::ExpOpValueWithValue(v1, op, v2) => {
                 write!(f, "Cannot {} '{}' and '{}'", op, v1, v2)
             }
-            Self::VmNonTableOperations => {
-                write!(f, "Cannot perform table operations on a non-table value")
+            Self::VmNonTableOperations(v) => {
+                write!(
+                    f,
+                    "Cannot perform table operations on a non-table value: {}",
+                    v
+                )
             }
             SiltError::ExpInvalidNegation(v) => write!(f, "Cannot negate '{}'", v),
             SiltError::InvalidTokenPlacement(t) => write!(f, "Invalid token placement: {}", t),

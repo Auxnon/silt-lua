@@ -82,6 +82,10 @@ impl Value {
         }
     }
 
+    pub fn force_to_int(&mut self, n: i64) {
+        *self = Value::Integer(n);
+    }
+
     // fn to_string(&self) -> String {
     //     match self {
     //         Value::Integer(i) => i.to_string(),

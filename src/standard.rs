@@ -1,4 +1,4 @@
-use crate::{jprintln, silt::SiltLua, value::Value};
+use crate::{silt::SiltLua, value::Value};
 
 pub fn clock(_: &mut SiltLua, _: Vec<Value>) -> Value {
     Value::Number(
@@ -17,8 +17,8 @@ pub fn print(_: &mut SiltLua, args: Vec<Value>) -> Value {
         .join("\t");
     println!("> {}", s);
 
-    #[cfg(profile = "wasm")]
-    jprintln(s.as_str());
+    #[cfg(target_arch = "wasm32")]
+    crate::jprintln(s.as_str());
 
     Value::Nil
 }

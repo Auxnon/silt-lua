@@ -4,7 +4,8 @@ use crate::value::Value;
 
 pub struct Table {
     data: HashMap<Value, Value>,
-
+    /** replicate standard lua behavior */
+    counter: i64,
     id: usize,
 }
 
@@ -12,6 +13,7 @@ impl Table {
     pub fn new(id: usize) -> Self {
         Table {
             data: HashMap::new(),
+            counter: 0,
             id,
         }
     }
@@ -27,12 +29,21 @@ impl Table {
             None => Value::Nil,
         }
     }
+
     pub fn len(&self) -> usize {
         self.data.len()
     }
+
+    /** push by counter's current index, if it aready exists keep incrementing until empty position is found */
     pub fn push(&mut self, value: Value) {
-        self.data
-            .insert(Value::Integer(self.data.len() as i64), value);
+        // DEV this just feels clunky to replicate lua's behavior
+        self.counter += 1;
+        let mut key = Value::Integer(self.counter);
+        while self.data.contains_key(&key) {
+            self.counter += 1;
+            key.force_to_int(self.counter);
+        }
+        self.data.insert(key, value);
     }
 }
 

@@ -27,7 +27,7 @@ pub enum Token {
     Then,
 
     // symbols
-    Call,
+    Dot,
     Assign, //Equal
 
     // operator
@@ -112,6 +112,14 @@ pub enum Flag {
     Strict,
     Local,
 }
+impl Token {
+    pub fn unwrap_identifier(&self) -> &Box<String> {
+        match self {
+            Token::Identifier(s) => s,
+            _ => panic!("unwrap_identifier"),
+        }
+    }
+}
 impl Display for Flag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
@@ -168,7 +176,7 @@ impl Display for Token {
             Token::OpenBracket => write!(f, "["),
             Token::CloseBracket => write!(f, "]"),
             // Token::EOF => write!(f, "EOF"),
-            Token::Call => write!(f, "call"),
+            Token::Dot => write!(f, "call"),
             // Token::Bang => write!(f, "!"),
             Token::Type => write!(f, "type"),
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),

@@ -1,5 +1,6 @@
 use std::fmt::{self, Display, Formatter};
 
+#[derive(Clone)]
 pub enum OpCode {
     CONSTANT { constant: u8 },
     CLOSURE { constant: u8 },
@@ -45,12 +46,12 @@ pub enum OpCode {
     LITERAL { dest: u8, literal: u8 },
     LENGTH,
     NEW_TABLE,
-    TABLE_INSERT,
-    TABLE_PUSH,
-    TABLE_GET,
+    TABLE_INSERT { offset: u8 },
+    TABLE_BUILD(u8),
+    TABLE_GET { depth: u8 },
     TABLE_GET_BY_CONSTANT { constant: u8 },
     TABLE_GET_FROM { index: u8 },
-    TABLE_SET,
+    TABLE_SET { depth: u8 },
     TABLE_SET_BY_CONSTANT { constant: u8 },
 }
 pub enum Tester {
@@ -144,16 +145,16 @@ impl Display for OpCode {
             }
             Self::LENGTH => write!(f, "OP_LENGTH"),
             Self::NEW_TABLE => write!(f, "OP_NEW_TABLE"),
-            Self::TABLE_INSERT => write!(f, "OP_TABLE_INSERT"),
-            Self::TABLE_PUSH => write!(f, "OP_TABLE_PUSH"),
-            Self::TABLE_GET => write!(f, "OP_TABLE_GET"),
+            Self::TABLE_INSERT { offset } => write!(f, "OP_TABLE_INSERT @{}", offset),
+            Self::TABLE_BUILD(u) => write!(f, "OP_TABLE_BUILD [;{}]", u),
+            Self::TABLE_GET { depth } => write!(f, "OP_TABLE_GET {}[]", depth),
             Self::TABLE_GET_BY_CONSTANT { constant } => {
                 write!(f, "OP_TABLE_GET_BY_CONSTANT {}", constant)
             }
             Self::TABLE_GET_FROM { index } => {
                 write!(f, "OP_TABLE_GET_FROM {}", index)
             }
-            Self::TABLE_SET => write!(f, "OP_TABLE_SET"),
+            Self::TABLE_SET { depth } => write!(f, "OP_TABLE_SET {}[]]", depth),
             Self::TABLE_SET_BY_CONSTANT { constant } => {
                 write!(f, "OP_TABLE_SET_BY_CONSTANT {}", constant)
             }

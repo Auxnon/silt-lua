@@ -1,14 +1,14 @@
 do
     local a = 1
     local b = 2
-    print("sum of " .. a .. " + " .. b .. " = " .. a + b)
-    print("int or float types " .. 1 + 2.5 / 3)
-    print("string inferance works, '2'+2=" .. "2" + 2)
+    print("Sum of " .. a .. " + " .. b .. " = " .. a + b)
+    print("Int or float types " .. 1 + 2.5 / 3)
+    print("String inferance works, '2'+2=" .. "2" + 2)
     local function closure()
         local c = 0
         local function nested()
             c = c + a
-            return "closures work " .. c
+            return "Closures work " .. c
         end
 
         return nested

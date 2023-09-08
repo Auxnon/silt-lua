@@ -418,7 +418,7 @@ impl<'a> Lexer {
                     match self.peek() {
                         Some('0'..='9') => self.number(true),
                         Some('.') => self.eat_send(Token::Op(Operator::Concat)),
-                        _ => self.send(Token::Call),
+                        _ => self.send(Token::Dot),
                     }
                 }
                 '=' => {

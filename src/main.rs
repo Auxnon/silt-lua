@@ -1,6 +1,3 @@
-use core::panic;
-use std::{rc::Rc, vec};
-
 use silt_lua::silt::SiltLua;
 
 fn main() {
@@ -151,103 +148,103 @@ fn main() {
         // "#;
         // let source_in = "local a= 'test'..'1' a='now' sprint a"; // sprint 1+8";
         // let source_in = "local a= -5+6";
+        //     let source_in = r#"!(5-4 > 3*2 == !nil)"#;
+        //     let source_in = "!nil==!false";
+
+        //     let source_in = r#"
+        // local a="test"
+        // local b="t"
+        // sprint b
+        //  b="a"
+        //  sprint b
+        // b=a.."working"
+        // sprint b
+        //  "#;
+
+        //     let source_in = r#"
+        //  local a=2
+        //  local b=1
+        //  a*b=5
+        //  sprint ab
+        //  "#;
+        //     let source_in = r#"
+        // do
+        // local a=1
+        // a=3+4
+        // sprint a
+        // end
+        // sprint a
+        // "#;
+        //     let source_in = r#"
+        // do
+        // local a=3
+        // sprint a
+        // end
+        // sprint a
+        // "#;
+        //     // REMEMBER 10,000,000 takes about ~6.47 seconds
+        //     let source_in = r#"
+        // do
+        // local a=1
+        // while a<= 10_000_000 do
+        //     a=a+1
+        // end
+        //     sprint a
+        // end
+        // "#;
+
+        //     let source_in = r#"
+        // "#;
+
+        //     let source_in = r#"
+        //     function fib(n)
+        //         if n <= 1 then
+        //         return n
+        //         else
+        //             return fib(n-1) + fib(n-2)
+        //         end
+        //     end
+        //     -- return fib(21)
+
+        //     for i = 1, 35 do
+        //         sprint i..":"..fib(i)
+        //     end
+        // "#;
+
+        //     let source_in = r#"
+        // start=clock()
+        // return 1000*(clock() - start)
+        // "#;
+        //     let source_in = r#"
+        // start=clock()
+        // i=1
+        // a="a"
+        // while i < 10 do
+        //     i = i +1
+        //     a = a .. "1"
+        // end
+        // elapsed=clock()-start
+        // print "done"
+        // print ("elapsed: "..elapsed)
+        // return elapsed
+        // "#;
+        //     let source_in = r#"
+        // local d=5
+        // function sum()
+        // local a=1
+        // local b=2
+        // local c=3
+        // return a+b+c+d+8
+        // end
+
+        // return sum()
+        // "#;
     }
-    let source_in = r#"!(5-4 > 3*2 == !nil)"#;
-    let source_in = "!nil==!false";
-
-    let source_in = r#"
-    local a="test"
-    local b="t"
-    sprint b
-     b="a"
-     sprint b
-    b=a.."working"
-    sprint b
-     "#;
-
-    let source_in = r#"
-     local a=2
-     local b=1
-     a*b=5
-     sprint ab
-     "#;
-    let source_in = r#"
-    do
-    local a=1
-    a=3+4
-    sprint a
-    end
-    sprint a
-    "#;
-    let source_in = r#"
-    do
-    local a=3
-    sprint a
-    end
-    sprint a
-    "#;
-    // REMEMBER 10,000,000 takes about ~6.47 seconds
-    let source_in = r#"
-    do
-    local a=1
-    while a<= 10_000_000 do
-        a=a+1
-    end
-        sprint a
-    end
-    "#;
-
-    let source_in = r#"
-    "#;
-
-    let source_in = r#"
-        function fib(n)
-            if n <= 1 then
-            return n
-            else
-                return fib(n-1) + fib(n-2)
-            end
-        end
-        -- return fib(21)
-
-        for i = 1, 35 do
-            sprint i..":"..fib(i)
-        end
-    "#;
-
-    let source_in = r#"
-    start=clock()
-    return 1000*(clock() - start)
-    "#;
-    let source_in = r#"
-    start=clock()
-    i=1
-    a="a"
-    while i < 10 do
-        i = i +1
-        a = a .. "1"
-    end
-    elapsed=clock()-start
-    print "done"
-    print ("elapsed: "..elapsed)
-    return elapsed
-    "#;
-    let source_in = r#"
-    local d=5
-    function sum()
-    local a=1
-    local b=2
-    local c=3
-    return a+b+c+d+8
-    end
-
-    return sum()
-    "#;
     // load string from scripts/closure4.lua
     let file = if args.len() > 1 {
         std::fs::read_to_string(args[1].as_str()).unwrap()
     } else {
-        std::fs::read_to_string("scripts/ex.lua").unwrap()
+        std::fs::read_to_string("scripts/table.lua").unwrap()
     };
     let source_in = file.as_str();
     // let source_in = r#"

@@ -1,9 +1,4 @@
-use std::{
-    cell::RefCell,
-    fmt::format,
-    mem::{forget, take},
-    rc::Rc,
-};
+use std::{cell::RefCell, mem::take, rc::Rc};
 
 use crate::{
     chunk::Chunk,
@@ -13,7 +8,7 @@ use crate::{
     function::{CallFrame, Closure, FunctionObject, NativeObject, UpValue},
     table::Table,
     token::Operator,
-    value::{Reference, Value},
+    value::Value,
 };
 
 /** Convert Integer to Float, lossy for now */
@@ -772,25 +767,17 @@ impl<'a> SiltLua {
                     self.push(self.new_table());
                     self.table_counter += 1;
                 }
-                OpCode::TABLE_INSERT => todo!(),
-                OpCode::TABLE_PUSH => {
-                    let value = self.pop();
-                    let table = self.peek_mut();
-                    if let Value::Table(t) = table {
-                        t.borrow_mut().push(value);
-                    } else {
-                        return Err(SiltError::VmNonTableOperations);
-                    }
+                OpCode::TABLE_INSERT { offset } => {
+                    self.insert_immediate_table(*offset)?;
                 }
-                OpCode::TABLE_SET => {
+                OpCode::TABLE_BUILD(n) => {
+                    self.build_table(*n)?;
+                    self.print_stack();
+                    println!("top of stack: {}", unsafe { &*self.stack_top });
+                }
+                OpCode::TABLE_SET { depth } => {
                     let value = self.pop();
-                    let key = self.pop();
-                    let table = self.peek_mut();
-                    if let Value::Table(t) = table {
-                        t.borrow_mut().insert(key, value);
-                    } else {
-                        return Err(SiltError::VmNonTableOperations);
-                    }
+                    self.operate_table(*depth, Some(value))?;
                 }
                 OpCode::TABLE_SET_BY_CONSTANT { constant } => {
                     let value = self.pop();
@@ -800,30 +787,23 @@ impl<'a> SiltLua {
                         // TODO can we pre-hash this to avoid a clone?
                         t.borrow_mut().insert(key.clone(), value);
                     } else {
-                        return Err(SiltError::VmNonTableOperations);
+                        return Err(SiltError::VmNonTableOperations(table.to_error()));
                     }
                 }
-                OpCode::TABLE_GET => {
-                    let key = self.pop();
-                    let table = self.pop();
-                    // println!("table get: {}", table);
-                    if let Value::Table(t) = table {
-                        let v = t.borrow().get_value(&key);
-                        self.push(v);
-                    } else {
-                        return Err(SiltError::VmNonTableOperations);
-                    }
+                OpCode::TABLE_GET { depth } => {
+                    self.operate_table(*depth, None)?;
                 }
                 OpCode::TABLE_GET_FROM { index } => {
-                    let key = self.pop();
+                    // let key = self.pop();
 
-                    let table = frame.get_val_mut(*index);
-                    if let Value::Table(t) = table {
-                        let v = t.borrow().get_value(&key);
-                        self.push(v);
-                    } else {
-                        return Err(SiltError::VmNonTableOperations);
-                    }
+                    // let table = frame.get_val_mut(*index);
+                    // if let Value::Table(t) = table {
+                    //     let v = t.borrow().get_value(&key);
+                    //     self.push(v);
+                    // } else {
+                    //     return Err(SiltError::VmNonTableOperations(table.to_error()));
+                    // }
+                    todo!("TABLE_GET_FROM")
                 }
 
                 OpCode::TABLE_GET_BY_CONSTANT { constant } => {
@@ -833,7 +813,7 @@ impl<'a> SiltLua {
                         let v = t.borrow().get_value(&key);
                         self.push(v);
                     } else {
-                        return Err(SiltError::VmNonTableOperations);
+                        return Err(SiltError::VmNonTableOperations(table.to_error()));
                     }
                 }
             }
@@ -1021,6 +1001,109 @@ impl<'a> SiltLua {
     fn new_table(&self) -> Value {
         let t = Table::new(self.table_counter);
         Value::Table(Rc::new(RefCell::new(t)))
+    }
+
+    fn build_table(&mut self, n: u8) -> Result<(), SiltError> {
+        let offset = n as usize + 1;
+        let table_point = unsafe { self.stack_top.sub(offset) };
+        let table = unsafe { &*table_point };
+        if let Value::Table(t) = table {
+            let mut b = t.borrow_mut();
+            // push in reverse
+            for i in (0..n).rev() {
+                let value = unsafe { self.stack_top.sub(i as usize + 1).replace(Value::Nil) };
+                b.push(value);
+            }
+
+            self.stack_count -= offset - 1;
+            self.stack_top = unsafe { table_point.add(1) };
+
+            Ok(())
+        } else {
+            Err(SiltError::ChunkCorrupt) // shouldn't happen unless our compiler really screwed up
+        }
+    }
+
+    /** Used at table creation to simplify direct index insertion */
+    fn insert_immediate_table(&mut self, offset: u8) -> Result<(), SiltError> {
+        let table = unsafe { &*self.stack_top.sub(offset as usize + 3) }; // -3 because -1 for top of stack, -1 for key, -1 for value, and then offset from there
+        println!("insert_immediate_table: {}", table);
+        if let Value::Table(t) = table {
+            let value = self.pop();
+            let key = self.pop();
+            t.borrow_mut().insert(key, value);
+            Ok(())
+        } else {
+            Err(SiltError::ChunkCorrupt) // shouldn't happen unless our compiler really screwed up
+        }
+    }
+
+    fn operate_table(&mut self, index: u8, set: Option<Value>) -> Result<(), SiltError> {
+        // let value = unsafe { self.stack_top.read() };
+        // let value = unsafe { self.stack_top.replace(Value::Nil) };
+
+        let u = index as usize + 1;
+        self.print_stack();
+        let table_point = unsafe { self.stack_top.sub(u) };
+        let table = unsafe { &*table_point };
+        if let Value::Table(t) = table {
+            let mut current = t;
+            for i in 1..=index {
+                let key = unsafe { self.stack_top.sub(i as usize).replace(Value::Nil) };
+                devout!("get from table with key: {}", key);
+                if i == index {
+                    let offset = index as usize;
+                    self.stack_count -= offset;
+                    unsafe { self.stack_top = self.stack_top.sub(offset) };
+                    // assert!(self.stack_top == table_point);
+                    match set {
+                        Some(value) => {
+                            current.borrow_mut().insert(key, value);
+                            unsafe { table_point.replace(Value::Nil) };
+                            self.print_stack();
+                        }
+                        None => {
+                            let out = current.borrow().get_value(&key);
+                            unsafe { table_point.replace(out) };
+                            self.print_stack();
+                        }
+                    }
+                    return Ok(());
+                } else {
+                    let check = unsafe { current.try_borrow_unguarded() }.unwrap().get(&key);
+                    match check {
+                        Some(Value::Table(t)) => {
+                            current = t;
+                        }
+                        Some(v) => {
+                            return Err(SiltError::VmNonTableOperations(v.to_error()));
+                        }
+                        None => {
+                            return Err(SiltError::VmNonTableOperations(ErrorTypes::Nil));
+                        }
+                    }
+                }
+            }
+            Err(SiltError::VmRuntimeError)
+        } else {
+            Err(SiltError::VmNonTableOperations(table.to_error()))
+        }
+
+        // self.stack_count -= 1;
+        // unsafe { self.stack_top = self.stack_top.sub(1) };
+        // let v = unsafe { self.stack_top.replace(Value::Nil) };
+        // // TODO is there a way to read without segfaulting?
+        // // We'd have to list the value to be forggoten, but is this even faster?
+        // // let v = unsafe { self.stack_top.read() };
+        // devout!("pop: {}", v);
+        // v
+
+        // // let value = self.stack[self.stack_count - (index as usize) - 1].clone();
+        // if let Value::Table(t) = value {
+        //     t
+        // } else {
+        //     unreachable!("Only tables can be indexed")
+        // }
     }
 
     /** Register a native function on the global table  */
