@@ -8,6 +8,7 @@ edition = "2021"
 keywords=["lua","interpreter","language","vm","virtual","machine","script"]
 description="A pure rust Lua interpreter and virtual machine"
 categories=["compilers","config"]
+exclude=["./build-wasm.sh","./.vscode/launch.json","./wasm-tester/index.html"]
 
 [lib]
 name = "silt_lua"
