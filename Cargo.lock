@@ -72,7 +72,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "silt_lua"
+name = "silt-lua"
 version = "0.1.0"
 dependencies = [
  "hashbrown",

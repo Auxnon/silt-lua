@@ -1,4 +1,4 @@
-# Silt-Lua, a lua subset interpreter in 100% rust
+# Silt-Lua, a Lua subset interpreter in 100% rust
 
 This project was originally created to answer a problem with the current rust landscape in lacking a complete lua interpreter solution written in 100% rust. That may not necessarily be true anymore. Even still, the existing implementations at the time were missing crucial features and optimizations to satisfy the requirements of my closed source project [Petrichor64](https://makeavoy.itch.io/petrichor64), so here we are.
 
