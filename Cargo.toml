@@ -2,7 +2,12 @@
 name = "silt-lua"
 version = "0.1.0"
 authors = ["MakeAvoy <auxnon@gmail.com>"]
+repository="https://github.com/auxnon/silt-lua"
+license ="MIT"
 edition = "2021"
+keywords=["lua","interpreter","language","vm","virtual","machine","script"]
+description="A pure rust Lua interpreter and virtual machine"
+categories=["compilers","config"]
 
 [lib]
 name = "silt_lua"
