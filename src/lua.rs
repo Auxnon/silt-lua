@@ -1025,7 +1025,6 @@ impl<'a> Lua {
     /** Used at table creation to simplify direct index insertion */
     fn insert_immediate_table(&mut self, offset: u8) -> Result<(), SiltError> {
         let table = unsafe { &*self.stack_top.sub(offset as usize + 3) }; // -3 because -1 for top of stack, -1 for key, -1 for value, and then offset from there
-        println!("insert_immediate_table: {}", table);
         if let Value::Table(t) = table {
             let value = self.pop();
             let key = self.pop();
