@@ -211,6 +211,9 @@ impl UpValue {
             location,
         }
     }
+    pub fn set_value(&mut self, value: Value) {
+        unsafe { *self.location = value }
+    }
     pub fn close_around(&mut self, value: Value) {
         self.closed = value;
         self.location = &mut self.closed as *mut Value;

@@ -128,15 +128,19 @@ macro_rules! num_op_str{
     }
 }
 
-macro_rules! binary_op {
-    ($src:ident, $op:tt, $opp:tt) => {
-        {
-
+macro_rules! binary_op_push {
+    ($src:ident, $op:tt, $opp:tt) => {{
             // TODO test speed of this vs 1 pop and a mutate
             let r = $src.pop();
             let l = $src.pop();
 
-            $src.push(match (l, r) {
+        $src.push(binary_op!(l, $op, r, $opp));
+    }};
+}
+
+macro_rules! binary_op  {
+    ($l:ident, $op:tt, $r:ident, $opp:tt) => {
+        match ($l, $r) {
                 (Value::Number(left), Value::Number(right)) => (Value::Number(left $op right)),
                 (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
                 (Value::Number(left), Value::Integer(right)) => (Value::Number(left $op right as f64)),
@@ -155,10 +159,10 @@ macro_rules! binary_op {
                 //     }
                 // }
                 (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
-            });
         }
     };
 }
+
 pub struct Lua {
     body: Rc<FunctionObject>,
     compiler: Compiler,
@@ -436,7 +440,6 @@ impl<'a> Lua {
                 }
                 OpCode::CONSTANT { constant } => {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
-                    devout!("CONSTANT value {}", value);
                     self.push(value.clone());
                     // match value {
                     //     Value::Number(f) => self.push(*f),
@@ -474,6 +477,9 @@ impl<'a> Lua {
                         // }
                         self.globals.insert(s.to_string(), v);
                     } else {
+                        devout!("SET_GLOBAL: {}", value);
+                        #[cfg(feature = "dev-out")]
+                        self.body.chunk.print_constants();
                         return Err(SiltError::VmCorruptConstant);
                     }
                 }
@@ -501,9 +507,9 @@ impl<'a> Lua {
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
                 OpCode::DEFINE_LOCAL { constant } => todo!(),
-                OpCode::ADD => binary_op!(self, +, Add),
-                OpCode::SUB => binary_op!(self,-, Sub),
-                OpCode::MULTIPLY => binary_op!(self,*, Multiply),
+                OpCode::ADD => binary_op_push!(self, +, Add),
+                OpCode::SUB => binary_op_push!(self,-, Sub),
+                OpCode::MULTIPLY => binary_op_push!(self,*, Multiply),
                 OpCode::DIVIDE => {
                     let right = self.pop();
                     let left = self.pop();
@@ -629,6 +635,11 @@ impl<'a> Lua {
                 }
                 OpCode::REWIND(offset) => {
                     frame.rewind(*offset);
+                }
+                OpCode::INCREMENT { index } => {
+                    let value = frame.get_val_mut(*index);
+                    let step = self.peek();
+                    value.increment(step)?;
                 }
                 OpCode::CLOSURE { constant } => {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
