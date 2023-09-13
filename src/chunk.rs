@@ -71,6 +71,13 @@ impl Chunk {
     // fn add_constant(&mut self, value: Value) -> usize {
     //     self.constants.write_value(value)
     // }
+    pub fn print_constants(&self) {
+        println!("constants: {}", self.constants.len());
+        self.constants.iter().for_each(|c| {
+            print!("  {},", c);
+        });
+        println!();
+    }
     pub fn print_chunk(&self, name: Option<String>) {
         match name {
             Some(n) => println!("=== Chunk ({}) ===", n),

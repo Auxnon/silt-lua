@@ -1,21 +1,46 @@
 use std::fmt::{self, Display, Formatter};
 
+#[allow(non_camel_case_types)]
 #[derive(Clone)]
 pub enum OpCode {
-    CONSTANT { constant: u8 },
-    CLOSURE { constant: u8 },
-    DEFINE_GLOBAL { constant: u8 },
-    GET_GLOBAL { constant: u8 },
-    SET_GLOBAL { constant: u8 },
-    DEFINE_LOCAL { constant: u8 },
-    GET_LOCAL { index: u8 },
-    SET_LOCAL { index: u8 },
-    GET_UPVALUE { index: u8 },
-    SET_UPVALUE { index: u8 },
+    CONSTANT {
+        constant: u8,
+    },
+    CLOSURE {
+        constant: u8,
+    },
+    DEFINE_GLOBAL {
+        constant: u8,
+    },
+    GET_GLOBAL {
+        constant: u8,
+    },
+    SET_GLOBAL {
+        constant: u8,
+    },
+    DEFINE_LOCAL {
+        constant: u8,
+    },
+    GET_LOCAL {
+        index: u8,
+    },
+    SET_LOCAL {
+        index: u8,
+    },
+    GET_UPVALUE {
+        index: u8,
+    },
+    SET_UPVALUE {
+        index: u8,
+    },
     // TODO this the size bottleneck but we were considering word size anyway soooooo
     // TODO also we could explore a popless goto_if for if statements while conditionals still use the pop variant
     GOTO_IF_FALSE(u16),
     GOTO_IF_TRUE(u16),
+    // TODO this should replace normal goto_if_false
+    POP_AND_GOTO_IF_FALSE(u16),
+    /** Compares 2nd(end) and 3rd(iter) value on stack, if greater then forward by X, otherwise push 3rd(iter) on to new stack  */
+    FOR_NUMERIC(u16),
     FORWARD(u16),
     REWIND(u16),
     RETURN,
@@ -41,18 +66,41 @@ pub enum OpCode {
     PRINT,
     META(u8),
     CALL(u8),
-    REGISTER_UPVALUE { index: u8, neighboring: bool },
+    REGISTER_UPVALUE {
+        index: u8,
+        neighboring: bool,
+    },
 
-    LITERAL { dest: u8, literal: u8 },
+    LITERAL {
+        dest: u8,
+        literal: u8,
+    },
     LENGTH,
     NEW_TABLE,
-    TABLE_INSERT { offset: u8 },
+    TABLE_INSERT {
+        offset: u8,
+    },
     TABLE_BUILD(u8),
-    TABLE_GET { depth: u8 },
-    TABLE_GET_BY_CONSTANT { constant: u8 },
-    TABLE_GET_FROM { index: u8 },
-    TABLE_SET { depth: u8 },
-    TABLE_SET_BY_CONSTANT { constant: u8 },
+    TABLE_GET {
+        depth: u8,
+    },
+    TABLE_GET_BY_CONSTANT {
+        constant: u8,
+    },
+    TABLE_GET_FROM {
+        index: u8,
+    },
+    /** depth indicates how many index contansts are on the stack. Statement does not need pop */
+    TABLE_SET {
+        depth: u8,
+    },
+    // TABLE_SET_BY_CONSTANT {
+    //     constant: u8,
+    // },
+    /** Increment a local value at index with top of stack*/
+    INCREMENT {
+        index: u8,
+    },
 }
 pub enum Tester {
     CONSTANT(u8),
@@ -77,11 +125,17 @@ impl Display for OpCode {
             Self::GOTO_IF_FALSE(offset) => {
                 write!(f, "OP_GOTO_IF_FALSE {}", offset)
             }
+            Self::POP_AND_GOTO_IF_FALSE(offset) => {
+                write!(f, "OP_POP_AND_GOTO_IF_FALSE {}", offset)
+            }
             Self::GOTO_IF_TRUE(offset) => {
                 write!(f, "OP_GOTO_IF_TRUE {}", offset)
             }
             Self::FORWARD(offset) => write!(f, "OP_FORWARD {}", offset),
             Self::REWIND(offset) => write!(f, "OP_REWIND {}", offset),
+            Self::FOR_NUMERIC(offset) => {
+                write!(f, "OP_FOR_NUMERIC {}", offset)
+            }
             Self::DEFINE_GLOBAL { constant } => {
                 write!(f, "OP_DEFINE_GLOBAL {}", constant)
             }
@@ -154,10 +208,11 @@ impl Display for OpCode {
             Self::TABLE_GET_FROM { index } => {
                 write!(f, "OP_TABLE_GET_FROM {}", index)
             }
-            Self::TABLE_SET { depth } => write!(f, "OP_TABLE_SET {}[]]", depth),
-            Self::TABLE_SET_BY_CONSTANT { constant } => {
-                write!(f, "OP_TABLE_SET_BY_CONSTANT {}", constant)
-            }
+            Self::TABLE_SET { depth } => write!(f, "OP_TABLE_SET {}[]", depth),
+            // Self::TABLE_SET_BY_CONSTANT { constant } => {
+            //     write!(f, "OP_TABLE_SET_BY_CONSTANT {}", constant)
+            // }
+            Self::INCREMENT { index } => write!(f, "OP_INCREMENT {}", index),
         }
     }
 }
