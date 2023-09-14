@@ -267,10 +267,15 @@ impl<'a> Lua {
     }
 
     fn close_upvalues_by_return(&mut self, last: *mut Value) {
+        // devout!("value: {}", unsafe { &*last });
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
-        for upvalue in self.open_upvalues.iter() {
+        for upvalue in self.open_upvalues.iter().rev() {
             let mut up = upvalue.borrow_mut();
+            // let upv = unsafe { &*up.get_location() };
+            // let vv = unsafe { &*last };
+            // let b = up.get_location() < last;
+            // println!("upvalue {} less than {} is {} ", upv, vv, b);
             if up.get_location() < last {
                 break;
             }
@@ -657,7 +662,6 @@ impl<'a> Lua {
                     // let increment = self.grab(1);
                     let iterator = unsafe { &mut *self.stack_top.sub(3) };
                     let compare = self.grab(2);
-                    println!("FOR_NUMERIC: {} > {}", iterator, compare);
                     if Self::is_greater(iterator, compare)? {
                         frame.forward(*skip);
                     } else {
@@ -675,7 +679,7 @@ impl<'a> Lua {
                 }
                 OpCode::CLOSURE { constant } => {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
-                    devout!("CLOSURE: {}", value);
+                    devout!(" | => {}", value);
                     if let Value::Function(f) = value {
                         // f.upvalue_count
                         let mut closure =
@@ -684,6 +688,7 @@ impl<'a> Lua {
                         if f.upvalue_count >= 0 {
                             let next_instruction = frame.get_next_n_codes(f.upvalue_count as usize);
                             for i in 0..f.upvalue_count {
+                                devout!(" | {}", next_instruction[i as usize]);
                                 if let OpCode::REGISTER_UPVALUE { index, neighboring } =
                                     next_instruction[i as usize]
                                 {
@@ -723,9 +728,7 @@ impl<'a> Lua {
                     #[cfg(feature = "dev-out")]
                     {
                         frame.print_local_stack();
-                        frame.function.upvalues.iter().for_each(|f| {
-                            f.borrow().print();
-                        });
+                        frame.function.print_upvalues();
                     }
 
                     devout!("GET_UPVALUE: {}", value);
@@ -965,27 +968,28 @@ impl<'a> Lua {
         devout!("2capture_upvalue at index {} : {}", index, unsafe {
             &*value
         });
-        let mut ind = 0;
+        let mut ind = None;
         for (i, up) in self.open_upvalues.iter().enumerate() {
             let upvalue = up.borrow();
             if upvalue.location == value {
                 return up.clone();
             }
-            ind = i;
 
-            if upvalue.location > value {
+            if upvalue.location < value {
                 break;
             }
+            ind = Some(i);
         }
 
         let u = Rc::new(RefCell::new(UpValue::new(index, value)));
 
-        self.open_upvalues.insert(ind, u.clone());
+        match ind {
+            Some(i) => self.open_upvalues.insert(i, u.clone()),
+            None => self.open_upvalues.push(u.clone()),
+        }
 
         #[cfg(feature = "dev-out")]
-        self.open_upvalues.iter().for_each(|up| {
-            up.borrow().print();
-        });
+        self.print_upvalues();
         u
 
         //   self

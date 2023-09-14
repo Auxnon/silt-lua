@@ -193,6 +193,11 @@ impl Closure {
     pub fn new(function: Rc<FunctionObject>, upvalues: Vec<Rc<RefCell<UpValue>>>) -> Self {
         Self { function, upvalues }
     }
+    pub fn print_upvalues(&self) {
+        self.upvalues.iter().enumerate().for_each(|(i, f)| {
+            println!("fn-up {}:{}", i, f.borrow());
+        });
+    }
 }
 
 pub struct UpValue {
@@ -232,15 +237,27 @@ impl UpValue {
         unsafe { (*self.location).clone() }
     }
     pub fn get_location(&self) -> *mut Value {
+        #[cfg(feature = "dev-out")]
+        println!("getting location: {}", unsafe { &*self.location });
         self.location
     }
-    pub fn print(&self) {
-        println!("upvalue: {}", unsafe { &*self.location });
-    }
+
     // pub fn get(&self) -> &Value {
     //     unsafe { &*self.value }
     // }
     // pub fn set(&mut self, value: Value) {
     //     unsafe { *self.value = value };
     // }
+}
+
+impl Display for UpValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "⬆️{}x{}@{}",
+            unsafe { &*self.location },
+            self.closed,
+            self.index
+        )
+    }
 }
