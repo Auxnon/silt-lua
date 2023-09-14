@@ -114,7 +114,7 @@ impl Display for OpCode {
             Self::REGISTER_UPVALUE {
                 index: i,
                 neighboring: n,
-            } => write!(f, "OP_REG_UPVALUE {}", i),
+            } => write!(f, "OP_REG_UPVALUE {} {}", if *n { "⬆️" } else { "⬆️⬆️" }, i),
             Self::GET_UPVALUE { index: i } => {
                 write!(f, "OP_GET_UPVALUE {}", i)
             }

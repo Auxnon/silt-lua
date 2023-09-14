@@ -1,9 +1,5 @@
 do
-    local a = 1
-    for i = 1, 100000000
-    do
-        a = i
+    for i = 1, 3 do
+        print(i)
     end
-
-    print(a)
 end
