@@ -1,7 +1,7 @@
 use core::fmt::Display;
 // implement clone
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // TODO temporary
     Print,
@@ -83,7 +83,7 @@ pub enum Token {
     Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Operator {
     Not,
     Tilde,
@@ -107,7 +107,7 @@ pub enum Operator {
     ColonEquals,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Flag {
     Strict,
     Local,

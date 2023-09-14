@@ -3,12 +3,34 @@ use std::{cell::RefCell, rc::Rc};
 use hashbrown::HashMap;
 
 use crate::{
-    error::ErrorTypes,
+    error::{ErrorTypes, SiltError},
     function::{Closure, FunctionObject, NativeObject},
     lua::Lua,
     table::Table,
+    token::Operator,
     userdata::UserData,
 };
+
+/**
+ * Increment self by value and operand type, if increment op fails then use fallback, for instance += would fallback to +
+ * The fallback is used in scenarios where trying to adjust self would change the type, such as an integer to float
+ */
+macro_rules! binary_self_op {
+    ($l:ident, $op:tt, $fallback:tt, $r:ident, $opp:tt) => {
+        {
+            match(&mut *$l, $r){
+                (Value::Number(left), Value::Number(right))  => *left $op right,
+                (Value::Integer(left), Value::Integer(right)) =>*left $op right,
+                (Value::Number(left), Value::Integer(right)) => *left $op (*right as f64),
+                // (Value::Integer(left), Value::Number(right)) => Some(Value::Number((*left as f64) $fallback right)),
+                (Value::Integer(left), Value::Number(right)) =>  *$l= Value::Number((*left as f64) $fallback right),
+                // TODO
+                (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
+            }
+            Ok(())
+        }
+    };
+}
 
 /** Lua value enum representing different data types within a VM */
 pub enum Value {
@@ -52,7 +74,7 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Infinity(_) => write!(f, "inf"),
             Value::NativeFunction(_) => write!(f, "native_function"),
-            Value::Closure(c) => write!(f, "(clojure= {})", c.function),
+            Value::Closure(c) => write!(f, "=>({})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(t) => write!(f, "{}", t.borrow().to_string()),
             Value::UserData(u) => write!(f, "{}", u.to_string()),
@@ -87,28 +109,29 @@ impl Value {
     pub fn force_to_int(&mut self, n: i64) {
         *self = Value::Integer(n);
     }
+    pub fn force_to_float(&mut self, n: f64) {
+        *self = Value::Number(n);
+    }
 
-    // fn to_string(&self) -> String {
-    //     match self {
-    //         Value::Integer(i) => i.to_string(),
-    //         Value::Number(n) => n.to_string(),
-    //         Value::Bool(b) => b.to_string(),
-    //         Value::Nil => "nil".to_string(),
-    //         Value::Infinity(b) => {
-    //             if *b {
-    //                 "-ing".to_string()
-    //             } else {
-    //                 "inf".to_string()
-    //             }
-    //         }
-    //         Value::NativeFunction(_) => "native_function".to_string(),
-    //         Value::Function { .. } => "function".to_string(),
-    //         Value::Closure(_) => "(function)".to_string(),
-    //         Value::String(s) => s.to_string(),
-    //         Value::Table(t) => t.borrow().to_string(),
-    //         Value::UserData(u) => u.to_string(),
-    //     }
-    // }
+    pub fn increment(&mut self, value: &Value) -> Result<(), SiltError> {
+        binary_self_op!(self, +=,+, value, Add)
+        // match match (&mut *self, value) {
+        //     (Value::Number(left), Value::Number(right)) => {
+        //         *left += right;
+        //         None
+        //     }
+        //     (Value::Integer(left), Value::Number(right)) => {
+        //         Some(Value::Number((*left as f64) + right))
+        //         // self.force_to_float(left as f64 + right);
+        //     }
+
+        //     _ => unreachable!(),
+        // } {
+        //     Some(v) => *self = v,
+        //     None => {}
+        // }
+        // Ok(())
+    }
 }
 
 impl Clone for Value {

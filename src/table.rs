@@ -23,6 +23,9 @@ impl Table {
     pub fn get(&self, key: &Value) -> Option<&Value> {
         self.data.get(key)
     }
+    pub fn getn(&self, i: usize) -> Option<&Value> {
+        self.data.get(&Value::Integer(i as i64))
+    }
     pub fn get_value(&self, key: &Value) -> Value {
         match self.data.get(key) {
             Some(v) => v.clone(),

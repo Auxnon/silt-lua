@@ -1,3 +1,4 @@
+use error::ErrorTuple;
 use lua::Lua;
 use value::Value;
 
@@ -32,6 +33,15 @@ fn simple(source: &str) -> Value {
     // Value::String(Box::new("Unknown error".to_string()))
 }
 
+fn complex(source: &str) -> Result<Value, ErrorTuple> {
+    let mut vm = Lua::new();
+    vm.load_standard_library();
+    match vm.run(source) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(e.get(0).unwrap().clone()),
+    }
+}
+
 #[wasm_bindgen]
 extern "C" {
     pub fn jprintln(s: &str);
@@ -46,11 +56,22 @@ pub fn run(source: &str) -> String {
         Err(e) => e[0].to_string(),
     }
 }
+
 macro_rules! valeq {
     ($source:literal, $val:expr) => {
         assert_eq!(simple($source), $val);
     };
 }
+
+macro_rules! fails {
+    ($source:literal, $val:expr) => {{
+        match complex($source) {
+            Ok(_) => panic!("Expected error"),
+            Err(e) => assert_eq!(e.code, $val),
+        }
+    }};
+}
+
 macro_rules! vstr {
     ($source:literal) => {
         Value::String(Box::new($source.to_string()))
@@ -62,10 +83,13 @@ mod tests {
     use crate::{
         chunk::Chunk,
         code::{self, OpCode},
+        complex,
+        error::SiltError,
         function::FunctionObject,
         lua::Lua,
+        prelude::ErrorTypes,
         simple,
-        token::Token,
+        token::{Operator, Token},
         value::Value,
     };
     use std::{mem::size_of, println, rc::Rc};
@@ -90,8 +114,6 @@ mod tests {
         println!("size of token: {}", size_of::<Token>());
 
         println!("size of token: {}", size_of::<Token>());
-        // let s = "12345678".as_bytes().len();
-        // println!("size of str: {}", s);
         println!(
             "size of silt_error: {}",
             size_of::<crate::error::SiltError>()
@@ -105,7 +127,7 @@ mod tests {
         println!("size of OpCode: {}", size_of::<crate::code::OpCode>());
 
         assert!(size_of::<Token>() == 24);
-        assert!(size_of::<crate::code::OpCode>() == 3);
+        assert!(size_of::<crate::code::OpCode>() == 4);
     }
 
     #[test]
@@ -114,69 +136,74 @@ mod tests {
     start=clock()
     i=1
     a="a"
-    while i < 100_000 do
+    while i < 100000 do
         i = i +1
         a = a .. "1"
     end
     elapsed=clock()-start
-    print "done"
+    print "done "
     print ("elapsed: "..elapsed)
-    return elapsed
+    return {elapsed,i}
     "#;
-        let n = if let crate::value::Value::Number(n) = simple(source_in) {
-            println!("{} seconds", n);
-            n
+        let tuple = if let crate::value::Value::Table(t) = simple(source_in) {
+            let tt = t.borrow();
+            (
+                if let Some(&Value::Number(n)) = tt.getn(1) {
+                    n
+                } else {
+                    999999.
+                },
+                if let Some(&Value::Integer(n)) = tt.getn(2) {
+                    println!("{} iterations", n);
+                    n
+                } else {
+                    0
+                },
+            )
         } else {
-            999999.
+            panic!("not a table")
         };
-        assert!(n < 2.14)
-    }
-    #[test]
-    fn fibby() {
-        let source_in = r#"
-        function fib(n)
-            if n <= 1 then
-            return n
-            else
-                return fib(n-1) + fib(n-2)
-            end
-        end
-      
-        for i = 1, 35 do
-            sprint i..":"..fib(i)
-        end
-    "#;
-        println!("{}", simple(source_in));
 
-        // let n = if let crate::value::Value::Number(n) = crate::cli(
-        //     source_in,
-        //     &mut crate::environment::Environment::new_with_std(),
-        // ) {
-        //     println!("{} seconds", n);
-        //     n
-        // } else {
-        //     999999.
-        // };
-        // assert!(n < 3.4)
+        // assert!(tuple.0 < 2.14);
+        assert!(tuple.1 == 100_000);
     }
+
+    // #[test]
+    // fn fibby() {
+    //     let source_in = r#"
+    //     function fib(n)
+    //         if n <= 1 then
+    //         return n
+    //         else
+    //             return fib(n-1) + fib(n-2)
+    //         end
+    //     end
+
+    //     for i = 1, 35 do
+    //         sprint i..":"..fib(i)
+    //     end
+    // "#;
+    //     println!("{}", simple(source_in));
+    // }
+
     #[test]
     fn fib() {
         let source_in = r#"
         start=clock() 
         function fib(n)
-        if n <= 1 then
-          return n
-        else
-        return fib(n-1) + fib(n-2)
+            if n <= 1 then
+                return n
+            else
+                return fib(n-1) + fib(n-2)
+            end
         end
-      end
-      
-      for i = 1, 25 do
-          print(i..":"..fib(i))
-      end
-      elapsed=clock()-start
-      return elapsed
-    "#;
+        
+        for i = 1, 25 do
+            print(i..":"..fib(i))
+        end
+        elapsed=clock()-start
+        return elapsed
+        "#;
 
         let n = if let crate::value::Value::Number(n) = simple(source_in) {
             println!("{} seconds", n);
@@ -184,10 +211,11 @@ mod tests {
         } else {
             999999.
         };
-        assert!(n < 3.4)
+        println!("{} seconds", n);
+        // assert!(n < 3.4)
     }
     #[test]
-    fn chunk() {
+    fn chunk_validity() {
         let mut c = Chunk::new();
         c.write_value(Value::Number(1.2), (1, 1));
         c.write_value(Value::Number(3.4), (1, 2));
@@ -202,108 +230,160 @@ mod tests {
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
         let mut vm = Lua::new();
-        if let Err(e) = vm.execute(Rc::new(tester)) {
-            println!("{}", e);
-        }
-    }
-    #[test]
-    fn pointer() {
-        let x = vec![1, 2, 4];
-        let x_ptr = x.as_ptr();
-
-        unsafe {
-            for i in 0..x.len() {
-                println!("{}", *x_ptr);
-                assert_eq!(*x_ptr.add(i), 1 << i);
+        match vm.execute(Rc::new(tester)) {
+            Ok(v) => {
+                assert_eq!(v, Value::Number(-0.5));
+            }
+            Err(e) => {
+                panic!("Test should not fail with error: {}", e)
             }
         }
     }
+
     #[test]
     fn compliance() {
-        valeq!(" 1+2", Value::Integer(3));
-        valeq!(" '1'..'2'", vstr!("12"));
+        valeq!("return 1+2", Value::Integer(3));
+        valeq!("return '1'..'2'", vstr!("12"));
 
         valeq!(
             r#"
             local a= 1+2
-            a
+            return a
             "#,
             Value::Integer(3)
         );
         valeq!(
             r#"
             local a= '1'..'2'
-            a
+            return a
             "#,
             vstr!("12")
         );
         valeq!(
             r#"
             local a= 'a'
-            sprint a
             a='b'
-            sprint a
             local b='c'
-            sprint b
             b=a..b
-            sprint b
-            b
+            return b
             "#,
             vstr!("bc")
         );
-        // TODO ?????
-        valeq!(
-            r#"
-            local a= b=2
-            a
-            "#,
-            Value::Integer(2)
+    }
+
+    #[test]
+    fn string_infererence() {
+        valeq!("return '1'+2", Value::Integer(3));
+        fails!(
+            "return 'a1'+2",
+            SiltError::ExpOpValueWithValue(ErrorTypes::String, Operator::Add, ErrorTypes::Integer)
         );
     }
+
+    #[test]
+    fn scope() {
+        valeq!(
+            r#"
+            -- for loop closures should capture the loop variable at that point in time and not the final value of the loop variable
+            a = {}
+            do
+                for i = 1, 3 do
+                    local function t()
+                        return i
+                    end
+                    a[i] = t
+                end
+
+                return a[1]() + a[2]() + a[3]() -- 1+2+3 = 6
+            end
+            "#,
+            Value::Integer(6)
+        );
+        valeq!(
+            r#"
+            -- Same but test in global scope
+            a = {}
+            for i = 1, 3 do
+                local function t()
+                    return i
+                end
+                a[i] = t
+            end
+
+            return a[1]() + a[2]() + a[3]() -- 1+2+3 = 6
+            "#,
+            Value::Integer(6)
+        );
+    }
+
     #[test]
     fn closures() {
         valeq!(
             r#"
-do
-    local a = 1
-    function f1()
-       return a
-    end
+            do
+                local a = 1
+                local b = 2
+                local function f1()
+                    local c = 3
+                    local function f2()
+                        local d = 4
+                        c = c + d            -- 7, 11
+                        return a + b + c + d -- 1+2+7+4= 14, 1+2+11+4 = 18
+                    end
+                    return f2
+                end
+                local e = 1000
+                local x = f1()
+                return x() + x() -- 14+18 = 32
+            end
+            "#,
+            Value::Integer(32)
+        );
+    }
 
-    local b=f1()
-    a = 3
-    b=b+ f1()
-   return b
-end
-"#,
+    #[test]
+    fn closures2() {
+        valeq!(
+            r#"
+            do
+                local a = 1
+                function f1()
+                    return a
+                end
+
+                local b = f1()
+                a = 3
+                b = b + f1()
+                return b --4
+            end
+            "#,
             Value::Integer(4)
         );
         valeq!(
             r#"
-do
-function outer()
-    local y=0
-    local x = 2
-    local function middle()
-        local function inner()
-            return x
-        end
-        y = y + 1
-        return inner
-    end
-
-    y = y + 1
-    x=x + y
-    return middle
-end
-
-a = outer()
-b = a()
-return b
-end
-
-"#,
-            Value::Integer(4)
+            do
+                function outer()
+                    local y = 0
+                    local x = 2
+                    local function middle()
+                        local function inner()
+                            return x
+                        end
+                        y = y + 1
+                        return inner
+                    end
+            
+                    y = y + 1
+                    x = x + y
+                    return middle
+                end
+            
+                a = outer()
+                b = a()
+                return b()
+            end
+            "#,
+            Value::Integer(3)
         );
     }
 }

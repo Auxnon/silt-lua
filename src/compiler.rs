@@ -19,18 +19,47 @@ use crate::{
     value::Value,
 };
 
-macro_rules! build_block_until {
-        ($self:ident, $($rule:ident)|*) => {{
-            while match $self.peek()? {
-                $( Token::$rule)|* => {$self.eat(); false}
-                Token::EOF => {
-                    return Err($self.error_at(SiltError::UnterminatedBlock));
-                }
-                _ =>{declaration($self)?; true}
-            } {
+macro_rules! build_block_until_then_eat {
+    ($self:ident, $($rule:ident)|*) => {{
+        while match $self.peek()? {
+            $( Token::$rule)|* => {$self.eat(); false}
+            Token::EOF => {
+                return Err($self.error_at(SiltError::UnterminatedBlock));
             }
-        }};
-    }
+            _ =>{declaration($self)?; true}
+        } {
+        }
+    }};
+}
+
+macro_rules! build_block_until {
+    ($self:ident, $($rule:ident)|*) => {{
+        while match $self.peek()? {
+            $( Token::$rule)|* => false,
+            Token::EOF => {
+                return Err($self.error_at(SiltError::UnterminatedBlock));
+            }
+            _ =>{declaration($self)?; true}
+        } {
+        }
+    }};
+}
+
+macro_rules! scope_and_block_until {
+    ($self:ident, $($rule:ident)|*) => {{
+        begin_scope($self);
+        build_block_until!($self, $($rule)|*);
+        end_scope($self,false);
+    }};
+}
+
+macro_rules! scope_and_block_until_then_eat {
+    ($self:ident, $($rule:ident)|*) => {{
+        begin_scope($self);
+        build_block_until_then_eat!($self, $($rule)|*);
+        end_scope($self,false);
+    }};
+}
 
 macro_rules! devnote {
     ($self:ident $message:literal) => {
@@ -203,15 +232,15 @@ pub struct Compiler {
     pub valid: bool,
     current: Result<Token, ErrorTuple>,
     current_location: Location,
-    local_count: usize,
     scope_depth: usize,
     functional_depth: usize,
     // TODO we need a fail catch if we exceed a local variable amount of up values as well
     up_values: Vec<Vec<UpLocal>>,
+    local_offset: Vec<usize>,
     /** an offset tracker each time we descend into a new functional scope. For instance if we drop 1 level down from the root level that had 3 locals prior [A,B,C] then our stack looks like [root, A, B, C, fn] then we'll store 3 at this field's index 0 since the calling function is always at the bottom of the stack */
     local_functional_offset: Vec<usize>,
-    // locals: Vec<Local>,
     locals: Vec<Local>,
+    local_count: usize,
     labels: HashMap<String, usize>,
     // location: (usize, usize),
     // previous: TokenTuple,
@@ -234,7 +263,6 @@ impl<'a> Compiler {
             current_index: 0,
             errors: vec![],
             valid: true,
-            local_count: 0,
             scope_depth: 0,
             functional_depth: 0,
             up_values: vec![vec![]],
@@ -245,6 +273,8 @@ impl<'a> Compiler {
                 is_captured: false,
             }],
             local_functional_offset: vec![],
+            local_offset: vec![],
+            local_count: 1,
             labels: HashMap::new(),
             pending_gotos: vec![],
             // location: (0, 0),
@@ -323,7 +353,7 @@ impl<'a> Compiler {
         self.body.chunk.write_identifier(identifier)
     }
 
-    /** pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
+    /** Tokens, not stack. Pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
     fn pop(&mut self) -> (Result<Token, ErrorTuple>, Location) {
         self.current_index += 1;
         match self.iterator.next() {
@@ -337,6 +367,12 @@ impl<'a> Compiler {
             }
             None => (Ok(Token::EOF), (0, 0)),
         }
+    }
+
+    /** Force stack to pop N values without usual niceties, this both emits opcode and drops off the emulated stack locals */
+    fn force_stack_pop(&mut self, n: usize) {
+        self.locals.truncate(self.locals.len() - n);
+        self.emit_at(OpCode::POPS(n as u8));
     }
 
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
@@ -496,8 +532,14 @@ impl<'a> Compiler {
             OpCode::GOTO_IF_TRUE(_) => {
                 self.get_chunk_mut().code[offset] = OpCode::GOTO_IF_TRUE(jump as u16)
             }
+            OpCode::POP_AND_GOTO_IF_FALSE(_) => {
+                self.get_chunk_mut().code[offset] = OpCode::POP_AND_GOTO_IF_FALSE(jump as u16)
+            }
             OpCode::FORWARD(_) => self.get_chunk_mut().code[offset] = OpCode::FORWARD(jump as u16),
             OpCode::REWIND(_) => self.get_chunk_mut().code[offset] = OpCode::REWIND(jump as u16),
+            OpCode::FOR_NUMERIC(_) => {
+                self.get_chunk_mut().code[offset] = OpCode::FOR_NUMERIC(jump as u16)
+            }
             _ => {
                 return Err(self.error_at(SiltError::ChunkCorrupt));
             }
@@ -798,17 +840,27 @@ fn add_local_placeholder(this: &mut Compiler) -> Result<u8, ErrorTuple> {
 
 fn _add_local(this: &mut Compiler, ident: Option<Box<String>>) -> Result<u8, ErrorTuple> {
     devnote!(this "add_local");
-    if this.local_count == 255 {
+    // let offset = if this.functional_depth > 0 {
+    //     this.local_functional_offset[this.functional_depth - 1]
+    // } else {
+    //     0
+    // };
+    let i = this.local_count; //- offset;
+    if i == 255 {
         return Err(this.error_at(SiltError::TooManyLocals));
     }
-    this.local_count += 1;
     this.locals.push(Local {
         ident,
         depth: this.scope_depth,
         functional_depth: this.functional_depth,
         is_captured: false,
     });
-    let i = this.local_count - 1;
+    this.local_count += 1;
+    // let offset = if this.functional_depth > 0 {
+    //     this.local_functional_offset[this.functional_depth - 1]
+    // } else {
+    //     0
+    // };
     Ok(i as u8)
 }
 
@@ -863,20 +915,6 @@ fn resolve_local(this: &mut Compiler, ident: &Box<String>) -> Option<(u8, bool)>
     }
     None
 }
-
-// fn add_upvalue(this: &mut Compiler, ident: u8, neighboring: bool) -> u8 {
-//     let m = this.up_values.last_mut().unwrap();
-//     let i = m.len();
-//     m.push(UpLocal { ident, neighboring });
-//     i as u8
-// }
-
-// fn register_upvalue_at(this: &mut Compiler, ident: u8, neighboring: bool, level: usize) -> u8 {
-//     let mut m = &mut this.up_values[level];
-//     let i = m.len();
-//     m.push(UpLocal { ident, neighboring });
-//     i as u8
-// }
 
 /** check if upvalue is registered at this closest level and decend down until reach destination, registiner upvalues as we go if not already*/
 fn resolve_upvalue(
@@ -1139,7 +1177,7 @@ fn statement(this: &mut Compiler) -> Catch {
 
 fn block(this: &mut Compiler) -> Catch {
     devnote!(this "block");
-    build_block_until!(this, End);
+    build_block_until_then_eat!(this, End);
 
     Ok(())
 }
@@ -1153,7 +1191,11 @@ fn begin_scope(this: &mut Compiler) {
 fn begin_functional_scope(this: &mut Compiler) {
     this.functional_depth += 1;
     this.up_values.push(vec![]);
-    this.local_functional_offset.push(this.local_count);
+    let cumulative: usize = this.local_functional_offset.iter().sum();
+    this.local_functional_offset
+        .push(this.local_count + cumulative - 1);
+    this.local_offset.push(this.local_count);
+    this.local_count = 1;
 }
 
 /** raise scope depth and dump lowest locals off the imaginary stack */
@@ -1165,6 +1207,7 @@ fn end_scope(this: &mut Compiler, skip_code: bool) {
     let mut v = vec![];
     while !this.locals.is_empty() && this.locals.last().unwrap().depth > this.scope_depth {
         let l = this.locals.pop().unwrap();
+        this.local_count -= 1;
         if l.is_captured {
             if last_was_pop {
                 v.push(count);
@@ -1204,6 +1247,11 @@ fn end_scope(this: &mut Compiler, skip_code: bool) {
 fn end_functional_scope(this: &mut Compiler) -> Vec<UpLocal> {
     this.functional_depth -= 1;
     this.local_functional_offset.pop();
+    this.local_count = match this.local_offset.pop() {
+        Some(v) => v,
+        None => 1,
+    };
+
     this.up_values.pop().unwrap()
 }
 
@@ -1212,25 +1260,27 @@ fn if_statement(this: &mut Compiler) -> Catch {
     this.eat();
     expression(this, false)?;
     expect_token!(this Then);
-    let index = this.emit_index(OpCode::GOTO_IF_FALSE(0));
-    this.emit_at(OpCode::POP);
-    build_block_until!(this, End | Else | ElseIf);
-    // let else_jump = this.emit_index(OpCode::FORWARD(0));
-    this.patch(index)?;
-    this.emit_at(OpCode::POP);
+    let skip_if = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
+    scope_and_block_until!(this, End | Else | ElseIf);
+    // this.emit_at(OpCode::POP); // pop the if compare again as we skipped the pop from before
     match this.peek()? {
         Token::Else => {
             this.eat();
-            let index = this.emit_index(OpCode::FORWARD(0));
-            build_block_until!(this, End);
-            this.patch(index)?;
+            let skip_else = this.emit_index(OpCode::FORWARD(0));
+            this.patch(skip_if)?; // patch to fo AFTER the forward so we actually run the else block
+            scope_and_block_until!(this, End);
+            this.patch(skip_else)?;
+            expect_token!(this End);
         }
         Token::ElseIf => {
             this.eat();
-            this.emit_at(OpCode::POP);
+            // this.emit_at(OpCode::POP);
+            this.patch(skip_if)?;
             if_statement(this)?;
         }
-        _ => {}
+        _ => {
+            this.patch(skip_if)?;
+        }
     }
     Ok(())
 }
@@ -1241,26 +1291,30 @@ fn while_statement(this: &mut Compiler) -> Catch {
     let loop_start = this.get_chunk_size();
     expression(this, false)?;
     expect_token!(this Do);
-    let exit_jump = this.emit_index(OpCode::GOTO_IF_FALSE(0));
-    this.emit_at(OpCode::POP);
-    build_block_until!(this, End);
+    let exit_jump = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
+    build_block_until_then_eat!(this, End);
     this.emit_rewind(loop_start);
     this.patch(exit_jump)?;
-    this.emit_at(OpCode::POP);
     Ok(())
 }
 
+/**
+ * Put iterator, start, and either step expression or 1 constant on to stack.
+ * Evaluate if iterator is less than or equal to end value, if not run block and push iterator to that block's stack
+ * At end of block increment iterator by step value and rewind
+ * Re-evaluate and if iterator is greater than end value, forward to immediately after end of block
+ */
 fn for_statement(this: &mut Compiler) -> Catch {
     devnote!(this "for_statement");
     this.eat();
     let pair = this.pop();
     let t = pair.0?;
     if let Token::Identifier(ident) = t {
-        begin_scope(this);
-        let iterator = add_local(this, ident)?; // reserve iterator by identifier
+        // let offset = this.local_functional_offset[this.functional_depth - 1];
+        let iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
         expect_token!(this Assign);
-        let comparison = add_local_placeholder(this)?; // reserve end value with placeholder
-        let step_value = add_local_placeholder(this)?; // reserve step value with placeholder
+        add_local_placeholder(this)?; // reserve end value with placeholder
+        add_local_placeholder(this)?; // reserve step value with placeholder
         expression(this, false)?; // expression for iterator
         expect_token!(this Comma);
         expression(this, false)?; // expression for end value
@@ -1274,35 +1328,40 @@ fn for_statement(this: &mut Compiler) -> Catch {
         } else {
             this.constant_at(Value::Integer(1))
         };
-        this.emit_at(OpCode::GET_LOCAL { index: iterator });
-        let loop_start = this.get_chunk_size();
+        let for_start = this.emit_index(OpCode::FOR_NUMERIC(0));
+        // this.emit_at(OpCode::GET_LOCAL { index: iterator });
+        // let loop_start = this.get_chunk_size();
         // compare iterator to end value
-        this.emit_at(OpCode::GET_LOCAL { index: comparison });
-        this.emit_at(OpCode::EQUAL);
-        let exit_jump = this.emit_index(OpCode::GOTO_IF_TRUE(0));
-        this.emit_at(OpCode::POP);
-        expect_token!(this Do);
-
+        // this.emit_at(OpCode::GET_LOCAL { index: comparison });
+        // this.emit_at(OpCode::EQUAL);
+        // let exit_jump = this.emit_index(OpCode::GOTO_IF_TRUE(0));
         // this.emit_at(OpCode::POP);
-        // statement(this)?;
-        build_block_until!(this, End);
-        this.emit_at(OpCode::GET_LOCAL { index: iterator });
-        this.emit_at(OpCode::GET_LOCAL { index: step_value });
-        this.emit_at(OpCode::ADD);
-        this.emit_at(OpCode::SET_LOCAL { index: iterator });
-        this.emit_rewind(loop_start);
-        this.patch(exit_jump)?;
-        this.emit_at(OpCode::POP);
+        expect_token!(this Do);
+        begin_scope(this);
+        add_local(this, ident)?; // we add the local inside the scope which was actually added on by the for opcode already
+        build_block_until_then_eat!(this, End);
         end_scope(this, false);
+
+        this.emit_at(OpCode::INCREMENT { index: iterator });
+        this.emit_rewind(for_start);
+        this.patch(for_start)?;
+        this.force_stack_pop(3);
         Ok(())
     } else {
         Err(this.error_at(SiltError::ExpectedLocalIdentifier))
     }
 }
+
+/**
+ * We run closure and if value is not nil we set that to iterator and push onto blocks scope, when we hit end we rewind and re-eval
+ * If the for's iterator is nil we forward to end of do block and pop off the iterator
+ */
+fn generic_for_statement() {}
+
 fn return_statement(this: &mut Compiler) -> Catch {
     devnote!(this "return_statement");
     this.eat();
-    if let Token::End | Token::EOF = this.peek()? {
+    if let Token::End | Token::Else | Token::ElseIf | Token::SemiColon | Token::EOF = this.peek()? {
         this.emit_at(OpCode::NIL);
     } else {
         expression(this, false)?;
@@ -1539,6 +1598,8 @@ fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Cat
     } else {
         unreachable!()
     };
+
+    devout!("setter: {}, getter: {}", setter, getter);
 
     /*
      * normally:

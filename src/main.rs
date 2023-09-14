@@ -1,5 +1,6 @@
 use silt_lua::prelude::Lua;
 
+const FALLBACK_FILE: &str = "scripts/test.lua";
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     {
@@ -244,7 +245,7 @@ fn main() {
     let file = if args.len() > 1 {
         std::fs::read_to_string(args[1].as_str()).unwrap()
     } else {
-        std::fs::read_to_string("scripts/ex.lua").unwrap()
+        std::fs::read_to_string(FALLBACK_FILE).unwrap()
     };
     let source_in = file.as_str();
     // let source_in = r#"

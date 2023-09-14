@@ -31,7 +31,7 @@
                 "args": [
                     "build",
                     "--bin=silt_lua_cli",
-                    "--package=silt_lua",
+                    "--package=silt-lua",
                     "--features=dev-out"
                 ],
                 "filter": {

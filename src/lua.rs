@@ -128,37 +128,41 @@ macro_rules! num_op_str{
     }
 }
 
-macro_rules! binary_op {
-    ($src:ident, $op:tt, $opp:tt) => {
-        {
+macro_rules! binary_op_push {
+    ($src:ident, $op:tt, $opp:tt) => {{
+        // TODO test speed of this vs 1 pop and a mutate
+        let r = $src.pop();
+        let l = $src.pop();
 
-            // TODO test speed of this vs 1 pop and a mutate
-            let r = $src.pop();
-            let l = $src.pop();
+        $src.push(binary_op!(l, $op, r, $opp));
+    }};
+}
 
-            $src.push(match (l, r) {
-                (Value::Number(left), Value::Number(right)) => (Value::Number(left $op right)),
-                (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
-                (Value::Number(left), Value::Integer(right)) => (Value::Number(left $op right as f64)),
-                (Value::Integer(left), Value::Number(right)) =>(Value::Number(left as f64 $op right)),
-                (Value::String(left), Value::String(right)) => str_op_str!(left $op right $opp)?,
-                (Value::String(left), Value::Integer(right)) => str_op_int!(left $op right $opp)?,
-                (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp)?,
-                (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
-                (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
-                // TODO userdata
-                // (Value::UserData(left), Value::UserData(right)) => {
-                //     if let Some(f) = left.get_meta_method($opp) {
-                //         f(left, right)?
-                //     } else {
-                //         op_error!(left.to_error(), $opp, right.to_error())
-                //     }
-                // }
-                (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
-            });
+macro_rules! binary_op  {
+    ($l:ident, $op:tt, $r:ident, $opp:tt) => {
+        match ($l, $r) {
+            (Value::Number(left), Value::Number(right)) => (Value::Number(left $op right)),
+            (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
+            (Value::Number(left), Value::Integer(right)) => (Value::Number(left $op right as f64)),
+            (Value::Integer(left), Value::Number(right)) =>(Value::Number(left as f64 $op right)),
+            (Value::String(left), Value::String(right)) => str_op_str!(left $op right $opp)?,
+            (Value::String(left), Value::Integer(right)) => str_op_int!(left $op right $opp)?,
+            (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp)?,
+            (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
+            (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
+            // TODO userdata
+            // (Value::UserData(left), Value::UserData(right)) => {
+            //     if let Some(f) = left.get_meta_method($opp) {
+            //         f(left, right)?
+            //     } else {
+            //         op_error!(left.to_error(), $opp, right.to_error())
+            //     }
+            // }
+            (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
         }
     };
 }
+
 pub struct Lua {
     body: Rc<FunctionObject>,
     compiler: Compiler,
@@ -218,7 +222,7 @@ impl<'a> Lua {
     }
 
     fn push(&mut self, value: Value) {
-        devout!("push: {}", value);
+        devout!(" | push: {}", value);
         unsafe { self.stack_top.write(value) };
         self.stack_top = unsafe { self.stack_top.add(1) };
         self.stack_count += 1;
@@ -238,8 +242,8 @@ impl<'a> Lua {
     }
 
     fn print_upvalues(&self) {
-        self.open_upvalues.iter().for_each(|up| {
-            up.borrow().print();
+        self.open_upvalues.iter().enumerate().for_each(|(i, up)| {
+            println!("{}:{}", i, up.borrow());
         });
     }
 
@@ -263,10 +267,15 @@ impl<'a> Lua {
     }
 
     fn close_upvalues_by_return(&mut self, last: *mut Value) {
+        // devout!("value: {}", unsafe { &*last });
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
-        for upvalue in self.open_upvalues.iter() {
+        for upvalue in self.open_upvalues.iter().rev() {
             let mut up = upvalue.borrow_mut();
+            // let upv = unsafe { &*up.get_location() };
+            // let vv = unsafe { &*last };
+            // let b = up.get_location() < last;
+            // println!("upvalue {} less than {} is {} ", upv, vv, b);
             if up.get_location() < last {
                 break;
             }
@@ -282,7 +291,7 @@ impl<'a> Lua {
         // TODO is there a way to read without segfaulting?
         // We'd have to list the value to be forgotten, but is this even faster?
         // let v = unsafe { self.stack_top.read() };
-        devout!("pop: {}", v);
+        devout!(" | pop: {}", v);
         v
     }
 
@@ -342,6 +351,14 @@ impl<'a> Lua {
     /** Look and get mutable reference to top of stack */
     fn peek_mut(&mut self) -> &mut Value {
         unsafe { &mut *self.stack_top.sub(1) }
+    }
+
+    fn grab(&mut self, n: usize) -> &Value {
+        unsafe { &*self.stack_top.sub(n) }
+    }
+
+    fn grab_mut(&mut self, n: usize) -> &mut Value {
+        unsafe { &mut *self.stack_top.sub(n) }
     }
 
     /** Look down N amount of stack and return immutable reference */
@@ -436,7 +453,6 @@ impl<'a> Lua {
                 }
                 OpCode::CONSTANT { constant } => {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
-                    devout!("CONSTANT value {}", value);
                     self.push(value.clone());
                     // match value {
                     //     Value::Number(f) => self.push(*f),
@@ -474,6 +490,9 @@ impl<'a> Lua {
                         // }
                         self.globals.insert(s.to_string(), v);
                     } else {
+                        devout!("SET_GLOBAL: {}", value);
+                        #[cfg(feature = "dev-out")]
+                        self.body.chunk.print_constants();
                         return Err(SiltError::VmCorruptConstant);
                     }
                 }
@@ -501,9 +520,9 @@ impl<'a> Lua {
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
                 OpCode::DEFINE_LOCAL { constant } => todo!(),
-                OpCode::ADD => binary_op!(self, +, Add),
-                OpCode::SUB => binary_op!(self,-, Sub),
-                OpCode::MULTIPLY => binary_op!(self,*, Multiply),
+                OpCode::ADD => binary_op_push!(self, +, Add),
+                OpCode::SUB => binary_op_push!(self,-, Sub),
+                OpCode::MULTIPLY => binary_op_push!(self,*, Multiply),
                 OpCode::DIVIDE => {
                     let right = self.pop();
                     let left = self.pop();
@@ -618,6 +637,13 @@ impl<'a> Lua {
                         frame.forward(*offset);
                     }
                 }
+                OpCode::POP_AND_GOTO_IF_FALSE(offset) => {
+                    let value = &self.pop();
+                    // println!("GOTO_IF_FALSE: {}", value);
+                    if !Self::is_truthy(value) {
+                        frame.forward(*offset);
+                    }
+                }
                 OpCode::GOTO_IF_TRUE(offset) => {
                     let value = self.peek();
                     if Self::is_truthy(value) {
@@ -630,9 +656,30 @@ impl<'a> Lua {
                 OpCode::REWIND(offset) => {
                     frame.rewind(*offset);
                 }
+                OpCode::FOR_NUMERIC(skip) => {
+                    // for needs it's own version of the stack for upvalues?
+                    // compare, if greater then we skip, if less or equal we continue and then increment AFTER block
+                    // let increment = self.grab(1);
+                    let iterator = unsafe { &mut *self.stack_top.sub(3) };
+                    let compare = self.grab(2);
+                    if Self::is_greater(iterator, compare)? {
+                        frame.forward(*skip);
+                    } else {
+                        self.push(iterator.clone())
+                    }
+                    // self.push(iterator.clone());
+                    // if iterator > compare {
+                    //     frame.forward(*skip);
+                    // }
+                }
+                OpCode::INCREMENT { index } => {
+                    let value = frame.get_val_mut(*index);
+                    let step = self.peek();
+                    value.increment(step)?;
+                }
                 OpCode::CLOSURE { constant } => {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
-                    devout!("CLOSURE: {}", value);
+                    devout!(" | => {}", value);
                     if let Value::Function(f) = value {
                         // f.upvalue_count
                         let mut closure =
@@ -641,6 +688,7 @@ impl<'a> Lua {
                         if f.upvalue_count >= 0 {
                             let next_instruction = frame.get_next_n_codes(f.upvalue_count as usize);
                             for i in 0..f.upvalue_count {
+                                devout!(" | {}", next_instruction[i as usize]);
                                 if let OpCode::REGISTER_UPVALUE { index, neighboring } =
                                     next_instruction[i as usize]
                                 {
@@ -680,23 +728,21 @@ impl<'a> Lua {
                     #[cfg(feature = "dev-out")]
                     {
                         frame.print_local_stack();
-                        frame.function.upvalues.iter().for_each(|f| {
-                            f.borrow().print();
-                        });
+                        frame.function.print_upvalues();
                     }
 
                     devout!("GET_UPVALUE: {}", value);
                     self.push(value);
                 }
                 OpCode::SET_UPVALUE { index } => {
-                    let value = self.pop();
+                    let value = self.peek(); // TODO pop and set would be faster, less cloning
                     let ff = &frame.function.upvalues;
-                    ff[*index as usize].borrow_mut().close_around(value);
+                    ff[*index as usize].borrow_mut().set_value(value.clone());
                     // unsafe { *upvalue.value = value };
                 }
                 OpCode::CALL(param_count) => {
                     let value = self.peekn(*param_count);
-                    devout!("CALL: {}", value);
+                    devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
                             // TODO this logic is identical to function, but to make this a function causes some lifetime issues. A macro would work but we're already a little macro heavy aren't we?
@@ -778,17 +824,17 @@ impl<'a> Lua {
                     let value = self.pop();
                     self.operate_table(*depth, Some(value))?;
                 }
-                OpCode::TABLE_SET_BY_CONSTANT { constant } => {
-                    let value = self.pop();
-                    let key = Self::get_chunk(&frame).get_constant(*constant);
-                    let table = self.peek_mut();
-                    if let Value::Table(t) = table {
-                        // TODO can we pre-hash this to avoid a clone?
-                        t.borrow_mut().insert(key.clone(), value);
-                    } else {
-                        return Err(SiltError::VmNonTableOperations(table.to_error()));
-                    }
-                }
+                // OpCode::TABLE_SET_BY_CONSTANT { constant } => {
+                //     let value = self.pop();
+                //     let key = Self::get_chunk(&frame).get_constant(*constant);
+                //     let table = self.peek_mut();
+                //     if let Value::Table(t) = table {
+                //         // TODO can we pre-hash this to avoid a clone?
+                //         t.borrow_mut().insert(key.clone(), value);
+                //     } else {
+                //         return Err(SiltError::VmNonTableOperations(table.to_error()));
+                //     }
+                // }
                 OpCode::TABLE_GET { depth } => {
                     self.operate_table(*depth, None)?;
                 }
@@ -821,7 +867,7 @@ impl<'a> Lua {
             #[cfg(feature = "dev-out")]
             {
                 self.print_stack();
-                println!("---");
+                println!("--------------------------------------");
             }
         }
     }
@@ -922,27 +968,28 @@ impl<'a> Lua {
         devout!("2capture_upvalue at index {} : {}", index, unsafe {
             &*value
         });
-        let mut ind = 0;
+        let mut ind = None;
         for (i, up) in self.open_upvalues.iter().enumerate() {
             let upvalue = up.borrow();
             if upvalue.location == value {
                 return up.clone();
             }
-            ind = i;
 
-            if upvalue.location > value {
+            if upvalue.location < value {
                 break;
             }
+            ind = Some(i);
         }
 
         let u = Rc::new(RefCell::new(UpValue::new(index, value)));
 
-        self.open_upvalues.insert(ind, u.clone());
+        match ind {
+            Some(i) => self.open_upvalues.insert(i, u.clone()),
+            None => self.open_upvalues.push(u.clone()),
+        }
 
         #[cfg(feature = "dev-out")]
-        self.open_upvalues.iter().for_each(|up| {
-            up.borrow().print();
-        });
+        self.print_upvalues();
         u
 
         //   self
@@ -1035,22 +1082,30 @@ impl<'a> Lua {
         }
     }
 
-    fn operate_table(&mut self, index: u8, set: Option<Value>) -> Result<(), SiltError> {
+    /**
+     * Compares indexes on stack by depth amount, if set value not passed we act as a getter and push value at index on to stack
+     * Unintentional pun
+     */
+    fn operate_table(&mut self, depth: u8, set: Option<Value>) -> Result<(), SiltError> {
         // let value = unsafe { self.stack_top.read() };
         // let value = unsafe { self.stack_top.replace(Value::Nil) };
 
-        let u = index as usize + 1;
+        let u = depth as usize + 1;
+        let decrease = match set {
+            Some(_) => u,
+            None => u - 1,
+        };
         let table_point = unsafe { self.stack_top.sub(u) };
         let table = unsafe { &*table_point };
         if let Value::Table(t) = table {
             let mut current = t;
-            for i in 1..=index {
+            for i in 1..=depth {
                 let key = unsafe { self.stack_top.sub(i as usize).replace(Value::Nil) };
                 devout!("get from table with key: {}", key);
-                if i == index {
-                    let offset = index as usize;
-                    self.stack_count -= offset;
-                    unsafe { self.stack_top = self.stack_top.sub(offset) };
+                if i == depth {
+                    // let offset = depth as usize;
+                    self.stack_count -= decrease;
+                    unsafe { self.stack_top = self.stack_top.sub(decrease) };
                     // assert!(self.stack_top == table_point);
                     match set {
                         Some(value) => {

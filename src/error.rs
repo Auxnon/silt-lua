@@ -3,7 +3,7 @@ use crate::{
     value::{self, Value},
 };
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum SiltError {
     //parse errors
     InvalidNumber(String),
@@ -60,7 +60,7 @@ pub enum SiltError {
     Unknown,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ErrorTypes {
     String,
     Number,

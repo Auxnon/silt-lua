@@ -1,11 +1,11 @@
 [package]
 name = "silt-lua"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["MakeAvoy <auxnon@gmail.com>"]
 repository="https://github.com/auxnon/silt-lua"
 license ="MIT"
 edition = "2021"
-keywords=["lua","interpreter","language","vm","virtual","machine","script"]
+keywords=["lua","interpreter","language","vm","script"]
 description="A pure rust Lua interpreter and virtual machine"
 categories=["compilers","config"]
 exclude=["./build-wasm.sh","./.vscode/launch.json","./wasm-tester/index.html"]
