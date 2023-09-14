@@ -1339,7 +1339,7 @@ fn generic_for_statement() {}
 fn return_statement(this: &mut Compiler) -> Catch {
     devnote!(this "return_statement");
     this.eat();
-    if let Token::End | Token::EOF = this.peek()? {
+    if let Token::End | Token::Else | Token::ElseIf | Token::SemiColon | Token::EOF = this.peek()? {
         this.emit_at(OpCode::NIL);
     } else {
         expression(this, false)?;
