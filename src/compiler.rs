@@ -19,10 +19,23 @@ use crate::{
     value::Value,
 };
 
-macro_rules! build_block_until {
+macro_rules! build_block_until_then_eat {
     ($self:ident, $($rule:ident)|*) => {{
         while match $self.peek()? {
             $( Token::$rule)|* => {$self.eat(); false}
+            Token::EOF => {
+                return Err($self.error_at(SiltError::UnterminatedBlock));
+            }
+            _ =>{declaration($self)?; true}
+        } {
+        }
+    }};
+}
+
+macro_rules! build_block_until {
+    ($self:ident, $($rule:ident)|*) => {{
+        while match $self.peek()? {
+            $( Token::$rule)|* => false,
             Token::EOF => {
                 return Err($self.error_at(SiltError::UnterminatedBlock));
             }
@@ -38,7 +51,14 @@ macro_rules! scope_and_block_until {
         build_block_until!($self, $($rule)|*);
         end_scope($self,false);
     }};
+}
 
+macro_rules! scope_and_block_until_then_eat {
+    ($self:ident, $($rule:ident)|*) => {{
+        begin_scope($self);
+        build_block_until_then_eat!($self, $($rule)|*);
+        end_scope($self,false);
+    }};
 }
 
 macro_rules! devnote {
@@ -1157,7 +1177,7 @@ fn statement(this: &mut Compiler) -> Catch {
 
 fn block(this: &mut Compiler) -> Catch {
     devnote!(this "block");
-    build_block_until!(this, End);
+    build_block_until_then_eat!(this, End);
 
     Ok(())
 }
@@ -1240,23 +1260,27 @@ fn if_statement(this: &mut Compiler) -> Catch {
     this.eat();
     expression(this, false)?;
     expect_token!(this Then);
-    let index = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
+    let skip_if = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
     scope_and_block_until!(this, End | Else | ElseIf);
-    this.patch(index)?;
     // this.emit_at(OpCode::POP); // pop the if compare again as we skipped the pop from before
     match this.peek()? {
         Token::Else => {
             this.eat();
-            let index = this.emit_index(OpCode::FORWARD(0));
+            let skip_else = this.emit_index(OpCode::FORWARD(0));
+            this.patch(skip_if)?; // patch to fo AFTER the forward so we actually run the else block
             scope_and_block_until!(this, End);
-            this.patch(index)?;
+            this.patch(skip_else)?;
+            expect_token!(this End);
         }
         Token::ElseIf => {
             this.eat();
             // this.emit_at(OpCode::POP);
+            this.patch(skip_if)?;
             if_statement(this)?;
         }
-        _ => {}
+        _ => {
+            this.patch(skip_if)?;
+        }
     }
     Ok(())
 }
@@ -1267,12 +1291,10 @@ fn while_statement(this: &mut Compiler) -> Catch {
     let loop_start = this.get_chunk_size();
     expression(this, false)?;
     expect_token!(this Do);
-    let exit_jump = this.emit_index(OpCode::GOTO_IF_FALSE(0));
-    this.emit_at(OpCode::POP);
-    build_block_until!(this, End);
+    let exit_jump = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
+    build_block_until_then_eat!(this, End);
     this.emit_rewind(loop_start);
     this.patch(exit_jump)?;
-    this.emit_at(OpCode::POP);
     Ok(())
 }
 
@@ -1317,7 +1339,7 @@ fn for_statement(this: &mut Compiler) -> Catch {
         expect_token!(this Do);
         begin_scope(this);
         add_local(this, ident)?; // we add the local inside the scope which was actually added on by the for opcode already
-        build_block_until!(this, End);
+        build_block_until_then_eat!(this, End);
         end_scope(this, false);
 
         this.emit_at(OpCode::INCREMENT { index: iterator });

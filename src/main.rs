@@ -1,6 +1,6 @@
 use silt_lua::prelude::Lua;
 
-const FALLBACK_FILE: &str = "scripts/for-up.lua";
+const FALLBACK_FILE: &str = "scripts/test.lua";
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     {

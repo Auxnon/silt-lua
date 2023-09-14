@@ -242,8 +242,8 @@ impl<'a> Lua {
     }
 
     fn print_upvalues(&self) {
-        self.open_upvalues.iter().for_each(|up| {
-            up.borrow().print();
+        self.open_upvalues.iter().enumerate().for_each(|(i, up)| {
+            println!("{}:{}", i, up.borrow());
         });
     }
 
