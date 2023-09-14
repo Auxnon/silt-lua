@@ -1,14 +1,14 @@
-# Silt-Lua, a Lua subset interpreter in 100% rust
+# Silt-Lua, a Lua superset interpreter in 100% rust
 
 This project was originally created to answer a problem with the current rust landscape in lacking a complete lua interpreter solution written in 100% rust. That may not necessarily be true anymore. Even still, the existing implementations at the time were missing crucial features and optimizations to satisfy the requirements of my closed source project [Petrichor64](https://makeavoy.itch.io/petrichor64), so here we are.
 
 Core focus of the library is a basic interpreter with minor overhead and relative speed comparison to standard lua. The goal is for a perfect wasm32-unknown-unknown target build. No emscripten necessary! UserData will mirror traits used by the mlua and rlua crates to allow easy drop in.
 
-Secondary goals are CLI, LSP, and full standard library compliance. Ideally loading third party libraries as well. There's also a concern for safety, as a number of unsafe code is present in the VM. In the future a safe and unsafe version of the VM will be hidden under a feature flag, on the assumption the unsafe version will operate marginally faster. Exact benchmarks will have to be determined.
+Secondary goals are CLI, LSP, and as much standard library compliance as possible. There's also a concern for safety, as a number of unsafe code is present in the VM. In the future a safe and unsafe version of the VM will be hidden under a feature flag, on the assumption the unsafe version will operate marginally faster. Exact benchmarks will have to be determined.
 
-There's also desire to add some custom non-lua syntax pulling syntactic sugar from other languages, such as allowing for `!=`, typing, and maybe even arrow functions. This superset of lua will fall under a feature flag and by default be disabled as who really wants my opinionated concept of a programming language? This supset satisfies personal requirements but I'm open to requests if an interest is shown. Even if this superset is enabled it will not conflict with standard lua.
+There's also desire to add some custom non-lua syntax pulling syntactic sugar from other languages, such as allowing for `!=`, typing, and maybe even arrow functions. This superset of lua will fall under a feature flag and by default be disabled as who really wants my opinionated concept of a programming language? This superset satisfies personal requirements but I'm open to requests if an interest is shown. Even if this superset is enabled it will not conflict with standard lua.
 
-This library been written from the ground up with observations of the lua language and documentation, source code has not been referenced so it's very possible the VM will always have some noticeable differences that will hopefully be ironed out eventually. This includes the byte code, as lua now operates under wordcode to work with it's register based VM. Feel free to submit an issue for anything particularly glaring. This project is a learning exercise so there is a good deal of naive approaches I'm taking to make this a reality.
+This library has been written from the ground up with observations of the lua language and documentation. Source code has not been referenced so naturally the VM will always have some noticeable differences that will hopefully be ironed out eventually. This includes the byte code, as lua now operates under wordcode to work with it's register based VM. Feel free to submit an issue for anything particularly glaring. This project is a learning exercise so there is a good deal of naive approaches I'm taking to make this a reality.
 
 ## Limitations
 
@@ -41,15 +41,17 @@ Keep in mind these may be polarizing and an LSP will flag them as an error
 ```rust
 
 let source_in = r#"
-local d=5
-function sum()
-local a=1
-local b=2
-local c=3
-return a+b+c+d+8
-end
+do
+    local d=5
+    function sum()
+        local a=1
+        local b=2
+        local c=3
+        return a+b+c+d+8
+    end
 
-return sum()
+    return sum()
+end
 "#;
 
 let mut vm = Lua::new();
@@ -57,6 +59,7 @@ vm.load_standard_library();
 match vm.run(source_in) {
     Ok(value) => {
         println!(">> {}", value);
+        assert_eq!(value, Value:Integer(19));
     }
     Err(e) => {
         e.iter().for_each(|e| println!("!!Err: {}", e));
