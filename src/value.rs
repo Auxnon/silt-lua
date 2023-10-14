@@ -1,10 +1,14 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    hash::{Hash, Hasher},
+    rc::Rc,
+};
 
 use hashbrown::HashMap;
 
 use crate::{
-    error::{ErrorTypes, SiltError},
-    function::{Closure, FunctionObject, NativeObject},
+    error::{SiltError, ValueTypes},
+    function::{Closure, FunctionObject, NativeFunction},
     lua::Lua,
     table::Table,
     token::Operator,
@@ -33,7 +37,7 @@ macro_rules! binary_self_op {
 }
 
 /** Lua value enum representing different data types within a VM */
-pub enum Value {
+pub enum Value<'v> {
     Nil,
     Integer(i64),
     Number(f64),
@@ -46,25 +50,92 @@ pub enum Value {
     String(Box<String>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
-    Table(Rc<RefCell<Table>>),
+    Table(Rc<RefCell<Table<'v>>>),
     // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
     // Boxed()
-    Function(Rc<FunctionObject>), // closure: Environment,
-    Closure(Rc<Closure>),
+    Function(Rc<FunctionObject<'v>>), // closure: Environment,
+    Closure(Rc<Closure<'v>>),
     // Func(fn(Vec<Value>) -> Value)
-    NativeFunction(Rc<NativeObject>),
+    NativeFunction(NativeFunction<'v>),
     UserData(Rc<dyn UserData>),
 }
 
-pub enum ReferneceStore {
-    Table(HashMap<Value, Value>),
+#[derive(Debug, Clone)]
+pub enum ExVal {
+    Nil,
+    Integer(i64),
+    Number(f64),
+    Bool(bool),
+    Infinity(bool),
+    String(Box<String>),
+    Table(crate::table::ExTable),
+    Meta(Box<String>),
+    // UserData(Rc<dyn UserData>),
 }
+
+impl Eq for ExVal {}
+impl PartialEq for ExVal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ExVal::Integer(i), ExVal::Integer(j)) => i == j,
+            (ExVal::Number(i), ExVal::Number(j)) => i == j,
+            (ExVal::Bool(i), ExVal::Bool(j)) => i == j,
+            (ExVal::Nil, ExVal::Nil) => true,
+            (ExVal::String(i), ExVal::String(j)) => i == j,
+            (ExVal::Infinity(i), ExVal::Infinity(j)) => i == j,
+            (ExVal::Table(i), ExVal::Table(j)) => i == j,
+            _ => false,
+        }
+    }
+}
+
+impl Into<ExVal> for Value<'_> {
+    fn into(self) -> ExVal {
+        match self {
+            Value::Nil => ExVal::Nil,
+            Value::Integer(i) => ExVal::Integer(i),
+            Value::Number(n) => ExVal::Number(n),
+            Value::Bool(b) => ExVal::Bool(b),
+            Value::Infinity(b) => ExVal::Infinity(b),
+            Value::String(s) => ExVal::String(s),
+            Value::Table(t) => ExVal::Table(t.borrow().to_exval()),
+            Value::Function(f) => ExVal::Meta(format!("{}", f).into()),
+            Value::Closure(c) => ExVal::Meta(format!("=>({})", c.function).into()),
+            Value::NativeFunction(f) => ExVal::Meta(Box::new("native_function".to_string())),
+            Value::UserData(u) => ExVal::Nil,
+        }
+    }
+}
+
+impl Hash for ExVal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+    }
+}
+
+impl std::fmt::Display for ExVal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExVal::Integer(i) => write!(f, "{}", i),
+            ExVal::Number(n) => write!(f, "{}", n),
+            ExVal::Bool(b) => write!(f, "{}", b),
+            ExVal::Nil => write!(f, "nil"),
+            ExVal::String(s) | ExVal::Meta(s) => write!(f, "\"{}\"", s),
+            ExVal::Infinity(b) => write!(f, "{}inf", if *b { "-" } else { "" }),
+            ExVal::Table(t) => write!(f, "{}", t.to_string()),
+        }
+    }
+}
+
+// pub enum ReferneceStore {
+//     Table(HashMap<Value, Value>),
+// }
 pub struct Reference<T> {
     pub value: Rc<T>,
     pub id: usize,
 }
 
-impl std::fmt::Display for Value {
+impl std::fmt::Display for Value<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Integer(i) => write!(f, "{}", i),
@@ -72,7 +143,7 @@ impl std::fmt::Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Nil => write!(f, "nil"),
             Value::String(s) => write!(f, "\"{}\"", s),
-            Value::Infinity(_) => write!(f, "inf"),
+            Value::Infinity(b) => write!(f, "{}inf", if *b { "-" } else { "" }),
             Value::NativeFunction(_) => write!(f, "native_function"),
             Value::Closure(c) => write!(f, "=>({})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
@@ -82,27 +153,27 @@ impl std::fmt::Display for Value {
     }
 }
 
-impl core::fmt::Debug for Value {
+impl core::fmt::Debug for Value<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self)
     }
 }
 
-impl Value {
+impl<'v> Value<'v> {
     /** Condense value into a tiny enum for passing to errors*/
-    pub fn to_error(&self) -> ErrorTypes {
+    pub fn to_error(&self) -> ValueTypes {
         match self {
-            Value::Integer(_) => ErrorTypes::Integer,
-            Value::Number(_) => ErrorTypes::Number,
-            Value::Bool(_) => ErrorTypes::Bool,
-            Value::Nil => ErrorTypes::Nil,
-            Value::String(_) => ErrorTypes::String,
-            Value::Infinity(_) => ErrorTypes::Infinity,
-            Value::NativeFunction(_) => ErrorTypes::NativeFunction,
-            Value::Function { .. } => ErrorTypes::Function,
-            Value::Closure(_) => ErrorTypes::Closure,
-            Value::Table(_) => ErrorTypes::Table,
-            Value::UserData(_) => ErrorTypes::UserData,
+            Value::Integer(_) => ValueTypes::Integer,
+            Value::Number(_) => ValueTypes::Number,
+            Value::Bool(_) => ValueTypes::Bool,
+            Value::Nil => ValueTypes::Nil,
+            Value::String(_) => ValueTypes::String,
+            Value::Infinity(_) => ValueTypes::Infinity,
+            Value::NativeFunction(_) => ValueTypes::NativeFunction,
+            Value::Function { .. } => ValueTypes::Function,
+            Value::Closure(_) => ValueTypes::Closure,
+            Value::Table(_) => ValueTypes::Table,
+            Value::UserData(_) => ValueTypes::UserData,
         }
     }
 
@@ -132,10 +203,8 @@ impl Value {
         // }
         // Ok(())
     }
-}
 
-impl Clone for Value {
-    fn clone(&self) -> Self {
+    pub fn clone(&self) -> Value<'v> {
         match self {
             Value::Integer(i) => Value::Integer(*i),
             Value::Number(n) => Value::Number(*n),
@@ -143,7 +212,7 @@ impl Clone for Value {
             Value::Nil => Value::Nil,
             Value::String(s) => Value::String(s.clone()),
             Value::Infinity(b) => Value::Infinity(*b),
-            Value::NativeFunction(f) => Value::NativeFunction(f.clone()),
+            Value::NativeFunction(f) => Value::NativeFunction(*f),
             // TODO: implement this
             Value::Function(r) => Value::Function(Rc::clone(r)),
             Value::Closure(c) => Value::Closure(Rc::clone(c)),
@@ -157,7 +226,7 @@ impl Clone for Value {
     }
 }
 
-impl PartialEq for Value {
+impl PartialEq for Value<'_> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Integer(i), Value::Integer(j)) => i == j,
@@ -167,8 +236,11 @@ impl PartialEq for Value {
             (Value::String(i), Value::String(j)) => i == j,
             (Value::Infinity(i), Value::Infinity(j)) => i == j,
             (Value::NativeFunction(i), Value::NativeFunction(j)) => {
-                i.function as *const fn(&mut Lua, Vec<Value>) -> Value
-                    == j.function as *const fn(&mut Lua, Vec<Value>) -> Value
+                // i == j
+                i as *const _ == j as *const _
+
+                // i.function as *const for<'a> fn(&'a mut Lua, Vec<Value<'a>>) -> Value<'a>
+                //     == j.function as *const for<'a> fn(&'a mut Lua, Vec<Value<'a>>) -> Value<'a>
             }
             (Value::Function(i), Value::Function(j)) => Rc::ptr_eq(i, j),
             (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i, &j),
@@ -177,19 +249,39 @@ impl PartialEq for Value {
     }
 }
 
-impl Default for Value {
+impl Default for Value<'_> {
     fn default() -> Self {
         Value::Nil
     }
 }
 
-impl core::hash::Hash for Value {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Clone for Value<'_> {
+    fn clone(&self) -> Self {
+        self.clone()
+    }
+}
+
+impl Hash for Value<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
     }
 }
 
-impl Eq for Value {}
+impl Eq for Value<'_> {}
+
+pub trait ToLua<'lua> {
+    /// Performs the conversion.
+    fn to_lua(self, lua: &'lua Lua) -> Result<Value<'lua>, SiltError>;
+}
+
+/// Trait for types convertible from `Value`.
+pub trait FromLua<'lua>: Sized {
+    /// Performs the conversion.
+    fn from_lua(lua_value: Value<'lua>, lua: &'lua Lua) -> Result<Self, SiltError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiValue<'lua>(Vec<Value<'lua>>);
 
 // impl Drop for Value {
 //     fn drop(&mut self) {

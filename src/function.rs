@@ -4,18 +4,22 @@ use crate::{chunk::Chunk, code::OpCode, lua::Lua, value::Value};
 
 /////////////
 ///
-pub struct CallFrame {
-    pub function: Rc<Closure>, // pointer
+pub struct CallFrame<'lua> {
+    pub function: Rc<Closure<'lua>>, // pointer
     // ip: *const OpCode
     // pub base: usize,
     // pointer point sinto VM values stack
     pub stack_snapshot: usize,
-    pub local_stack: *mut Value,
+    pub local_stack: *mut Value<'lua>,
     pub ip: *const OpCode,
 }
 
-impl<'frame> CallFrame {
-    pub fn new(function: Rc<Closure>, stack_snapshot: usize) -> Self {
+impl<'frame> CallFrame<'frame> {
+    pub fn new<'a>(function: Rc<Closure<'a>>, stack_snapshot: usize) -> Self
+    where
+        'a: 'frame,
+        'frame: 'a,
+    {
         let ip = function.function.chunk.code.as_ptr();
         Self {
             function,
@@ -49,19 +53,19 @@ impl<'frame> CallFrame {
         self.ip = unsafe { self.ip.add(n) };
     }
 
-    pub fn set_val(&mut self, index: u8, value: Value) {
+    pub fn set_val(&mut self, index: u8, value: Value<'frame>) {
         // self.stack[index as usize] = value;
         unsafe { *self.local_stack.add(index as usize) = value };
     }
 
-    pub fn get_val(&self, index: u8) -> &Value {
+    pub fn get_val(&self, index: u8) -> &Value<'frame> {
         // &self.stack[index as usize]
         // println!("get_val: {}", index);
         // println!("top: {}", unsafe { &*self.local_stack });
         unsafe { &*self.local_stack.add(index as usize) }
     }
 
-    pub fn get_val_mut(&self, index: u8) -> &mut Value {
+    pub fn get_val_mut(&self, index: u8) -> &mut Value<'frame> {
         unsafe { &mut *self.local_stack.add(index as usize) }
     }
 
@@ -111,7 +115,7 @@ impl<'frame> CallFrame {
     // }
 
     /** take and replace with a Nil */
-    pub fn take(&mut self) -> &Value {
+    pub fn take(&'frame mut self) -> &Value {
         // self.stack_top = unsafe { self.stack_top.sub(1) };
         // unsafe { *self.stack_top }
         let v = unsafe { &*self.local_stack };
@@ -132,15 +136,15 @@ impl<'frame> CallFrame {
     }
 }
 #[derive(Default)]
-pub struct FunctionObject {
+pub struct FunctionObject<'chnk> {
     pub is_script: bool,
     pub name: Option<String>,
-    pub chunk: Chunk,
+    pub chunk: Chunk<'chnk>,
     pub upvalue_count: u8,
     // pub arity: usize,
 }
 
-impl FunctionObject {
+impl<'chnk> FunctionObject<'chnk> {
     pub fn new(name: Option<String>, is_script: bool) -> Self {
         Self {
             name,
@@ -149,12 +153,12 @@ impl FunctionObject {
             upvalue_count: 0,
         }
     }
-    pub fn set_chunk(&mut self, chunk: Chunk) {
+    pub fn set_chunk(&mut self, chunk: Chunk<'chnk>) {
         self.chunk = chunk;
     }
 }
 
-impl Display for FunctionObject {
+impl Display for FunctionObject<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.is_script {
             write!(
@@ -172,25 +176,30 @@ impl Display for FunctionObject {
     }
 }
 
-pub type NativeFunction = fn(&mut Lua, Vec<Value>) -> Value; // TODO should be Result<Value,SiltError> for runtime errors
-pub struct NativeObject {
-    name: String,
-    pub function: fn(&mut Lua, Vec<Value>) -> Value,
+// pub type NativeFunction<'lua> = &'static fn(&'lua mut Lua, Vec<Value>) -> Value<'lua>; // TODO should be Result<Value,SiltError> for runtime errors
+// pub struct NativeObject {
+//     name: &'static str,
+//     pub function: NativeFunction<'static>,
+// }
+
+pub type NativeFunction<'lua> = fn(&mut Lua, Vec<Value>) -> Value<'lua>;
+
+// impl NativeObject {
+//     pub fn new(name: &'static str, function: NativeFunction) -> Self {
+//         Self { name, function }
+//     }
+// }
+
+pub struct Closure<'lua> {
+    pub function: Rc<FunctionObject<'lua>>,
+    pub upvalues: Vec<Rc<RefCell<UpValue<'lua>>>>,
 }
 
-impl NativeObject {
-    pub fn new(name: String, function: NativeFunction) -> Self {
-        Self { name, function }
-    }
-}
-
-pub struct Closure {
-    pub function: Rc<FunctionObject>,
-    pub upvalues: Vec<Rc<RefCell<UpValue>>>,
-}
-
-impl Closure {
-    pub fn new(function: Rc<FunctionObject>, upvalues: Vec<Rc<RefCell<UpValue>>>) -> Self {
+impl<'chnk> Closure<'chnk> {
+    pub fn new(
+        function: Rc<FunctionObject<'chnk>>,
+        upvalues: Vec<Rc<RefCell<UpValue<'chnk>>>>,
+    ) -> Self {
         Self { function, upvalues }
     }
     pub fn print_upvalues(&self) {
@@ -200,29 +209,32 @@ impl Closure {
     }
 }
 
-pub struct UpValue {
+pub struct UpValue<'lua> {
     // is_open: bool,
     // obj?
     pub index: u8,
-    closed: Value,
-    pub location: *mut Value,
+    closed: Value<'lua>,
+    pub location: *mut Value<'lua>,
     // pub value: *mut Value, // TODO oshould be a RC mutex of the value ideally
 }
-impl UpValue {
-    pub fn new(index: u8, location: *mut Value) -> Self {
+impl<'lua> UpValue<'lua> {
+    pub fn new(index: u8, location: *mut Value<'lua>) -> Self {
         Self {
             index,
             closed: Value::Nil,
             location,
         }
     }
-    pub fn set_value(&mut self, value: Value) {
+
+    pub fn set_value(&mut self, value: Value<'lua>) {
         unsafe { *self.location = value }
     }
-    pub fn close_around(&mut self, value: Value) {
+
+    pub fn close_around(&mut self, value: Value<'lua>) {
         self.closed = value;
         self.location = &mut self.closed as *mut Value;
     }
+
     pub fn close(&mut self) {
         #[cfg(feature = "dev-out")]
         println!("closing: {}", unsafe { &*self.location });
@@ -231,12 +243,14 @@ impl UpValue {
         println!("closed: {}", self.closed);
         self.location = &mut self.closed as *mut Value;
     }
-    pub fn copy_value(&self) -> Value {
+
+    pub fn copy_value(&self) -> Value<'lua> {
         #[cfg(feature = "dev-out")]
         println!("copying: {}", unsafe { &*self.location });
         unsafe { (*self.location).clone() }
     }
-    pub fn get_location(&self) -> *mut Value {
+
+    pub fn get_location(&self) -> *mut Value<'lua> {
         #[cfg(feature = "dev-out")]
         println!("getting location: {}", unsafe { &*self.location });
         self.location
@@ -250,7 +264,7 @@ impl UpValue {
     // }
 }
 
-impl Display for UpValue {
+impl Display for UpValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

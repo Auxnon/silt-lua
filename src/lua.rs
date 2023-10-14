@@ -1,14 +1,13 @@
 use std::{cell::RefCell, mem::take, rc::Rc};
 
 use crate::{
-    chunk::Chunk,
     code::OpCode,
     compiler::Compiler,
-    error::{ErrorTuple, ErrorTypes, SiltError},
-    function::{CallFrame, Closure, FunctionObject, NativeObject, UpValue},
+    error::{ErrorTuple, SiltError, ValueTypes},
+    function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue},
     table::Table,
     token::Operator,
-    value::Value,
+    value::{self, ExVal, Value},
 };
 
 /** Convert Integer to Float, lossy for now */
@@ -48,9 +47,9 @@ macro_rules! str_op_str{
                 }
             }
             return Err(SiltError::ExpOpValueWithValue(
-                ErrorTypes::String,
+                ValueTypes::String,
                 Operator::$enu,
-                ErrorTypes::String,
+                ValueTypes::String,
             ));
         })()
     }
@@ -67,9 +66,9 @@ macro_rules! str_op_int{
                     return Ok(Value::Number(n1 $op int2f!($right)));
             }
             return Err(SiltError::ExpOpValueWithValue(
-                ErrorTypes::String,
+                ValueTypes::String,
                 Operator::$enu,
-                ErrorTypes::Integer,
+                ValueTypes::Integer,
             ));
         })()
     }
@@ -86,9 +85,9 @@ macro_rules! int_op_str{
                     return Ok(Value::Number((int2f!($left) $op n1)));
             }
             return Err(SiltError::ExpOpValueWithValue(
-                ErrorTypes::Integer,
+                ValueTypes::Integer,
                 Operator::$enu,
-                ErrorTypes::String,
+                ValueTypes::String,
             ));
         })()
     }
@@ -106,9 +105,9 @@ macro_rules! str_op_num{
             Value::Number(n1 $op $right)
         }else {
             return Err(SiltError::ExpOpValueWithValue(
-                ErrorTypes::String,
+                ValueTypes::String,
                 Operator::$enu,
-                ErrorTypes::String,
+                ValueTypes::String,
             ))
         }
     }
@@ -120,9 +119,9 @@ macro_rules! num_op_str{
             Value::Number($left $op n1)
         }else{
             return Err(SiltError::ExpOpValueWithValue(
-                ErrorTypes::Number,
+                ValueTypes::Number,
                 Operator::$enu,
-                ErrorTypes::String,
+                ValueTypes::String,
             ))
         }
     }
@@ -163,25 +162,25 @@ macro_rules! binary_op  {
     };
 }
 
-pub struct Lua {
-    body: Rc<FunctionObject>,
-    compiler: Compiler,
+pub struct Lua<'lua> {
+    body: Rc<FunctionObject<'lua>>,
+    compiler: Compiler<'lua>,
     // frames: Vec<CallFrame>,
     // dummy_frame: CallFrame,
     /** Instruction to be run at start of loop  */
     // ip: *const OpCode, // TODO usize vs *const OpCode, will rust optimize the same?
     // stack: Vec<Value>, // TODO fixed size array vs Vec, how much less overhead is there?
-    stack: [Value; 256],
-    stack_top: *mut Value,
+    stack: [Value<'lua>; 256],
+    stack_top: *mut Value<'lua>,
     stack_count: usize,
     /** Next empty location */
     // stack_top: *mut Value,
-    globals: hashbrown::HashMap<String, Value>, // TODO store strings as identifer usize and use that as key
+    globals: hashbrown::HashMap<String, Value<'lua>>, // TODO store strings as identifer usize and use that as key
     // original CI code uses linked list, most recent closed upvalue is the first and links to previous closed values down the chain
     // allegedly performance of a linked list is heavier then an array and shifting values but is that true here or the opposite?
     // resizing a sequential array is faster then non sequential heap items, BUT since we'll USUALLY resolve the upvalue on the top of the list we're derefencing once to get our Upvalue vs an index lookup which is slightly slower.
     // TODO TLDR: benchmark this
-    open_upvalues: Vec<Rc<RefCell<UpValue>>>,
+    open_upvalues: Vec<Rc<RefCell<UpValue<'lua>>>>,
     // references: Vec<Reference>,
     // TODO should we store all strings in their own table/array for better equality checks? is this cheaper?
     // obj
@@ -192,7 +191,7 @@ pub struct Lua {
     table_counter: usize,
 }
 
-impl<'a> Lua {
+impl<'lua> Lua<'lua> {
     /** Create a new lua compiler and runtime */
     pub fn new() -> Self {
         // TODO try the hard way
@@ -221,14 +220,14 @@ impl<'a> Lua {
         }
     }
 
-    fn push(&mut self, value: Value) {
+    fn push(&mut self, value: Value<'lua>) {
         devout!(" | push: {}", value);
         unsafe { self.stack_top.write(value) };
         self.stack_top = unsafe { self.stack_top.add(1) };
         self.stack_count += 1;
     }
 
-    fn reserve(&mut self) -> *mut Value {
+    fn reserve(&mut self) -> *mut Value<'lua> {
         self.stack_count += 1;
         let old = self.stack_top;
         self.stack_top = unsafe { self.stack_top.add(1) };
@@ -266,7 +265,7 @@ impl<'a> Lua {
         }
     }
 
-    fn close_upvalues_by_return(&mut self, last: *mut Value) {
+    fn close_upvalues_by_return(&mut self, last: *mut Value<'lua>) {
         // devout!("value: {}", unsafe { &*last });
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
@@ -284,7 +283,7 @@ impl<'a> Lua {
     }
 
     /** pop and return top of stack */
-    fn pop(&mut self) -> Value {
+    fn pop(&mut self) -> Value<'lua> {
         self.stack_count -= 1;
         unsafe { self.stack_top = self.stack_top.sub(1) };
         let v = unsafe { self.stack_top.replace(Value::Nil) };
@@ -296,17 +295,20 @@ impl<'a> Lua {
     }
 
     // TODO can we make this faster with slices? can we slice a pointer? 🤔
-    fn popn(&mut self, n: u8) -> Vec<Value> {
+    fn popn(&mut self, n: u8) -> Vec<Value<'lua>> {
         // println!("popn: {}", n);
         let mut values = vec![];
         for _ in 0..n {
-            values.push(self.pop());
+            self.stack_count -= 1;
+            unsafe { self.stack_top = self.stack_top.sub(1) };
+            let v = unsafe { self.stack_top.replace(Value::Nil) };
+            values.push(v);
         }
         values.reverse();
         values
     }
 
-    fn safe_pop(&mut self) -> Value {
+    fn safe_pop(&mut self) -> Value<'lua> {
         // let v3 = take(&mut self.stack[3]);
         // println!("we took {}", v3);
         // let v0 = take(&mut self.stack[self.stack_count - 1]);
@@ -328,7 +330,7 @@ impl<'a> Lua {
     }
 
     /** Dangerous!  */
-    fn read_top(&self) -> Value {
+    fn read_top(&self) -> Value<'lua> {
         // match self.peek(0) {
         //     Some(v) => v.clone(),
         //     None => Value::Nil,
@@ -338,41 +340,41 @@ impl<'a> Lua {
     }
 
     /** Safer but clones! */
-    fn duplicate(&self) -> Value {
+    fn duplicate(&self) -> Value<'lua> {
         unsafe { (*self.stack_top.sub(1)).clone() }
     }
 
     /** Look and get immutable reference to top of stack */
-    fn peek(&self) -> &Value {
+    fn peek(&self) -> &Value<'lua> {
         // self.stack.last()
         unsafe { &*self.stack_top.sub(1) }
     }
 
     /** Look and get mutable reference to top of stack */
-    fn peek_mut(&mut self) -> &mut Value {
+    fn peek_mut(&mut self) -> &mut Value<'lua> {
         unsafe { &mut *self.stack_top.sub(1) }
     }
 
-    fn grab(&mut self, n: usize) -> &Value {
+    fn grab(&mut self, n: usize) -> &Value<'lua> {
         unsafe { &*self.stack_top.sub(n) }
     }
 
-    fn grab_mut(&mut self, n: usize) -> &mut Value {
+    fn grab_mut(&mut self, n: usize) -> &mut Value<'lua> {
         unsafe { &mut *self.stack_top.sub(n) }
     }
 
     /** Look down N amount of stack and return immutable reference */
-    fn peekn(&self, n: u8) -> &Value {
+    fn peekn(&self, n: u8) -> &Value<'lua> {
         // unsafe { *self.stack_top.sub(n as usize) }
         // &self.stack[self.stack.len() - n as usize]
         unsafe { &*self.stack_top.sub((n as usize) + 1) }
     }
 
-    pub fn evaluate(&mut self, source: &str) -> FunctionObject {
+    pub fn evaluate(&mut self, source: &str) -> FunctionObject<'lua> {
         self.compiler.compile(source.to_owned())
     }
 
-    pub fn run(&mut self, source: &str) -> Result<Value, Vec<ErrorTuple>> {
+    pub fn run(&mut self, source: &str) -> Result<ExVal, Vec<ErrorTuple>> {
         let object = self.compiler.compile(source.to_owned());
         if object.chunk.is_valid() {
             match self.execute(object.into()) {
@@ -387,7 +389,7 @@ impl<'a> Lua {
         }
     }
 
-    pub fn execute(&mut self, object: Rc<FunctionObject>) -> Result<Value, SiltError> {
+    pub fn execute(&mut self, object: Rc<FunctionObject<'lua>>) -> Result<ExVal, SiltError> {
         // TODO param is a reference of &'a
         // self.ip = object.chunk.code.as_ptr();
         // frame.ip = object.chunk.code.as_ptr();
@@ -407,11 +409,12 @@ impl<'a> Lua {
         let frames = vec![frame];
         // self.body = object;
         let res = self.process(frames);
+        // self.body = Rc::new(FunctionObject::new(None, false));
 
         res
     }
 
-    fn process(&mut self, mut frames: Vec<CallFrame>) -> Result<Value, SiltError> {
+    fn process<'frame>(&mut self, mut frames: Vec<CallFrame<'lua>>) -> Result<ExVal, SiltError> {
         let mut last = Value::Nil; // TODO temporary for testing
                                    // let stack_pointer = self.stack.as_mut_ptr();
                                    // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
@@ -429,9 +432,10 @@ impl<'a> Lua {
                     frame_count -= 1;
                     if frame_count <= 0 {
                         if self.stack_count <= 1 {
-                            return Ok(Value::Nil);
+                            return Ok(ExVal::Nil);
                         }
-                        return Ok(self.safe_pop());
+                        let out: ExVal = self.safe_pop().into();
+                        return Ok(out);
                     }
                     let res = self.pop();
                     self.stack_top = frame.local_stack;
@@ -474,6 +478,7 @@ impl<'a> Lua {
                         return Err(SiltError::VmCorruptConstant);
                     }
                 }
+
                 // TODO does this need to exist?
                 OpCode::SET_GLOBAL { constant } => {
                     let value = self.body.chunk.get_constant(*constant);
@@ -519,6 +524,7 @@ impl<'a> Lua {
                     // TODO ew cloning, is our cloning optimized yet?
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
+
                 OpCode::DEFINE_LOCAL { constant } => todo!(),
                 OpCode::ADD => binary_op_push!(self, +, Add),
                 OpCode::SUB => binary_op_push!(self,-, Sub),
@@ -549,6 +555,7 @@ impl<'a> Lua {
                         }
                     }
                 }
+
                 OpCode::NEGATE => {
                     match self.peek() {
                         Value::Number(n) => {
@@ -626,10 +633,13 @@ impl<'a> Lua {
                 OpCode::POP => {
                     last = self.pop();
                 }
+
                 OpCode::POPS(n) => self.popn_drop(*n), //TODO here's that 255 local limit again
+
                 OpCode::CLOSE_UPVALUES(n) => {
                     self.close_n_upvalues(*n);
                 }
+
                 OpCode::GOTO_IF_FALSE(offset) => {
                     let value = self.peek();
                     // println!("GOTO_IF_FALSE: {}", value);
@@ -637,6 +647,7 @@ impl<'a> Lua {
                         frame.forward(*offset);
                     }
                 }
+
                 OpCode::POP_AND_GOTO_IF_FALSE(offset) => {
                     let value = &self.pop();
                     // println!("GOTO_IF_FALSE: {}", value);
@@ -656,6 +667,7 @@ impl<'a> Lua {
                 OpCode::REWIND(offset) => {
                     frame.rewind(*offset);
                 }
+
                 OpCode::FOR_NUMERIC(skip) => {
                     // for needs it's own version of the stack for upvalues?
                     // compare, if greater then we skip, if less or equal we continue and then increment AFTER block
@@ -677,6 +689,7 @@ impl<'a> Lua {
                     let step = self.peek();
                     value.increment(step)?;
                 }
+
                 OpCode::CLOSURE { constant } => {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
                     devout!(" | => {}", value);
@@ -720,6 +733,7 @@ impl<'a> Lua {
                         frame.shift(f.upvalue_count as usize);
                     }
                 }
+
                 OpCode::GET_UPVALUE { index } => {
                     let value = frame.function.upvalues[*index as usize]
                         .borrow()
@@ -740,6 +754,7 @@ impl<'a> Lua {
                     ff[*index as usize].borrow_mut().set_value(value.clone());
                     // unsafe { *upvalue.value = value };
                 }
+
                 OpCode::CALL(param_count) => {
                     let value = self.peekn(*param_count);
                     devout!(" | -> {}", value);
@@ -782,7 +797,7 @@ impl<'a> Lua {
                             // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
                             let mut args = self.popn(*param_count + 1);
                             if let Value::NativeFunction(f) = args.remove(0) {
-                                let res = ((*f).function)(self, args);
+                                let res = (f)(self, args);
                                 // self.popn_drop(*param_count);
                                 self.push(res);
                             } else {
@@ -794,6 +809,7 @@ impl<'a> Lua {
                         }
                     }
                 }
+
                 OpCode::PRINT => {
                     println!("<<<<<< {} >>>>>>>", self.pop());
                 }
@@ -873,8 +889,8 @@ impl<'a> Lua {
     }
 
     // TODO is having a default empty chunk cheaper?
-    /** We're operating on the assumtpion a chunk is always present when using this */
-    fn get_chunk(frame: &CallFrame) -> &Chunk {
+    /** We're operating on the assumption a chunk is always present when using this */
+    fn get_chunk<'a>(frame: &'a CallFrame<'lua>) -> &'a crate::chunk::Chunk<'lua> {
         &frame.function.function.chunk
     }
 
@@ -949,7 +965,7 @@ impl<'a> Lua {
     //     }
     // }
 
-    fn call(&self, function: &Rc<Closure>, param_count: u8) -> CallFrame {
+    fn call(&'lua self, function: &'lua Rc<Closure<'lua>>, param_count: u8) -> CallFrame {
         let frame_top = unsafe { self.stack_top.sub((param_count as usize) + 1) };
         let new_frame = CallFrame::new(
             function.clone(),
@@ -958,7 +974,11 @@ impl<'a> Lua {
         new_frame
     }
 
-    fn capture_upvalue(&mut self, index: u8, frame: &CallFrame) -> Rc<RefCell<UpValue>> {
+    fn capture_upvalue(
+        &mut self,
+        index: u8,
+        frame: &CallFrame<'lua>,
+    ) -> Rc<RefCell<UpValue<'lua>>> {
         //, stack: *mut Value,
         //stack
         // self.print_stack();
@@ -1043,7 +1063,7 @@ impl<'a> Lua {
         // });
     }
 
-    fn new_table(&self) -> Value {
+    fn new_table(&self) -> Value<'lua> {
         let t = Table::new(self.table_counter);
         Value::Table(Rc::new(RefCell::new(t)))
     }
@@ -1086,7 +1106,7 @@ impl<'a> Lua {
      * Compares indexes on stack by depth amount, if set value not passed we act as a getter and push value at index on to stack
      * Unintentional pun
      */
-    fn operate_table(&mut self, depth: u8, set: Option<Value>) -> Result<(), SiltError> {
+    fn operate_table(&mut self, depth: u8, set: Option<Value<'lua>>) -> Result<(), SiltError> {
         // let value = unsafe { self.stack_top.read() };
         // let value = unsafe { self.stack_top.replace(Value::Nil) };
 
@@ -1128,7 +1148,7 @@ impl<'a> Lua {
                             return Err(SiltError::VmNonTableOperations(v.to_error()));
                         }
                         None => {
-                            return Err(SiltError::VmNonTableOperations(ErrorTypes::Nil));
+                            return Err(SiltError::VmNonTableOperations(ValueTypes::Nil));
                         }
                     }
                 }
@@ -1156,14 +1176,10 @@ impl<'a> Lua {
     }
 
     /** Register a native function on the global table  */
-    pub fn register_native_function(
-        &mut self,
-        name: &str,
-        function: fn(&mut Self, Vec<Value>) -> Value,
-    ) {
-        let fn_obj = Rc::new(NativeObject::new(name.to_string(), function));
+    pub fn register_native_function(&mut self, name: &str, function: NativeFunction<'lua>) {
+        // let fn_obj = NativeObject::new(name, function);
         self.globals
-            .insert(name.to_string(), Value::NativeFunction(fn_obj));
+            .insert(name.to_string(), Value::NativeFunction(function));
     }
 
     /** Load standard library functions */

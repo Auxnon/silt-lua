@@ -1,6 +1,6 @@
 use error::ErrorTuple;
 use lua::Lua;
-use value::Value;
+use value::{ExVal, Value};
 
 mod chunk;
 mod code;
@@ -18,13 +18,15 @@ pub mod value;
 
 use wasm_bindgen::prelude::*;
 
-fn simple(source: &str) -> Value {
+fn simple(source: &str) -> ExVal {
     let mut vm = Lua::new();
     vm.load_standard_library();
-    match vm.run(source) {
+    let v = match vm.run(source) {
         Ok(v) => v,
-        Err(e) => Value::String(Box::new(e[0].to_string())),
-    }
+        Err(e) => ExVal::String(Box::new(e[0].to_string())),
+    };
+    drop(vm);
+    v
 
     // let e = compiler.get_errors();
     // if e.len() > 0 {
@@ -33,7 +35,7 @@ fn simple(source: &str) -> Value {
     // Value::String(Box::new("Unknown error".to_string()))
 }
 
-fn complex(source: &str) -> Result<Value, ErrorTuple> {
+fn complex(source: &str) -> Result<ExVal, ErrorTuple> {
     let mut vm = Lua::new();
     vm.load_standard_library();
     match vm.run(source) {
@@ -42,20 +44,20 @@ fn complex(source: &str) -> Result<Value, ErrorTuple> {
     }
 }
 
-#[wasm_bindgen]
-extern "C" {
-    pub fn jprintln(s: &str);
-}
+// #[wasm_bindgen]
+// extern "C" {
+//     pub fn jprintln(s: &str);
+// }
 
-#[wasm_bindgen]
-pub fn run(source: &str) -> String {
-    let mut vm = Lua::new();
-    vm.load_standard_library();
-    match vm.run(source) {
-        Ok(v) => v.to_string(),
-        Err(e) => e[0].to_string(),
-    }
-}
+// #[wasm_bindgen]
+// pub fn run(source: &str) -> String {
+//     let mut vm = Lua::new();
+//     vm.load_standard_library();
+//     match vm.run(source) {
+//         Ok(v) => v.to_string(),
+//         Err(e) => e[0].to_string(),
+//     }
+// }
 
 macro_rules! valeq {
     ($source:literal, $val:expr) => {
@@ -74,7 +76,7 @@ macro_rules! fails {
 
 macro_rules! vstr {
     ($source:literal) => {
-        Value::String(Box::new($source.to_string()))
+        ExVal::String(Box::new($source.to_string()))
     };
 }
 
@@ -82,17 +84,17 @@ macro_rules! vstr {
 mod tests {
     use crate::{
         chunk::Chunk,
-        code::{self, OpCode},
+        code::OpCode,
         complex,
         error::SiltError,
         function::FunctionObject,
         lua::Lua,
-        prelude::ErrorTypes,
+        prelude::ValueTypes,
         simple,
         token::{Operator, Token},
-        value::Value,
+        value::{ExVal, Value},
     };
-    use std::{mem::size_of, println, rc::Rc};
+    use std::{mem::size_of, num::NonZeroUsize, println, rc::Rc};
 
     #[test]
     fn test_32bits() {
@@ -112,6 +114,9 @@ mod tests {
         println!("size of Tester: {}", size_of::<crate::code::Tester>());
         println!("size of Flag: {}", size_of::<crate::token::Flag>());
         println!("size of token: {}", size_of::<Token>());
+        println!("size of yarn: {}", size_of::<byteyarn::Yarn>());
+        // let t: usize = 5;
+        // let u: NonZeroUsize = NonZeroUsize::new(1).unwrap();
 
         println!("size of token: {}", size_of::<Token>());
         println!(
@@ -120,7 +125,7 @@ mod tests {
         );
         println!(
             "size of error_types: {}",
-            size_of::<crate::error::ErrorTypes>()
+            size_of::<crate::error::ValueTypes>()
         );
 
         println!("size of value: {}", size_of::<crate::value::Value>());
@@ -145,15 +150,15 @@ mod tests {
     print ("elapsed: "..elapsed)
     return {elapsed,i}
     "#;
-        let tuple = if let crate::value::Value::Table(t) = simple(source_in) {
-            let tt = t.borrow();
+        let tuple = if let crate::value::ExVal::Table(t) = simple(source_in) {
+            let tt = t;
             (
-                if let Some(&Value::Number(n)) = tt.getn(1) {
+                if let Some(&ExVal::Number(n)) = tt.getn(1) {
                     n
                 } else {
                     999999.
                 },
-                if let Some(&Value::Integer(n)) = tt.getn(2) {
+                if let Some(&ExVal::Integer(n)) = tt.getn(2) {
                     println!("{} iterations", n);
                     n
                 } else {
@@ -205,7 +210,7 @@ mod tests {
         return elapsed
         "#;
 
-        let n = if let crate::value::Value::Number(n) = simple(source_in) {
+        let n = if let crate::value::ExVal::Number(n) = simple(source_in) {
             println!("{} seconds", n);
             n
         } else {
@@ -232,7 +237,7 @@ mod tests {
         let mut vm = Lua::new();
         match vm.execute(Rc::new(tester)) {
             Ok(v) => {
-                assert_eq!(v, Value::Number(-0.5));
+                assert_eq!(v, ExVal::Number(-0.5));
             }
             Err(e) => {
                 panic!("Test should not fail with error: {}", e)
@@ -242,7 +247,7 @@ mod tests {
 
     #[test]
     fn compliance() {
-        valeq!("return 1+2", Value::Integer(3));
+        valeq!("return 1+2", ExVal::Integer(3));
         valeq!("return '1'..'2'", vstr!("12"));
 
         valeq!(
@@ -250,7 +255,7 @@ mod tests {
             local a= 1+2
             return a
             "#,
-            Value::Integer(3)
+            ExVal::Integer(3)
         );
         valeq!(
             r#"
@@ -273,10 +278,10 @@ mod tests {
 
     #[test]
     fn string_infererence() {
-        valeq!("return '1'+2", Value::Integer(3));
+        valeq!("return '1'+2", ExVal::Integer(3));
         fails!(
             "return 'a1'+2",
-            SiltError::ExpOpValueWithValue(ErrorTypes::String, Operator::Add, ErrorTypes::Integer)
+            SiltError::ExpOpValueWithValue(ValueTypes::String, Operator::Add, ValueTypes::Integer)
         );
     }
 
@@ -297,7 +302,7 @@ mod tests {
                 return a[1]() + a[2]() + a[3]() -- 1+2+3 = 6
             end
             "#,
-            Value::Integer(6)
+            ExVal::Integer(6)
         );
         valeq!(
             r#"
@@ -312,7 +317,7 @@ mod tests {
 
             return a[1]() + a[2]() + a[3]() -- 1+2+3 = 6
             "#,
-            Value::Integer(6)
+            ExVal::Integer(6)
         );
     }
 
@@ -337,7 +342,7 @@ mod tests {
                 return x() + x() -- 14+18 = 32
             end
             "#,
-            Value::Integer(32)
+            ExVal::Integer(32)
         );
     }
 
@@ -357,7 +362,7 @@ mod tests {
                 return b --4
             end
             "#,
-            Value::Integer(4)
+            ExVal::Integer(4)
         );
         valeq!(
             r#"
@@ -383,7 +388,7 @@ mod tests {
                 return b()
             end
             "#,
-            Value::Integer(3)
+            ExVal::Integer(3)
         );
     }
 }

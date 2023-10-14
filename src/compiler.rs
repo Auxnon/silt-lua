@@ -224,8 +224,8 @@ struct UpLocal {
     universal_ident: u8,
 }
 
-pub struct Compiler {
-    pub body: FunctionObject,
+pub struct Compiler<'chnk> {
+    pub body: FunctionObject<'chnk>,
     iterator: Peekable<Lexer>,
     pub current_index: usize,
     pub errors: Vec<ErrorTuple>,
@@ -251,9 +251,9 @@ pub struct Compiler {
     override_pop: bool,
 }
 
-impl<'a> Compiler {
+impl<'chnk> Compiler<'chnk> {
     /** Create a new compiler instance */
-    pub fn new() -> Compiler {
+    pub fn new() -> Compiler<'chnk> {
         // assert!(p.len() == p.len());
         Self {
             body: FunctionObject::new(None, true),
@@ -329,11 +329,11 @@ impl<'a> Compiler {
         std::mem::replace(&mut self.errors, vec![])
     }
 
-    fn get_chunk(&self) -> &Chunk {
+    fn get_chunk(&self) -> &'chnk Chunk {
         &self.body.chunk
     }
 
-    fn get_chunk_mut(&mut self) -> &mut Chunk {
+    fn get_chunk_mut(&mut self) -> &'chnk mut Chunk {
         &mut self.body.chunk
     }
 
@@ -351,6 +351,13 @@ impl<'a> Compiler {
 
     fn write_identifier(&mut self, identifier: Box<String>) -> usize {
         self.body.chunk.write_identifier(identifier)
+    }
+
+    fn change_code(&mut self, offset: usize, byte: OpCode) {
+        self.body.chunk.code[offset] = byte;
+    }
+    fn get_code(&self, offset: usize) -> &OpCode {
+        &self.body.chunk.code[offset]
     }
 
     /** Tokens, not stack. Pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
@@ -519,27 +526,26 @@ impl<'a> Compiler {
 
     /** patch the op code that specified index */
     fn patch(&mut self, offset: usize) -> Catch {
-        let jump = self.get_chunk().code.len() - offset - 1;
+        let jump = self.get_chunk_size() - offset - 1;
         if jump > u16::MAX as usize {
-            self.error_at(SiltError::TooManyOperations);
+            return Err(self.error_at(SiltError::TooManyOperations));
         }
         // self.chunk.code[offset] = ((jump >> 8) & 0xff) as u8;
         // self.chunk.code[offset + 1] = (jump & 0xff) as u8;
-        match self.get_chunk().code[offset] {
+        let c = self.get_code(offset);
+        match c {
             OpCode::GOTO_IF_FALSE(_) => {
-                self.get_chunk_mut().code[offset] = OpCode::GOTO_IF_FALSE(jump as u16)
+                self.change_code(offset, OpCode::GOTO_IF_FALSE(jump as u16));
             }
             OpCode::GOTO_IF_TRUE(_) => {
-                self.get_chunk_mut().code[offset] = OpCode::GOTO_IF_TRUE(jump as u16)
+                self.change_code(offset, OpCode::GOTO_IF_TRUE(jump as u16));
             }
             OpCode::POP_AND_GOTO_IF_FALSE(_) => {
-                self.get_chunk_mut().code[offset] = OpCode::POP_AND_GOTO_IF_FALSE(jump as u16)
+                self.change_code(offset, OpCode::POP_AND_GOTO_IF_FALSE(jump as u16));
             }
-            OpCode::FORWARD(_) => self.get_chunk_mut().code[offset] = OpCode::FORWARD(jump as u16),
-            OpCode::REWIND(_) => self.get_chunk_mut().code[offset] = OpCode::REWIND(jump as u16),
-            OpCode::FOR_NUMERIC(_) => {
-                self.get_chunk_mut().code[offset] = OpCode::FOR_NUMERIC(jump as u16)
-            }
+            OpCode::FORWARD(_) => self.change_code(offset, OpCode::FORWARD(jump as u16)),
+            OpCode::REWIND(_) => self.change_code(offset, OpCode::REWIND(jump as u16)),
+            OpCode::FOR_NUMERIC(_) => self.change_code(offset, OpCode::FOR_NUMERIC(jump as u16)),
             _ => {
                 return Err(self.error_at(SiltError::ChunkCorrupt));
             }
@@ -565,18 +571,18 @@ impl<'a> Compiler {
     }
 
     /** write to constant table  */
-    fn write_constant(&mut self, value: Value) -> u8 {
+    fn write_constant(&mut self, value: Value<'chnk>) -> u8 {
         self.body.chunk.write_constant(value) as u8
     }
 
     /** write to constant table and emit the op code at location */
-    fn constant(&mut self, value: Value, location: Location) {
+    fn constant(&mut self, value: Value<'chnk>, location: Location) {
         let constant = self.write_constant(value);
         self.emit(OpCode::CONSTANT { constant }, location);
     }
 
     /** write to constant table and emit the op code at the current location */
-    fn constant_at(&mut self, value: Value) {
+    fn constant_at(&mut self, value: Value<'chnk>) {
         self.constant(value, self.current_location);
     }
 
@@ -594,7 +600,7 @@ impl<'a> Compiler {
     }
 
     /** replaces the conents of func with the compilers body */
-    fn swap_function(&mut self, mut func: &mut FunctionObject) {
+    fn swap_function(&mut self, func: &mut FunctionObject<'chnk>) {
         swap(&mut self.body, func);
         // func
     }
@@ -645,7 +651,7 @@ impl<'a> Compiler {
         }
     }
 
-    pub fn compile(&mut self, source: String) -> FunctionObject {
+    pub fn compile(&mut self, source: String) -> FunctionObject<'chnk> {
         #[cfg(feature = "dev-out")]
         {
             let lexer = Lexer::new(source.to_owned());
@@ -1255,7 +1261,7 @@ fn end_functional_scope(this: &mut Compiler) -> Vec<UpLocal> {
     this.up_values.pop().unwrap()
 }
 
-fn if_statement(this: &mut Compiler) -> Catch {
+fn if_statement<'cmplr>(this: &'cmplr mut Compiler) -> Catch {
     devnote!(this "if_statement");
     this.eat();
     expression(this, false)?;
@@ -1455,7 +1461,7 @@ fn resolve_goto(
 
             match replace {
                 Some((i, _)) => {
-                    this.get_chunk_mut().code[i] = code;
+                    this.change_code(i, code);
                 }
                 None => {
                     this.emit_at(code);

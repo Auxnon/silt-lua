@@ -4,14 +4,14 @@ use crate::{code::OpCode, error::Location, value::Value};
 
 // TODO benchmark/compare to using a manually resized array
 #[derive(Default)]
-pub struct Chunk {
+pub struct Chunk<'chnk> {
     pub code: Vec<OpCode>,
-    constants: Vec<Value>, //TODO VALUE ARRAY typedef faster?
+    constants: Vec<Value<'chnk>>, //TODO VALUE ARRAY typedef faster?
     locations: Vec<(usize, usize)>,
     valid: bool,
 }
 
-impl Chunk {
+impl<'chnk> Chunk<'chnk> {
     pub fn new() -> Self {
         Self {
             code: vec![],
@@ -28,11 +28,12 @@ impl Chunk {
         self.locations.push(location);
         self.code.len() - 1
     }
+
     pub fn read_last_code(&self) -> &OpCode {
         self.code.last().unwrap()
     }
 
-    pub fn write_constant(&mut self, value: Value) -> usize {
+    pub fn write_constant(&mut self, value: Value<'chnk>) -> usize {
         self.constants.push(value);
         // TODO limit to u8
         self.constants.len() - 1
@@ -53,14 +54,19 @@ impl Chunk {
         }
     }
 
-    pub fn write_value(&mut self, value: Value, location: Location) {
+    pub fn write_value(&mut self, value: Value<'chnk>, location: Location) {
         let u = self.write_constant(value);
         self.write_code(OpCode::CONSTANT { constant: u as u8 }, location);
     }
 
-    pub fn get_constant(&self, index: u8) -> &Value {
+    pub fn get_constant(&self, index: u8) -> &Value<'chnk> {
         &self.constants[index as usize]
     }
+
+    pub fn copy_constant(&self, index: u8) -> Value<'chnk> {
+        self.constants[index as usize].clone()
+    }
+
     pub fn invalidate(&mut self) {
         self.valid = false;
     }
@@ -78,6 +84,7 @@ impl Chunk {
         });
         println!();
     }
+
     pub fn print_chunk(&self, name: Option<String>) {
         match name {
             Some(n) => println!("=== Chunk ({}) ===", n),
@@ -98,7 +105,7 @@ impl Chunk {
                 | OpCode::DEFINE_GLOBAL { constant }
                 | OpCode::GET_GLOBAL { constant }
                 | OpCode::DEFINE_LOCAL { constant } => {
-                    format!("({})", self.get_constant(*constant))
+                    format!("({})", &self.constants[*constant as usize])
                 }
                 OpCode::GET_LOCAL { index } | OpCode::SET_LOCAL { index } => {
                     format!("(${})", index)

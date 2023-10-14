@@ -32,10 +32,10 @@ pub enum SiltError {
 
     //expression errors
     ExpInvalidOperator(Operator),
-    ExpInvalidBitwise(ErrorTypes),
-    ExpInvalidLength(ErrorTypes),
-    ExpOpValueWithValue(ErrorTypes, Operator, ErrorTypes),
-    ExpInvalidNegation(ErrorTypes),
+    ExpInvalidBitwise(ValueTypes),
+    ExpInvalidLength(ValueTypes),
+    ExpOpValueWithValue(ValueTypes, Operator, ValueTypes),
+    ExpInvalidNegation(ValueTypes),
     EarlyEndOfFile,
     ExpInvalid,
     ExpectedAssign,
@@ -46,22 +46,22 @@ pub enum SiltError {
     // statement errors
 
     //interpreted errors
-    EvalNoInteger(ErrorTypes),
+    EvalNoInteger(ValueTypes),
     NotCallable(String),
-    Return(Value),
+    // Return(Value),
 
     //vm
     VmCompileError,
     VmRuntimeError,
     VmCorruptConstant,
     VmUpvalueResolveError,
-    VmNonTableOperations(ErrorTypes),
+    VmNonTableOperations(ValueTypes),
 
     Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ErrorTypes {
+pub enum ValueTypes {
     String,
     Number,
     Operator,
@@ -103,7 +103,7 @@ impl std::fmt::Display for SiltError {
             ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
             Self::TooManyParameters => write!(f, "Too many parameters, limited to 255"),
-            Self::Return(v) => write!(f, "~Return {}~", v),
+            // Self::Return(v) => write!(f, "~Return {}~", v),
             Self::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
             Self::NotANumber(s) => write!(f, "Not a number: {}", s),
             Self::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),
@@ -167,21 +167,21 @@ impl std::fmt::Display for SiltError {
         }
     }
 }
-impl std::fmt::Display for ErrorTypes {
+impl std::fmt::Display for ValueTypes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorTypes::String => write!(f, "string"),
-            ErrorTypes::Number => write!(f, "number"),
-            ErrorTypes::Operator => write!(f, "operator"),
-            ErrorTypes::Integer => write!(f, "integer"),
-            ErrorTypes::Bool => write!(f, "bool"),
-            ErrorTypes::Nil => write!(f, "nil"),
-            ErrorTypes::Infinity => write!(f, "infinity"),
-            ErrorTypes::NativeFunction => write!(f, "native_function"),
-            ErrorTypes::Function => write!(f, "function"),
-            ErrorTypes::Closure => write!(f, "(function)"),
-            ErrorTypes::Table => write!(f, "table"),
-            ErrorTypes::UserData => write!(f, "userdata"),
+            ValueTypes::String => write!(f, "string"),
+            ValueTypes::Number => write!(f, "number"),
+            ValueTypes::Operator => write!(f, "operator"),
+            ValueTypes::Integer => write!(f, "integer"),
+            ValueTypes::Bool => write!(f, "bool"),
+            ValueTypes::Nil => write!(f, "nil"),
+            ValueTypes::Infinity => write!(f, "infinity"),
+            ValueTypes::NativeFunction => write!(f, "native_function"),
+            ValueTypes::Function => write!(f, "function"),
+            ValueTypes::Closure => write!(f, "(function)"),
+            ValueTypes::Table => write!(f, "table"),
+            ValueTypes::UserData => write!(f, "userdata"),
         }
     }
 }
