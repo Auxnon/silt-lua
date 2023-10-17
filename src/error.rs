@@ -1,5 +1,6 @@
 use crate::{
     token::{Operator, Token},
+    userdata::MetaMethod,
     value::{self, Value},
 };
 
@@ -31,10 +32,10 @@ pub enum SiltError {
     ChunkCorrupt,
 
     //expression errors
-    ExpInvalidOperator(Operator),
+    ExpInvalidOperator(MetaMethod),
     ExpInvalidBitwise(ValueTypes),
     ExpInvalidLength(ValueTypes),
-    ExpOpValueWithValue(ValueTypes, Operator, ValueTypes),
+    ExpOpValueWithValue(ValueTypes, MetaMethod, ValueTypes),
     ExpInvalidNegation(ValueTypes),
     EarlyEndOfFile,
     ExpInvalid,

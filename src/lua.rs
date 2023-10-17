@@ -7,6 +7,7 @@ use crate::{
     function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue},
     table::Table,
     token::Operator,
+    userdata::{MetaMethod, UserData},
     value::{self, ExVal, Value},
 };
 
@@ -48,7 +49,7 @@ macro_rules! str_op_str{
             }
             return Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
-                Operator::$enu,
+                MetaMethod::$enu,
                 ValueTypes::String,
             ));
         })()
@@ -67,7 +68,7 @@ macro_rules! str_op_int{
             }
             return Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
-                Operator::$enu,
+                MetaMethod::$enu,
                 ValueTypes::Integer,
             ));
         })()
@@ -86,7 +87,7 @@ macro_rules! int_op_str{
             }
             return Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::Integer,
-                Operator::$enu,
+                MetaMethod::$enu,
                 ValueTypes::String,
             ));
         })()
@@ -95,7 +96,11 @@ macro_rules! int_op_str{
 
 macro_rules! op_error {
     ($left:ident $op:ident $right:ident ) => {{
-        return Err(SiltError::ExpOpValueWithValue($left, Operator::$op, $right));
+        return Err(SiltError::ExpOpValueWithValue(
+            $left,
+            MetaMethod::$op,
+            $right,
+        ));
     }};
 }
 
@@ -106,7 +111,7 @@ macro_rules! str_op_num{
         }else {
             return Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
-                Operator::$enu,
+                MetaMethod::$enu,
                 ValueTypes::String,
             ))
         }
@@ -120,7 +125,7 @@ macro_rules! num_op_str{
         }else{
             return Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::Number,
-                Operator::$enu,
+                MetaMethod::$enu,
                 ValueTypes::String,
             ))
         }
@@ -132,13 +137,14 @@ macro_rules! binary_op_push {
         // TODO test speed of this vs 1 pop and a mutate
         let r = $src.pop();
         let l = $src.pop();
+        let res = binary_op!($src, l, $op, r, $opp);
 
-        $src.push(binary_op!(l, $op, r, $opp));
+        $src.push(res);
     }};
 }
 
 macro_rules! binary_op  {
-    ($l:ident, $op:tt, $r:ident, $opp:tt) => {
+    ($lua:ident, $l:ident, $op:tt, $r:ident, $opp:tt) => {
         match ($l, $r) {
             (Value::Number(left), Value::Number(right)) => (Value::Number(left $op right)),
             (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
@@ -150,14 +156,21 @@ macro_rules! binary_op  {
             (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
             (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
             // TODO userdata
-            // (Value::UserData(left), Value::UserData(right)) => {
-            //     if let Some(f) = left.get_meta_method($opp) {
-            //         f(left, right)?
-            //     } else {
-            //         op_error!(left.to_error(), $opp, right.to_error())
-            //     }
-            // }
-            (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
+            (Value::UserData(left), c) => {
+                // if let Some(f) = left.by_meta_method($lua,$opp, $r) {
+                //     f(left, right)?
+                // } else {
+                //     op_error!(left.to_error(), $opp, right.to_error())
+                // }
+                if let Ok(f) = left.by_meta_method($lua, MetaMethod::$opp, c) {
+                    f
+                } else {
+                    return Err(SiltError::VmRuntimeError); // TODO
+                    // return Err(SiltError::ExpOpValueWithValue(ValueTypes::UserData, MetaMethod::$opp, c.to_error()));
+                    // op_error!(ValueTypes::UserData $opp right.to_error())
+                }
+            }
+            (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
         }
     };
 }
@@ -528,7 +541,7 @@ impl<'lua> Lua<'lua> {
                 OpCode::DEFINE_LOCAL { constant } => todo!(),
                 OpCode::ADD => binary_op_push!(self, +, Add),
                 OpCode::SUB => binary_op_push!(self,-, Sub),
-                OpCode::MULTIPLY => binary_op_push!(self,*, Multiply),
+                OpCode::MULTIPLY => binary_op_push!(self,*, Mul),
                 OpCode::DIVIDE => {
                     let right = self.pop();
                     let left = self.pop();
@@ -549,7 +562,7 @@ impl<'lua> Lua<'lua> {
                         (l, r) => {
                             return Err(SiltError::ExpOpValueWithValue(
                                 l.to_error(),
-                                Operator::Divide,
+                                MetaMethod::Div,
                                 r.to_error(),
                             ))
                         }
@@ -931,7 +944,7 @@ impl<'lua> Lua<'lua> {
             (Value::Infinity(left), Value::Infinity(right)) => left != right && *left,
             (_, _) => Err(SiltError::ExpOpValueWithValue(
                 l.to_error(),
-                Operator::Less,
+                MetaMethod::Lt,
                 r.to_error(),
             ))?,
         })
@@ -949,7 +962,7 @@ impl<'lua> Lua<'lua> {
             (Value::Infinity(left), Value::Infinity(right)) => left != right && !*left,
             (_, _) => Err(SiltError::ExpOpValueWithValue(
                 l.to_error(),
-                Operator::Greater,
+                MetaMethod::Gt,
                 r.to_error(),
             ))?,
         })

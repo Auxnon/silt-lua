@@ -12,7 +12,7 @@ use crate::{
     lua::Lua,
     table::Table,
     token::Operator,
-    userdata::UserData,
+    userdata::{MetaMethod, UserData},
 };
 
 /**
@@ -29,7 +29,7 @@ macro_rules! binary_self_op {
                 // (Value::Integer(left), Value::Number(right)) => Some(Value::Number((*left as f64) $fallback right)),
                 (Value::Integer(left), Value::Number(right)) =>  *$l= Value::Number((*left as f64) $fallback right),
                 // TODO
-                (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), Operator::$opp, rr.to_error()))
+                (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
             }
             Ok(())
         }
@@ -283,8 +283,10 @@ pub trait FromLua<'lua>: Sized {
 #[derive(Debug, Clone)]
 pub struct MultiValue<'lua>(Vec<Value<'lua>>);
 
-// impl Drop for Value {
-//     fn drop(&mut self) {
-//         println!("dropping value: {}", self);
-//     }
-// }
+pub trait ToLuaMulti<'lua> {
+    fn to_lua_multi(self, lua: &'lua Lua) -> Result<MultiValue<'lua>, SiltError>;
+}
+
+pub trait FromLuaMulti<'lua>: Sized {
+    fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua Lua) -> Result<Self, SiltError>;
+}

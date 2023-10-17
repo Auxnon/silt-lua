@@ -281,7 +281,11 @@ mod tests {
         valeq!("return '1'+2", ExVal::Integer(3));
         fails!(
             "return 'a1'+2",
-            SiltError::ExpOpValueWithValue(ValueTypes::String, Operator::Add, ValueTypes::Integer)
+            SiltError::ExpOpValueWithValue(
+                ValueTypes::String,
+                crate::userdata::MetaMethod::Add,
+                ValueTypes::Integer
+            )
         );
     }
 
