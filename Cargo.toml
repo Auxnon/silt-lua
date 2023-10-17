@@ -32,12 +32,13 @@ inherits="release"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default=[]
-silt=["bang", "under-number", "global", "implicit-return", "short-declare"]
+silt=["bang", "under-number", "global", "implicit-return", "short-declare","vectors"]
 under-number=[]
 bang=[]
 global=[]
 short-declare=[]
 implicit-return=[]
+vectors=[]
 dev-out=[]
 
 [dependencies]

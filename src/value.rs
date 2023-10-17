@@ -6,6 +6,8 @@ use std::{
 
 use hashbrown::HashMap;
 
+#[cfg(feature = "vectors")]
+use crate::vec::{Vec2, Vec3};
 use crate::{
     error::{SiltError, ValueTypes},
     function::{Closure, FunctionObject, NativeFunction},
@@ -28,6 +30,12 @@ macro_rules! binary_self_op {
                 (Value::Number(left), Value::Integer(right)) => *left $op (*right as f64),
                 // (Value::Integer(left), Value::Number(right)) => Some(Value::Number((*left as f64) $fallback right)),
                 (Value::Integer(left), Value::Number(right)) =>  *$l= Value::Number((*left as f64) $fallback right),
+
+                #[cfg(feature = "vectors")]
+                (Value::Vec3(left), Value::Vec3(right)) => *left $op *right,
+                #[cfg(feature = "vectors")]
+                (Value::Vec2(left), Value::Vec2(right)) => *left $op *right,
+
                 // TODO
                 (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
             }
@@ -57,7 +65,11 @@ pub enum Value<'v> {
     Closure(Rc<Closure<'v>>),
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(NativeFunction<'v>),
-    UserData(Rc<dyn UserData>),
+    UserData(Rc<dyn UserData<'v>>),
+    #[cfg(feature = "vectors")]
+    Vec3(Vec3),
+    #[cfg(feature = "vectors")]
+    Vec2(Vec2),
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +83,10 @@ pub enum ExVal {
     Table(crate::table::ExTable),
     Meta(Box<String>),
     // UserData(Rc<dyn UserData>),
+    #[cfg(feature = "vectors")]
+    Vec3(Vec3),
+    #[cfg(feature = "vectors")]
+    Vec2(Vec2),
 }
 
 impl Eq for ExVal {}
@@ -103,6 +119,10 @@ impl Into<ExVal> for Value<'_> {
             Value::Closure(c) => ExVal::Meta(format!("=>({})", c.function).into()),
             Value::NativeFunction(f) => ExVal::Meta(Box::new("native_function".to_string())),
             Value::UserData(u) => ExVal::Nil,
+            #[cfg(feature = "vectors")]
+            Value::Vec3(v) => ExVal::Vec3(v),
+            #[cfg(feature = "vectors")]
+            Value::Vec2(v) => ExVal::Vec2(v),
         }
     }
 }
@@ -123,6 +143,8 @@ impl std::fmt::Display for ExVal {
             ExVal::String(s) | ExVal::Meta(s) => write!(f, "\"{}\"", s),
             ExVal::Infinity(b) => write!(f, "{}inf", if *b { "-" } else { "" }),
             ExVal::Table(t) => write!(f, "{}", t.to_string()),
+            ExVal::Vec3(v) => write!(f, "{}", v),
+            ExVal::Vec2(v) => write!(f, "{}", v),
         }
     }
 }
@@ -149,6 +171,10 @@ impl std::fmt::Display for Value<'_> {
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(t) => write!(f, "{}", t.borrow().to_string()),
             Value::UserData(u) => write!(f, "{}", u.to_string()),
+            #[cfg(feature = "vectors")]
+            Value::Vec3(v) => write!(f, "{}", v),
+            #[cfg(feature = "vectors")]
+            Value::Vec2(v) => write!(f, "{}", v),
         }
     }
 }
@@ -174,6 +200,10 @@ impl<'v> Value<'v> {
             Value::Closure(_) => ValueTypes::Closure,
             Value::Table(_) => ValueTypes::Table,
             Value::UserData(_) => ValueTypes::UserData,
+            #[cfg(feature = "vectors")]
+            Value::Vec3(_) => ValueTypes::Vec3,
+            #[cfg(feature = "vectors")]
+            Value::Vec2(_) => ValueTypes::Vec2,
         }
     }
 
@@ -222,6 +252,10 @@ impl<'v> Value<'v> {
             // }),
             Value::Table(t) => Value::Table(Rc::clone(t)),
             Value::UserData(u) => Value::UserData(Rc::clone(u)),
+            #[cfg(feature = "vectors")]
+            Value::Vec3(v) => Value::Vec3(*v),
+            #[cfg(feature = "vectors")]
+            Value::Vec2(v) => Value::Vec2(*v),
         }
     }
 }

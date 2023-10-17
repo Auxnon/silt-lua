@@ -16,6 +16,9 @@ mod token;
 mod userdata;
 pub mod value;
 
+#[cfg(feature = "vectors")]
+pub mod vec;
+
 use wasm_bindgen::prelude::*;
 
 fn simple(source: &str) -> ExVal {

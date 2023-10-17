@@ -75,6 +75,10 @@ pub enum ValueTypes {
     Closure,
     Table,
     UserData,
+    #[cfg(feature = "vectors")]
+    Vec3,
+    #[cfg(feature = "vectors")]
+    Vec2,
 }
 
 pub type Location = (usize, usize);
@@ -183,6 +187,10 @@ impl std::fmt::Display for ValueTypes {
             ValueTypes::Closure => write!(f, "(function)"),
             ValueTypes::Table => write!(f, "table"),
             ValueTypes::UserData => write!(f, "userdata"),
+            #[cfg(feature = "vectors")]
+            ValueTypes::Vec3 => write!(f, "vec3"),
+            #[cfg(feature = "vectors")]
+            ValueTypes::Vec2 => write!(f, "vec2"),
         }
     }
 }
