@@ -44,6 +44,7 @@ dev-out=[]
 [dependencies]
 byteyarn = "0.2.3"
 hashbrown = "0.14"
+gc-arena="0.5.3"
 wasm-bindgen="0.2.87"
 # rustc-hash="1.1.0"
 # ahash="0.8.3"

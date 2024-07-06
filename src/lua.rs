@@ -1,5 +1,7 @@
 use std::{cell::RefCell, mem::take, rc::Rc};
 
+use gc_arena::{Arena, Rootable};
+
 use crate::{
     code::OpCode,
     compiler::Compiler,
@@ -213,6 +215,7 @@ impl<'lua> Lua<'lua> {
         //     std::alloc::alloc(std::alloc::Layout::array::<Value>(256).unwrap()) as *mut [Value; 256]
         // };
         // let stack: [Value; 256] = [const { Value::Nil }; 256];
+        let mut arena = Arena::<Rootable![NodePtr<'_, i32>]>::new(|mc| mc.alloc_many(256));
         let mut stack = [(); 256].map(|_| Value::default());
         let stack_top = stack.as_mut_ptr() as *mut Value;
         // let stack = vec![];
