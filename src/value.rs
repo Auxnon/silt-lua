@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use gc_arena::{lock::RefLock, Gc};
 use hashbrown::HashMap;
 
 #[cfg(feature = "vectors")]
@@ -58,11 +59,11 @@ pub enum Value<'v> {
     String(Box<String>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
-    Table(Rc<RefCell<Table<'v>>>),
+    Table(Gc<'gc, RefLock<Table<'v>>>),
     // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
     // Boxed()
-    Function(Rc<FunctionObject<'v>>), // closure: Environment,
-    Closure(Rc<Closure<'v>>),
+    Function(Gc<FunctionObject<'v>>), // closure: Environment,
+    Closure(Gc<Closure<'v>>),
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(NativeFunction<'v>),
     UserData(Rc<dyn UserData<'v>>),

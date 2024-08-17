@@ -1,6 +1,6 @@
 use std::{cell::RefCell, mem::take, rc::Rc};
 
-use gc_arena::{Arena, Rootable};
+use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
     code::OpCode,
@@ -178,6 +178,7 @@ macro_rules! binary_op  {
 }
 
 pub struct Lua<'lua> {
+    arena: Arena,
     body: Rc<FunctionObject<'lua>>,
     compiler: Compiler<'lua>,
     // frames: Vec<CallFrame>,
@@ -206,6 +207,44 @@ pub struct Lua<'lua> {
     table_counter: usize,
 }
 
+#[derive(Copy, Clone, Collect)]
+#[collect(no_drop)]
+struct Object<'gc, T> {
+    value: T,
+}
+
+type ObjectPtr<'gc, T> = Gc<'gc, RefLock<Object<'gc, T>>>;
+
+fn new_node<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> {
+    Gc::new(
+        mc,
+        RefLock::new(Node {
+            prev: None,
+            next: None,
+            value,
+        }),
+    )
+}
+
+#[derive(Copy, Clone, Collect)]
+#[collect(no_drop)]
+struct Object<'gc, T> {
+    value: T,
+}
+
+type ObjectPtr<'gc, T> = Gc<'gc, RefLock<Object<'gc, T>>>;
+
+fn new_node<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> {
+    Gc::new(
+        mc,
+        RefLock::new(Node {
+            prev: None,
+            next: None,
+            value,
+        }),
+    )
+}
+
 impl<'lua> Lua<'lua> {
     /** Create a new lua compiler and runtime */
     pub fn new() -> Self {
@@ -215,7 +254,26 @@ impl<'lua> Lua<'lua> {
         //     std::alloc::alloc(std::alloc::Layout::array::<Value>(256).unwrap()) as *mut [Value; 256]
         // };
         // let stack: [Value; 256] = [const { Value::Nil }; 256];
-        let mut arena = Arena::<Rootable![NodePtr<'_, i32>]>::new(|mc| mc.alloc_many(256));
+        let mut arena = Arena::<Rootable![NodePtr<'_, Table>]>::new(|mc| mc.alloc_many(256));
+
+        let mut arena = Arena::<Rootable![NodePtr<'_, i32>]>::new(|mc| {
+            // Create a simple linked list with three links.
+            //
+            // 1 <-> 2 <-> 3 <-> 4
+
+            let one = new_node(mc, 1);
+            let two = new_node(mc, 2);
+            let three = new_node(mc, 3);
+            let four = new_node(mc, 4);
+
+            node_join(mc, one, two);
+            node_join(mc, two, three);
+            node_join(mc, three, four);
+
+            // We return the pointer to 1 as our root
+            one
+        });
+
         let mut stack = [(); 256].map(|_| Value::default());
         let stack_top = stack.as_mut_ptr() as *mut Value;
         // let stack = vec![];
