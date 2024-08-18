@@ -46,7 +46,7 @@ macro_rules! binary_self_op {
 }
 
 /** Lua value enum representing different data types within a VM */
-pub enum Value<'v> {
+pub enum Value<'gc> {
     Nil,
     Integer(i64),
     Number(f64),
@@ -59,14 +59,14 @@ pub enum Value<'v> {
     String(Box<String>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
-    Table(Gc<'gc, RefLock<Table<'v>>>),
+    Table(Gc<'gc, RefLock<Table<'gc>>>),
     // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
     // Boxed()
-    Function(Gc<FunctionObject<'v>>), // closure: Environment,
-    Closure(Gc<Closure<'v>>),
+    Function(Gc<'gc, FunctionObject<'gc>>), // closure: Environment,
+    Closure(Gc<'gc, Closure<'gc>>),
     // Func(fn(Vec<Value>) -> Value)
-    NativeFunction(NativeFunction<'v>),
-    UserData(Rc<dyn UserData<'v>>),
+    NativeFunction(NativeFunction<'gc>),
+    UserData(Rc<dyn UserData<'gc>>),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
