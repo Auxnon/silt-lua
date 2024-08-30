@@ -4,7 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use gc_arena::{lock::RefLock, Gc};
+use gc_arena::{lock::RefLock, Collect, Gc};
 use hashbrown::HashMap;
 
 #[cfg(feature = "vectors")]
@@ -46,6 +46,8 @@ macro_rules! binary_self_op {
 }
 
 /** Lua value enum representing different data types within a VM */
+#[derive(  Collect)]
+#[collect(no_drop)]
 pub enum Value<'gc> {
     Nil,
     Integer(i64),
@@ -65,8 +67,8 @@ pub enum Value<'gc> {
     Function(Gc<'gc, FunctionObject<'gc>>), // closure: Environment,
     Closure(Gc<'gc, Closure<'gc>>),
     // Func(fn(Vec<Value>) -> Value)
-    NativeFunction(NativeFunction<'gc>),
-    UserData(Rc<dyn UserData<'gc>>),
+    NativeFunction(Gc<'gc,NativeFunction<'gc>>),
+    UserData(Gc<'gc,dyn UserData<'gc>>),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
@@ -144,7 +146,9 @@ impl std::fmt::Display for ExVal {
             ExVal::String(s) | ExVal::Meta(s) => write!(f, "\"{}\"", s),
             ExVal::Infinity(b) => write!(f, "{}inf", if *b { "-" } else { "" }),
             ExVal::Table(t) => write!(f, "{}", t.to_string()),
+            #[cfg(feature = "vectors")]
             ExVal::Vec3(v) => write!(f, "{}", v),
+            #[cfg(feature = "vectors")]
             ExVal::Vec2(v) => write!(f, "{}", v),
         }
     }
@@ -245,14 +249,14 @@ impl<'v> Value<'v> {
             Value::Infinity(b) => Value::Infinity(*b),
             Value::NativeFunction(f) => Value::NativeFunction(*f),
             // TODO: implement this
-            Value::Function(r) => Value::Function(Rc::clone(r)),
-            Value::Closure(c) => Value::Closure(Rc::clone(c)),
+            Value::Function(r) => Value::Function(Gc::clone(r)),
+            Value::Closure(c) => Value::Closure(Gc::clone(c)),
             // Value::Table(t) => Value::Table(Reference {
             //     value: Rc::clone(&t.value),
             //     id: t.id,
             // }),
-            Value::Table(t) => Value::Table(Rc::clone(t)),
-            Value::UserData(u) => Value::UserData(Rc::clone(u)),
+            Value::Table(t) => Value::Table(Gc::clone(t)),
+            Value::UserData(u) => Value::UserData(Gc::clone(u)),
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => Value::Vec3(*v),
             #[cfg(feature = "vectors")]
@@ -277,8 +281,10 @@ impl PartialEq for Value<'_> {
                 // i.function as *const for<'a> fn(&'a mut Lua, Vec<Value<'a>>) -> Value<'a>
                 //     == j.function as *const for<'a> fn(&'a mut Lua, Vec<Value<'a>>) -> Value<'a>
             }
-            (Value::Function(i), Value::Function(j)) => Rc::ptr_eq(i, j),
-            (Value::Table(i), Value::Table(j)) => Rc::ptr_eq(&i, &j),
+            (Value::Function(i), Value::Function(j)) => 
+                Gc::ptr_eq(*i, *j),
+            
+            (Value::Table(i), Value::Table(j)) => Gc::ptr_eq(*i, *j),
             _ => false,
         }
     }

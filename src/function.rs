@@ -1,5 +1,7 @@
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
+use gc_arena::Collect;
+
 use crate::{chunk::Chunk, code::OpCode, lua::Lua, value::Value};
 
 /////////////
@@ -135,7 +137,8 @@ impl<'frame> CallFrame<'frame> {
         // println!("rewind: {}", unsafe { &*self.ip });
     }
 }
-#[derive(Default)]
+#[derive(Default, Collect)]
+#[collect(no_drop)]
 pub struct FunctionObject<'chnk> {
     pub is_script: bool,
     pub name: Option<String>,

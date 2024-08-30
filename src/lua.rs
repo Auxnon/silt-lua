@@ -207,16 +207,27 @@ pub struct Lua<'lua> {
     table_counter: usize,
 }
 
-#[derive(Copy, Clone, Collect)]
-#[collect(no_drop)]
-struct Object<'gc, T> {
-    value: T,
+// #[derive(Copy, Clone, Collect)]
+// #[collect(no_drop)]
+// struct Object<'gc, T> {
+//     value: T,
+// }
+
+// type ObjectPtr<'gc, T> = Gc<'gc, RefLock<Object<'gc, T>>>;
+type ObjectPtr<'gc, T> = Gc<'gc, RefLock<T>>;
+type Body<'gc> = Gc<'gc,RefLock<FunctionObject<'gc>>>;
+
+fn wrap_obj<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> {
+    Gc::new(mc, RefLock::new( value))
 }
 
-type ObjectPtr<'gc, T> = Gc<'gc, RefLock<Object<'gc, T>>>;
-
-fn new_node<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> {
-    Gc::new(mc, RefLock::new(Object { value }))
+fn new_body<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> Body<'gc, T> {
+    Gc::new(
+        mc,
+        RefLock::new(
+            FunctionObject::new(None, false)
+        ),
+    )
 }
 
 impl<'lua> Lua<'lua> {
@@ -228,7 +239,12 @@ impl<'lua> Lua<'lua> {
         //     std::alloc::alloc(std::alloc::Layout::array::<Value>(256).unwrap()) as *mut [Value; 256]
         // };
         // let stack: [Value; 256] = [const { Value::Nil }; 256];
-        let mut arena = Arena::<Rootable![Value<'_>]>::new(|mc| mc.alloc_many(256));
+        let mut arena = Arena::<Rootable![Body<'_>]>::new(|mc| {
+            Gc::new(mc,RefLock::new(FunctionObject::new(None, false)))
+            // Gc::new(mc, RefLock::new(Value::Nil))
+            // mc.alloc_many(256)
+        }
+        );
 
         // let mut arena = Arena::<Rootable![NodePtr<'_, i32>]>::new(|mc| {
         //     // Create a simple linked list with three links.
@@ -254,7 +270,8 @@ impl<'lua> Lua<'lua> {
         // let stack_top = stack.as_ptr() as *mut Value;
         Self {
             compiler: Compiler::new(),
-            body: Rc::new(FunctionObject::new(None, false)),
+            arena,
+            body: 
             // dummy_frame: CallFrame::new(Rc::new(FunctionObject::new(None, false))),
             // frames: vec![],
             // ip: 0 as *const OpCode,

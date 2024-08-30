@@ -2,50 +2,61 @@
 name = "silt-lua"
 version = "0.1.1"
 authors = ["MakeAvoy <auxnon@gmail.com>"]
-repository="https://github.com/auxnon/silt-lua"
-license ="MIT"
+repository = "https://github.com/auxnon/silt-lua"
+license = "MIT"
 edition = "2021"
-keywords=["lua","interpreter","language","vm","script"]
-description="A pure rust Lua interpreter and virtual machine"
-categories=["compilers","config"]
-exclude=["./build-wasm.sh","./.vscode/launch.json","./wasm-tester/index.html"]
+keywords = ["lua", "interpreter", "language", "vm", "script"]
+description = "A pure rust Lua interpreter and virtual machine"
+categories = ["compilers", "config"]
+exclude = [
+    "./build-wasm.sh",
+    "./.vscode/launch.json",
+    "./wasm-tester/index.html",
+]
 
 [lib]
 name = "silt_lua"
 path = "src/lib.rs"
-crate-type = ["cdylib","lib"]
+crate-type = ["cdylib", "lib"]
 
 [[bin]]
 name = "silt_lua_cli"
 path = "src/main.rs"
 
 [profile.release]
-strip = true  # Automatically strip symbols from the binary.
-opt-level = "z"  # Optimize for size.
+strip = true    # Automatically strip symbols from the binary.
+opt-level = "z" # Optimize for size.
 lto = true
-panic ="abort"
+panic = "abort"
 
 
 [profile.wasm]
-inherits="release"
+inherits = "release"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default=[]
-silt=["bang", "under-number", "global", "implicit-return", "short-declare","vectors"]
-under-number=[]
-bang=[]
-global=[]
-short-declare=[]
-implicit-return=[]
-vectors=[]
-dev-out=[]
+default = []
+silt = [
+    "bang",
+    "under-number",
+    "global",
+    "implicit-return",
+    "short-declare",
+    "vectors",
+]
+under-number = []
+bang = []
+global = []
+short-declare = []
+implicit-return = []
+vectors = []
+dev-out = []
 
 [dependencies]
-byteyarn = "0.2.3"
+byteyarn = "0.5.1"
 hashbrown = "0.14"
-gc-arena="0.5.3"
-wasm-bindgen="0.2.87"
+wasm-bindgen = "0.2.87"
+gc-arena = "0.5.3"
 string-interner = "0.17.0"
 # rustc-hash="1.1.0"
 # ahash="0.8.3"
