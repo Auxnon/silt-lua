@@ -12,7 +12,7 @@ use crate::vec::{Vec2, Vec3};
 use crate::{
     error::{SiltError, ValueTypes},
     function::{Closure, FunctionObject, NativeFunction},
-    lua::Lua,
+    lua::VM,
     table::Table,
     token::Operator,
     userdata::{MetaMethod, UserData},
@@ -46,7 +46,7 @@ macro_rules! binary_self_op {
 }
 
 /** Lua value enum representing different data types within a VM */
-#[derive(  Collect)]
+#[derive(Collect)]
 #[collect(no_drop)]
 pub enum Value<'gc> {
     Nil,
@@ -64,11 +64,11 @@ pub enum Value<'gc> {
     Table(Gc<'gc, RefLock<Table<'gc>>>),
     // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
     // Boxed()
-    Function(Gc<'gc, FunctionObject<'gc>>), // closure: Environment,
+    Function(Gc<'gc,FunctionObject<'gc>>), // closure: Environment,
     Closure(Gc<'gc, Closure<'gc>>),
     // Func(fn(Vec<Value>) -> Value)
-    NativeFunction(Gc<'gc,NativeFunction<'gc>>),
-    UserData(Gc<'gc,dyn UserData<'gc>>),
+    NativeFunction(Gc<'gc, NativeFunction<'gc>>),
+    UserData(Gc<'gc, dyn UserData<'gc>>),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
@@ -281,9 +281,8 @@ impl PartialEq for Value<'_> {
                 // i.function as *const for<'a> fn(&'a mut Lua, Vec<Value<'a>>) -> Value<'a>
                 //     == j.function as *const for<'a> fn(&'a mut Lua, Vec<Value<'a>>) -> Value<'a>
             }
-            (Value::Function(i), Value::Function(j)) => 
-                Gc::ptr_eq(*i, *j),
-            
+            (Value::Function(i), Value::Function(j)) => Gc::ptr_eq(*i, *j), // Rc::ptr_eq(i, j),
+
             (Value::Table(i), Value::Table(j)) => Gc::ptr_eq(*i, *j),
             _ => false,
         }
@@ -312,22 +311,22 @@ impl Eq for Value<'_> {}
 
 pub trait ToLua<'lua> {
     /// Performs the conversion.
-    fn to_lua(self, lua: &'lua Lua) -> Result<Value<'lua>, SiltError>;
+    fn to_lua(self, lua: &'lua VM) -> Result<Value<'lua>, SiltError>;
 }
 
 /// Trait for types convertible from `Value`.
 pub trait FromLua<'lua>: Sized {
     /// Performs the conversion.
-    fn from_lua(lua_value: Value<'lua>, lua: &'lua Lua) -> Result<Self, SiltError>;
+    fn from_lua(lua_value: Value<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
 }
 
 #[derive(Debug, Clone)]
 pub struct MultiValue<'lua>(Vec<Value<'lua>>);
 
 pub trait ToLuaMulti<'lua> {
-    fn to_lua_multi(self, lua: &'lua Lua) -> Result<MultiValue<'lua>, SiltError>;
+    fn to_lua_multi(self, lua: &'lua VM) -> Result<MultiValue<'lua>, SiltError>;
 }
 
 pub trait FromLuaMulti<'lua>: Sized {
-    fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua Lua) -> Result<Self, SiltError>;
+    fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
 }

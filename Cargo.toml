@@ -54,9 +54,9 @@ dev-out = []
 
 [dependencies]
 byteyarn = "0.5.1"
-hashbrown = "0.14"
+hashbrown = "0.15.1"
 wasm-bindgen = "0.2.87"
-gc-arena = "0.5.3"
-string-interner = "0.17.0"
+gc-arena = {version= "0.5.3", features=["allocator-api2"] }
+string-interner = "0.18.0"
 # rustc-hash="1.1.0"
 # ahash="0.8.3"

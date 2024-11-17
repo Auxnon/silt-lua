@@ -1,6 +1,6 @@
 use crate::{
     code::OpCode,
-    prelude::{Lua, LuaError},
+    prelude::{VM, LuaError},
     value::{FromLua, MultiValue, ToLua, Value},
 };
 
@@ -10,7 +10,7 @@ pub trait UserData<'lua> {
     // fn add_methods<'lua, T: UserDataFields<'lua, Self>>(&self, _methods: &mut T);
     fn by_meta_method(
         &self,
-        lua: &mut Lua,
+        lua: &mut VM,
         method: MetaMethod,
         inputs: Value<'lua>,
     ) -> Result<Value<'lua>>;
@@ -52,7 +52,7 @@ pub trait UserData<'lua> {
 pub type Result<T> = std::result::Result<T, LuaError>;
 
 pub(crate) type Callback<'lua, 'a> =
-    Box<dyn Fn(&'lua Lua, MultiValue<'lua>) -> Result<MultiValue<'lua>> + 'a>;
+    Box<dyn Fn(&'lua VM, MultiValue<'lua>) -> Result<MultiValue<'lua>> + 'a>;
 pub trait MaybeSend {}
 impl<T> MaybeSend for T {}
 
@@ -214,9 +214,9 @@ impl Into<MetaMethod> for OpCode {
 // }
 
 pub trait ToLuaMulti<'lua> {
-    fn to_lua_multi(self, lua: &'lua Lua) -> Result<MultiValue<'lua>>;
+    fn to_lua_multi(self, lua: &'lua VM) -> Result<MultiValue<'lua>>;
 }
 
 pub trait FromLuaMulti<'lua>: Sized {
-    fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua Lua) -> Result<Self>;
+    fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua VM) -> Result<Self>;
 }

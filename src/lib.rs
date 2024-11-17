@@ -1,5 +1,6 @@
+use compiler::Compiler;
 use error::ErrorTuple;
-use lua::Lua;
+use lua::VM;
 use value::{ExVal, Value};
 
 mod chunk;
@@ -22,11 +23,15 @@ pub mod vec;
 use wasm_bindgen::prelude::*;
 
 fn simple(source: &str) -> ExVal {
-    let mut vm = Lua::new();
+    let mut vm = VM::new();
     vm.load_standard_library();
-    let v = match vm.run(source) {
-        Ok(v) => v,
-        Err(e) => ExVal::String(Box::new(e[0].to_string())),
+    let mut compiler = Compiler::new();
+    let v = match compiler.try_compile(source) {
+        Ok(obj) => match vm.run(obj) {
+            Ok(v) => v,
+            Err(e) => ExVal::String(Box::new(e[0].to_string())), //runtime error
+        },
+        Err(e) => ExVal::String(Box::new(e[0].to_string())), //compile time error
     };
     drop(vm);
     v
@@ -39,10 +44,14 @@ fn simple(source: &str) -> ExVal {
 }
 
 fn complex(source: &str) -> Result<ExVal, ErrorTuple> {
-    let mut vm = Lua::new();
+    let mut vm = VM::new();
     vm.load_standard_library();
-    match vm.run(source) {
-        Ok(v) => Ok(v),
+    let mut compiler = Compiler::new();
+    match compiler.try_compile(source) {
+        Ok(obj) => match vm.run(obj) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(e.get(0).unwrap().clone()),
+        },
         Err(e) => Err(e.get(0).unwrap().clone()),
     }
 }
@@ -91,7 +100,7 @@ mod tests {
         complex,
         error::SiltError,
         function::FunctionObject,
-        lua::Lua,
+        lua::VM,
         prelude::ValueTypes,
         simple,
         token::{Operator, Token},
@@ -237,7 +246,7 @@ mod tests {
         let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
-        let mut vm = Lua::new();
+        let mut vm = VM::new();
         match vm.execute(Rc::new(tester)) {
             Ok(v) => {
                 assert_eq!(v, ExVal::Number(-0.5));

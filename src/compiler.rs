@@ -3,10 +3,10 @@ use std::{
     iter::Peekable,
     mem::{swap, take},
     println,
-    rc::Rc,
     vec,
 };
 
+use gc_arena::Gc;
 use hashbrown::HashMap;
 
 use crate::{
@@ -20,43 +20,43 @@ use crate::{
 };
 
 macro_rules! build_block_until_then_eat {
-    ($self:ident, $($rule:ident)|*) => {{
-        while match $self.peek()? {
-            $( Token::$rule)|* => {$self.eat(); false}
+    ($self:ident, $e:ident, $($rule:ident)|*) => {{
+        while match $self.peek($e)? {
+            $( Token::$rule)|* => {$self.eat($e); false}
             Token::EOF => {
                 return Err($self.error_at(SiltError::UnterminatedBlock));
             }
-            _ =>{declaration($self)?; true}
+            _ =>{declaration($self, $e)?; true}
         } {
         }
     }};
 }
 
 macro_rules! build_block_until {
-    ($self:ident, $($rule:ident)|*) => {{
-        while match $self.peek()? {
+    ($self:ident,$e:ident, $($rule:ident)|*) => {{
+        while match $self.peek($e)? {
             $( Token::$rule)|* => false,
             Token::EOF => {
                 return Err($self.error_at(SiltError::UnterminatedBlock));
             }
-            _ =>{declaration($self)?; true}
+            _ =>{declaration($self,$e)?; true}
         } {
         }
     }};
 }
 
 macro_rules! scope_and_block_until {
-    ($self:ident, $($rule:ident)|*) => {{
+    ($self:ident, $e:ident, $($rule:ident)|*) => {{
         begin_scope($self);
-        build_block_until!($self, $($rule)|*);
+        build_block_until!($self,$e, $($rule)|*);
         end_scope($self,false);
     }};
 }
 
 macro_rules! scope_and_block_until_then_eat {
-    ($self:ident, $($rule:ident)|*) => {{
+    ($self:ident,$e:ident,, $($rule:ident)|*) => {{
         begin_scope($self);
-        build_block_until_then_eat!($self, $($rule)|*);
+        build_block_until_then_eat!($self,$e:ident, $($rule)|*);
         end_scope($self,false);
     }};
 }
@@ -102,16 +102,16 @@ macro_rules! op_assign {
 
 /** error if missing, eat if present */
 macro_rules! expect_token {
-    ($self:ident $token:ident) => {{
-        if let Token::$token = $self.peek()? {
-            $self.eat();
+    ($self:ident $e:ident $token:ident) => {{
+        if let Token::$token = $self.peek($e)? {
+            $self.eat($e);
         } else {
             return Err($self.error_at(SiltError::ExpectedToken(Token::$token)));
         }
     };};
-    ($self:ident, $token:ident, $custom_error:expr) => {{
-        if let Token::$token = $self.peek()? {
-            $self.eat();
+    ($self:ident, $e:ident, $token:ident, $custom_error:expr) => {{
+        if let Token::$token = $self.peek($e)? {
+            $self.eat($e);
         } else {
             return Err($custom_error);
         }
@@ -200,8 +200,8 @@ impl Display for Precedence {
 }
 
 struct ParseRule {
-    prefix: fn(&mut Compiler, can_assign: bool) -> Catch,
-    infix: fn(&mut Compiler, can_assign: bool) -> Catch,
+    prefix: fn(&mut Compiler, &mut Emphereal, can_assign: bool) -> Catch,
+    infix: fn(&mut Compiler, &mut Emphereal, can_assign: bool) -> Catch,
     precedence: Precedence,
 }
 
@@ -224,9 +224,12 @@ struct UpLocal {
     universal_ident: u8,
 }
 
+struct Emphereal<'c> {
+    iterator: Peekable<Lexer<'c>>,
+}
+
 pub struct Compiler<'chnk> {
     pub body: FunctionObject<'chnk>,
-    iterator: Peekable<Lexer>,
     pub current_index: usize,
     pub errors: Vec<ErrorTuple>,
     pub valid: bool,
@@ -257,7 +260,6 @@ impl<'chnk> Compiler<'chnk> {
         // assert!(p.len() == p.len());
         Self {
             body: FunctionObject::new(None, true),
-            iterator: Lexer::new("".to_string()).peekable(),
             current: Ok(Token::Nil),
             current_location: (0, 0),
             current_index: 0,
@@ -361,9 +363,9 @@ impl<'chnk> Compiler<'chnk> {
     }
 
     /** Tokens, not stack. Pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
-    fn pop(&mut self) -> (Result<Token, ErrorTuple>, Location) {
+    fn pop(&mut self, e: &mut Emphereal) -> (Result<Token, ErrorTuple>, Location) {
         self.current_index += 1;
-        match self.iterator.next() {
+        match e.iterator.next() {
             Some(Ok(t)) => {
                 devout!("popped {}", t.0);
                 (Ok(t.0), t.1)
@@ -383,9 +385,9 @@ impl<'chnk> Compiler<'chnk> {
     }
 
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
-    fn eat(&mut self) {
+    fn eat(&mut self, e: &mut Emphereal) {
         self.current_index += 1;
-        let t = self.iterator.next();
+        let t = e.iterator.next();
         #[cfg(feature = "dev-out")]
         {
             match t {
@@ -397,9 +399,9 @@ impl<'chnk> Compiler<'chnk> {
     }
 
     /** pop and store on to self as current token tuple */
-    fn store(&mut self) {
+    fn store(&mut self, e: &mut Emphereal) {
         self.current_index += 1;
-        (self.current, self.current_location) = match self.iterator.next() {
+        (self.current, self.current_location) = match e.iterator.next() {
             Some(Ok(t)) => (Ok(t.0), t.1),
             Some(Err(e)) => {
                 // self.error_syntax(e.code, e.location);
@@ -417,9 +419,9 @@ impl<'chnk> Compiler<'chnk> {
     }
 
     /** take current, replace with next. a true pop*/
-    fn store_and_return(&mut self) -> Result<Token, ErrorTuple> {
+    fn store_and_return(&mut self, mut e: Emphereal) -> Result<Token, ErrorTuple> {
         self.current_index += 1;
-        let (r, l) = match self.iterator.next() {
+        let (r, l) = match e.iterator.next() {
             Some(Ok(t)) => (Ok(t.0), t.1),
             Some(Err(e)) => {
                 // self.error_syntax(e.code, e.location);
@@ -451,8 +453,8 @@ impl<'chnk> Compiler<'chnk> {
     // }
 
     /** return the peeked token result */
-    fn peek(&mut self) -> Result<&Token, ErrorTuple> {
-        match self.iterator.peek() {
+    fn peek<'c>(&mut self, e: &'c mut Emphereal) -> Result<&'c Token, ErrorTuple> {
+        match e.iterator.peek() {
             Some(Ok(t)) => {
                 devout!("peek {}", t.0);
                 Ok(&t.0)
@@ -471,7 +473,7 @@ impl<'chnk> Compiler<'chnk> {
     }
 
     /** return the peeked token tuple (token+location) result */
-    fn peek_result(&mut self) -> &TokenResult {
+    fn peek_result<'c>(&mut self, e: &'c mut Emphereal) -> &'c TokenResult {
         #[cfg(feature = "dev-out")]
         match self.iterator.peek() {
             Some(r) => {
@@ -488,7 +490,7 @@ impl<'chnk> Compiler<'chnk> {
             None => &Ok((Token::EOF, (0, 0))),
         }
         #[cfg(not(feature = "dev-out"))]
-        match self.iterator.peek() {
+        match e.iterator.peek() {
             Some(r) => r,
             None => &Ok((Token::EOF, (0, 0))),
         }
@@ -592,8 +594,8 @@ impl<'chnk> Compiler<'chnk> {
         self.emit(OpCode::CONSTANT { constant }, self.current_location);
     }
 
-    fn is_end(&mut self) -> bool {
-        match self.iterator.peek() {
+    fn is_end(&mut self, e: &mut Emphereal) -> bool {
+        match e.iterator.peek() {
             None => true,
             _ => false,
         }
@@ -651,7 +653,7 @@ impl<'chnk> Compiler<'chnk> {
         }
     }
 
-    pub fn compile(&mut self, source: String) -> FunctionObject<'chnk> {
+    fn compile<'c>(&mut self, source: &'c str) -> FunctionObject<'chnk> {
         #[cfg(feature = "dev-out")]
         {
             let lexer = Lexer::new(source.to_owned());
@@ -662,10 +664,12 @@ impl<'chnk> Compiler<'chnk> {
                 Err(e) => println!("err {}", e),
             });
         }
-        let lexer = Lexer::new(source.to_owned());
-        self.iterator = lexer.peekable();
-        while !self.is_end() {
-            match declaration(self) {
+        let lexer = Lexer::new(source);
+        let mut e = Emphereal {
+            iterator: lexer.peekable(),
+        };
+        while !self.is_end(&mut e) {
+            match declaration(self, &mut e) {
                 Ok(()) => {}
                 Err(e) => {
                     self.push_error(e);
@@ -676,6 +680,18 @@ impl<'chnk> Compiler<'chnk> {
 
         self.emit(OpCode::RETURN, (0, 0));
         take(&mut self.body)
+    }
+
+    pub fn try_compile<'c>(
+        &mut self,
+        source: &'c str,
+    ) -> Result<FunctionObject<'chnk>, Vec<ErrorTuple>> {
+        let obj = self.compile(source);
+        if obj.chunk.is_valid() {
+            Ok(obj)
+        } else {
+            Err(self.pop_errors())
+        }
     }
 
     fn synchronize(&mut self) {
@@ -690,9 +706,14 @@ impl<'chnk> Compiler<'chnk> {
         // }
     }
 
-    fn parse_precedence(&mut self, precedence: Precedence, skip_step: bool) -> Catch {
+    fn parse_precedence(
+        &mut self,
+        e: &mut Emphereal,
+        precedence: Precedence,
+        skip_step: bool,
+    ) -> Catch {
         if !skip_step {
-            self.store();
+            self.store(e);
         }
         // self.store(); // MARK with store first it works for normal statements, but it breaks for incomplete expressions that are meant to pop off
         // Basically the integer we just saw is dropped off when we reach here because of store
@@ -709,10 +730,10 @@ impl<'chnk> Compiler<'chnk> {
         );
         // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
         let can_assign = precedence <= Precedence::Assignment;
-        (rule.prefix)(self, can_assign)?;
+        (rule.prefix)(self, e, can_assign)?;
 
         loop {
-            let c = self.peek_result();
+            let c = self.peek_result(e);
             let rule = match c {
                 Ok((Token::EOF, _)) => break,
                 Ok((t, _)) => Self::get_rule(t),
@@ -728,19 +749,19 @@ impl<'chnk> Compiler<'chnk> {
             if precedence > rule.precedence {
                 break;
             }
-            self.store();
-            (rule.infix)(self, false)?;
+            self.store(e);
+            (rule.infix)(self, e, false)?;
         }
 
         // TODO test this with `local b="b" sprint b`
         if can_assign
-            && if let Token::Assign = self.peek()? {
+            && if let Token::Assign = self.peek(e)? {
                 true
             } else {
                 false
             }
         {
-            let res = self.peek()?.clone();
+            let res = self.peek(e)?.clone();
             return Err(self.error_at(SiltError::InvalidAssignment(res)));
         }
 
@@ -751,42 +772,47 @@ impl<'chnk> Compiler<'chnk> {
     }
 }
 
-fn declaration(this: &mut Compiler) -> Catch {
+fn declaration(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devout!("----------------------------");
     devnote!(this "declaration");
 
-    let t = this.peek()?;
+    let t = this.peek(e)?;
     match t {
-        Token::Local => declaration_keyword(this, true, false)?,
-        Token::Global => declaration_keyword(this, false, false)?,
+        Token::Local => declaration_keyword(this, e, true, false)?,
+        Token::Global => declaration_keyword(this, e, false, false)?,
         Token::Function => {
-            this.eat();
-            define_function(this, true, None)?;
+            this.eat(e);
+            define_function(this, e, true, None)?;
         }
-        _ => statement(this)?,
+        _ => statement(this, e)?,
     }
     Ok(())
 }
 
-fn declaration_keyword(this: &mut Compiler, local: bool, already_function: bool) -> Catch {
+fn declaration_keyword(
+    this: &mut Compiler,
+    e: &mut Emphereal,
+    local: bool,
+    already_function: bool,
+) -> Catch {
     devnote!(this "declaration_keyword");
-    this.eat();
-    let (res, location) = this.pop();
+    this.eat(e);
+    let (res, location) = this.pop(e);
     match res? {
         Token::Identifier(ident) => {
             if this.scope_depth > 0 && local {
                 //local
                 //TODO should we warn? redefine_behavior(this,ident)?
                 add_local(this, ident)?;
-                typing(this, None)?;
+                typing(this, e, None)?;
             } else {
                 let ident = this.identifer_constant(ident); //(self.global.to_register(&ident), 0);
-                typing(this, Some((ident, location)))?;
+                typing(this, e, Some((ident, location)))?;
             }
         }
         Token::Function => {
             if !already_function {
-                define_function(this, local, None)?;
+                define_function(this, e, local, None)?;
             } else {
                 return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
                 // Statement::InvalidStatement
@@ -803,6 +829,7 @@ fn declaration_keyword(this: &mut Compiler, local: bool, already_function: bool)
 
 fn declaration_scope(
     this: &mut Compiler,
+    e: &mut Emphereal,
     ident: Box<String>,
     local: bool,
     location: Location,
@@ -811,10 +838,10 @@ fn declaration_scope(
         //local
         //TODO should we warn? redefine_behavior(this,ident)?
         add_local(this, ident)?;
-        typing(this, None)?;
+        typing(this, e, None)?;
     } else {
         let ident = this.identifer_constant(ident);
-        typing(this, Some((ident, location)))?;
+        typing(this, e, Some((ident, location)))?;
     }
     Ok(())
 }
@@ -972,12 +999,12 @@ fn resolve_upvalue(
 //     Ok(None)
 // }
 
-fn typing(this: &mut Compiler, ident_tuple: Option<(Ident, Location)>) -> Catch {
+fn typing(this: &mut Compiler, e: &mut Emphereal, ident_tuple: Option<(Ident, Location)>) -> Catch {
     devnote!(this "typing");
-    if let Token::Colon = this.peek()? {
+    if let Token::Colon = this.peek(e)? {
         // typing or self calling
-        this.eat();
-        this.store();
+        this.eat(e);
+        this.store(e);
         let t = this.get_current()?;
         if let Token::ColonIdentifier(target) = t {
             // method or type name
@@ -990,25 +1017,29 @@ fn typing(this: &mut Compiler, ident_tuple: Option<(Ident, Location)>) -> Catch 
             //     // return self.assign(self.peek(), ident);
             //     Statement::InvalidStatement
             // }
-            define_declaration(this, ident_tuple)?;
+            define_declaration(this, e, ident_tuple)?;
         } else {
             todo!("typing");
             // self.error(SiltError::InvalidColonPlacement);
             // Statement::InvalidStatement
         }
     } else {
-        define_declaration(this, ident_tuple)?;
+        define_declaration(this, e, ident_tuple)?;
     }
     Ok(())
 }
 
-fn define_declaration(this: &mut Compiler, ident_tuple: Option<(Ident, Location)>) -> Catch {
+fn define_declaration(
+    this: &mut Compiler,
+    e: &mut Emphereal,
+    ident_tuple: Option<(Ident, Location)>,
+) -> Catch {
     devnote!(this "define_declaration");
-    this.store();
+    this.store(e);
     let t = this.get_current()?;
     match t {
         Token::Assign => {
-            expression(this, false)?;
+            expression(this, e, false)?;
         }
         // we can't increment what doesn't exist yet, like what are you even doing?
         Token::AddAssign
@@ -1036,9 +1067,14 @@ fn define_variable(this: &mut Compiler, ident: Option<(Ident, Location)>) -> Cat
     Ok(())
 }
 
-fn define_function(this: &mut Compiler, local: bool, pre_ident: Option<usize>) -> Catch {
-    let (ident, location) = if let &Token::Identifier(_) = this.peek()? {
-        let (res, location) = this.pop();
+fn define_function(
+    this: &mut Compiler,
+    e: &mut Emphereal,
+    local: bool,
+    pre_ident: Option<usize>,
+) -> Catch {
+    let (ident, location) = if let &Token::Identifier(_) = this.peek(e)? {
+        let (res, location) = this.pop(e);
         if let Token::Identifier(ident) = res? {
             (ident, location)
         } else {
@@ -1059,7 +1095,7 @@ fn define_function(this: &mut Compiler, local: bool, pre_ident: Option<usize>) -
         ident
     };
 
-    build_function(this, ident_clone, global_ident, false, false)?;
+    build_function(this, e, ident_clone, global_ident, false, false)?;
 
     Ok(())
 }
@@ -1067,6 +1103,7 @@ fn define_function(this: &mut Compiler, local: bool, pre_ident: Option<usize>) -
 /** builds function, implicit return specifices whether a nil is return or the last value popped */
 fn build_function(
     this: &mut Compiler,
+    e: &mut Emphereal,
     ident: String,
     global_ident: Option<(u8, Location)>,
     is_script: bool,
@@ -1078,24 +1115,24 @@ fn build_function(
     this.swap_function(&mut sidelined_func);
     begin_scope(this);
     begin_functional_scope(this);
-    expect_token!(this OpenParen);
+    expect_token!(this e OpenParen);
     let mut arity = 0;
-    if let Token::Identifier(_) = this.peek()? {
+    if let Token::Identifier(_) = this.peek(e)? {
         arity += 1;
-        build_param(this)?;
+        build_param(this, e)?;
 
-        while let Token::Comma = this.peek()? {
-            this.eat();
+        while let Token::Comma = this.peek(e)? {
+            this.eat(e);
             arity += 1;
             if arity > 255 {
                 // TODO we should use an arity value on the function object but let's make it only exist on compile time
                 return Err(this.error_at(SiltError::TooManyParameters));
             }
-            build_param(this)?;
+            build_param(this, e)?;
         }
     }
 
-    block(this)?;
+    block(this, e)?;
     if let &OpCode::RETURN = this.read_last_code() {
     } else {
         // TODO if last was semicolon we also push a nil
@@ -1115,7 +1152,7 @@ fn build_function(
     // When we're done compiling the function object we drop the current body function back in and push the compiled func as a constant within that body
     this.swap_function(&mut sidelined_func);
     sidelined_func.upvalue_count = upvals.len() as u8;
-    let func_value = Value::Function(Rc::new(sidelined_func));
+    let func_value = Value::Function(Gc::new(sidelined_func));
     if true {
         // need closure
         let constant = this.body.chunk.write_constant(func_value) as u8;
@@ -1138,8 +1175,8 @@ fn build_function(
     Ok(())
 }
 
-fn build_param(this: &mut Compiler) -> Catch {
-    let (res, _) = this.pop();
+fn build_param(this: &mut Compiler, e: &mut Emphereal) -> Catch {
+    let (res, _) = this.pop(e);
     match res? {
         Token::Identifier(ident) => {
             add_local(this, ident)?;
@@ -1151,39 +1188,39 @@ fn build_param(this: &mut Compiler) -> Catch {
     Ok(())
 }
 
-fn statement(this: &mut Compiler) -> Catch {
+fn statement(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "statement");
-    match this.peek()? {
-        Token::Print => print(this)?,
-        Token::If => if_statement(this)?,
+    match this.peek(e)? {
+        Token::Print => print(this, e)?,
+        Token::If => if_statement(this, e)?,
         Token::Do => {
-            this.eat();
+            this.eat(e);
             begin_scope(this);
-            block(this)?;
+            block(this, e)?;
             end_scope(this, false);
         }
-        Token::While => while_statement(this)?,
-        Token::For => for_statement(this)?,
-        Token::Return => return_statement(this)?,
+        Token::While => while_statement(this, e)?,
+        Token::For => for_statement(this, e)?,
+        Token::Return => return_statement(this, e)?,
         // Token::OpenBrace => block(this),
-        Token::ColonColon => set_goto_label(this)?,
-        Token::Goto => goto_statement(this)?,
+        Token::ColonColon => set_goto_label(this, e)?,
+        Token::Goto => goto_statement(this, e)?,
         Token::SemiColon => {
-            this.eat();
+            this.eat(e);
             // TODO ???
         }
         // Token::End => {
         //     // this.eat();
         //     // TODO ???
         // }
-        _ => expression_statement(this)?,
+        _ => expression_statement(this, e)?,
     }
     Ok(())
 }
 
-fn block(this: &mut Compiler) -> Catch {
+fn block(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "block");
-    build_block_until_then_eat!(this, End);
+    build_block_until_then_eat!(this, e, End);
 
     Ok(())
 }
@@ -1261,28 +1298,28 @@ fn end_functional_scope(this: &mut Compiler) -> Vec<UpLocal> {
     this.up_values.pop().unwrap()
 }
 
-fn if_statement<'cmplr>(this: &'cmplr mut Compiler) -> Catch {
+fn if_statement<'cmplr>(this: &'cmplr mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "if_statement");
-    this.eat();
-    expression(this, false)?;
-    expect_token!(this Then);
+    this.eat(e);
+    expression(this, e, false)?;
+    expect_token!(this e Then);
     let skip_if = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
-    scope_and_block_until!(this, End | Else | ElseIf);
+    scope_and_block_until!(this, e, End | Else | ElseIf);
     // this.emit_at(OpCode::POP); // pop the if compare again as we skipped the pop from before
-    match this.peek()? {
+    match this.peek(e)? {
         Token::Else => {
-            this.eat();
+            this.eat(e);
             let skip_else = this.emit_index(OpCode::FORWARD(0));
             this.patch(skip_if)?; // patch to fo AFTER the forward so we actually run the else block
-            scope_and_block_until!(this, End);
+            scope_and_block_until!(this, e, End);
             this.patch(skip_else)?;
-            expect_token!(this End);
+            expect_token!(this e End);
         }
         Token::ElseIf => {
-            this.eat();
+            this.eat(e);
             // this.emit_at(OpCode::POP);
             this.patch(skip_if)?;
-            if_statement(this)?;
+            if_statement(this, e)?;
         }
         _ => {
             this.patch(skip_if)?;
@@ -1291,14 +1328,14 @@ fn if_statement<'cmplr>(this: &'cmplr mut Compiler) -> Catch {
     Ok(())
 }
 
-fn while_statement(this: &mut Compiler) -> Catch {
+fn while_statement(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "while_statement");
-    this.eat();
+    this.eat(e);
     let loop_start = this.get_chunk_size();
-    expression(this, false)?;
-    expect_token!(this Do);
+    expression(this, e, false)?;
+    expect_token!(this e Do);
     let exit_jump = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
-    build_block_until_then_eat!(this, End);
+    build_block_until_then_eat!(this, e, End);
     this.emit_rewind(loop_start);
     this.patch(exit_jump)?;
     Ok(())
@@ -1310,27 +1347,27 @@ fn while_statement(this: &mut Compiler) -> Catch {
  * At end of block increment iterator by step value and rewind
  * Re-evaluate and if iterator is greater than end value, forward to immediately after end of block
  */
-fn for_statement(this: &mut Compiler) -> Catch {
+fn for_statement(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "for_statement");
-    this.eat();
-    let pair = this.pop();
+    this.eat(e);
+    let pair = this.pop(e);
     let t = pair.0?;
     if let Token::Identifier(ident) = t {
         // let offset = this.local_functional_offset[this.functional_depth - 1];
         let iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
-        expect_token!(this Assign);
+        expect_token!(this e Assign);
         add_local_placeholder(this)?; // reserve end value with placeholder
         add_local_placeholder(this)?; // reserve step value with placeholder
-        expression(this, false)?; // expression for iterator
-        expect_token!(this Comma);
-        expression(this, false)?; // expression for end value
+        expression(this, e, false)?; // expression for iterator
+        expect_token!(this e Comma);
+        expression(this, e, false)?; // expression for end value
 
         // let exit_jump = this.emit_index(OpCode::GOTO_IF_FALSE(0));
         // this.emit_at(OpCode::POP);
         // either we have an expression for the step or we set it to 1i
-        if let Token::Comma = this.peek()? {
-            this.eat();
-            expression(this, false)?;
+        if let Token::Comma = this.peek(e)? {
+            this.eat(e);
+            expression(this, e, false)?;
         } else {
             this.constant_at(Value::Integer(1))
         };
@@ -1342,10 +1379,10 @@ fn for_statement(this: &mut Compiler) -> Catch {
         // this.emit_at(OpCode::EQUAL);
         // let exit_jump = this.emit_index(OpCode::GOTO_IF_TRUE(0));
         // this.emit_at(OpCode::POP);
-        expect_token!(this Do);
+        expect_token!(this e Do);
         begin_scope(this);
         add_local(this, ident)?; // we add the local inside the scope which was actually added on by the for opcode already
-        build_block_until_then_eat!(this, End);
+        build_block_until_then_eat!(this, e, End);
         end_scope(this, false);
 
         this.emit_at(OpCode::INCREMENT { index: iterator });
@@ -1364,22 +1401,24 @@ fn for_statement(this: &mut Compiler) -> Catch {
  */
 fn generic_for_statement() {}
 
-fn return_statement(this: &mut Compiler) -> Catch {
+fn return_statement(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "return_statement");
-    this.eat();
-    if let Token::End | Token::Else | Token::ElseIf | Token::SemiColon | Token::EOF = this.peek()? {
+    this.eat(e);
+    if let Token::End | Token::Else | Token::ElseIf | Token::SemiColon | Token::EOF =
+        this.peek(e)?
+    {
         this.emit_at(OpCode::NIL);
     } else {
-        expression(this, false)?;
+        expression(this, e, false)?;
     }
     this.emit_at(OpCode::RETURN);
     Ok(())
 }
 
-fn set_goto_label(this: &mut Compiler) -> Catch {
+fn set_goto_label(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "goto_label");
-    this.eat();
-    let token = this.pop().0?;
+    this.eat(e);
+    let token = this.pop(e).0?;
     if let Token::Identifier(ident) = token {
         this.labels.insert(*ident, this.get_chunk_size());
     } else {
@@ -1388,10 +1427,10 @@ fn set_goto_label(this: &mut Compiler) -> Catch {
     Ok(())
 }
 
-fn goto_statement(this: &mut Compiler) -> Catch {
+fn goto_statement(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "goto_statement");
-    this.eat();
-    let token = this.pop().0?;
+    this.eat(e);
+    let token = this.pop(e).0?;
     if let Token::Identifier(ident) = token {
         resolve_goto(this, &*ident, this.get_chunk_size(), None)?;
         // match this.labels.get(ident) {
@@ -1504,22 +1543,22 @@ fn goto_scope_skip(this: &mut Compiler) {
     this.emit_at(OpCode::POPS(i));
 }
 
-fn expression(this: &mut Compiler, skip_step: bool) -> Catch {
+fn expression(this: &mut Compiler, e: &mut Emphereal, skip_step: bool) -> Catch {
     devnote!(this "expression");
-    this.parse_precedence(Precedence::Assignment, skip_step)?;
+    this.parse_precedence(e, Precedence::Assignment, skip_step)?;
     Ok(())
 }
 
-fn next_expression(this: &mut Compiler) -> Catch {
+fn next_expression(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "next_expression");
-    this.eat();
-    expression(this, false)?;
+    this.eat(e);
+    expression(this, e, false)?;
     Ok(())
 }
 
-fn expression_statement(this: &mut Compiler) -> Catch {
+fn expression_statement(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "expression_statement");
-    expression(this, false)?;
+    expression(this, e, false)?;
     if this.override_pop {
         this.override_pop = false;
     } else {
@@ -1529,7 +1568,7 @@ fn expression_statement(this: &mut Compiler) -> Catch {
     Ok(())
 }
 
-fn variable(this: &mut Compiler, can_assign: bool) -> Catch {
+fn variable(this: &mut Compiler, e: &mut Emphereal, can_assign: bool) -> Catch {
     devnote!(this "variable");
     // let t = this.previous.clone();
     // let ident = if let Token::Identifier(ident) = t.0 {
@@ -1545,18 +1584,23 @@ fn variable(this: &mut Compiler, can_assign: bool) -> Catch {
     //     this.emit(OpCode::LITERAL { dest: ident, literal: ident }, t.1);
     // }
 
-    named_variable(this, can_assign, false)?;
+    named_variable(this, e, can_assign, false)?;
     Ok(())
 }
 
-fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Catch {
+fn named_variable(
+    this: &mut Compiler,
+    e: &mut Emphereal,
+    can_assign: bool,
+    mut local: bool,
+) -> Catch {
     devnote!(this "named_variables");
     let t = this.copy_store()?;
 
     // declare shortcut only valid if we're above scope 0 otherwise it's redundant
     // TODO should we send a warning that 0 scoped declares are redundant?
     if this.scope_depth > 0
-        && if let Token::Op(Operator::ColonEquals) = this.peek()? {
+        && if let Token::Op(Operator::ColonEquals) = this.peek(e)? {
             true
         } else {
             false
@@ -1566,8 +1610,8 @@ fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Cat
             // short declare
             add_local(this, ident)?;
             this.override_pop = true;
-            this.eat();
-            expression(this, false)?;
+            this.eat(e);
+            expression(this, e, false)?;
         } else {
             unreachable!()
         }
@@ -1621,11 +1665,11 @@ fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Cat
      *
      *
      */
-    match this.peek()? {
+    match this.peek(e)? {
         Token::Assign => {
             if can_assign {
-                this.eat();
-                expression(this, false)?;
+                this.eat(e);
+                expression(this, e, false)?;
                 this.emit_at(setter);
             } else {
                 this.emit_at(getter);
@@ -1633,10 +1677,10 @@ fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Cat
         }
         Token::OpenBracket | Token::Dot => {
             this.emit_at(getter);
-            let count = table_indexer(this)? as u8;
-            if let Token::Assign = this.peek()? {
-                this.eat();
-                expression(this, false)?;
+            let count = table_indexer(this, e)? as u8;
+            if let Token::Assign = this.peek(e)? {
+                this.eat(e);
+                expression(this, e, false)?;
                 this.emit_at(OpCode::TABLE_SET { depth: count });
                 // override statement end pop because instruction takes care of it
                 this.override_pop = true;
@@ -1671,62 +1715,63 @@ fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Cat
     Ok(())
 }
 
-fn grouping(this: &mut Compiler, _can_assign: bool) -> Catch {
+fn grouping(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "grouping");
-    expression(this, false)?;
+    expression(this, e, false)?;
     //TODO expect
     // expect_token!(self, CloseParen, SiltError::UnterminatedParenthesis(0, 0));
     // self.consume(TokenType::RightParen, "Expect ')' after expression.");
     Ok(())
 }
 
-fn tabulate(this: &mut Compiler, _can_assign: bool) -> Catch {
+fn tabulate(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "tabulate");
     this.emit_at(OpCode::NEW_TABLE);
     // not immediately closed
-    if !matches!(this.peek()?, &Token::CloseBrace) {
+    if !matches!(this.peek(e)?, &Token::CloseBrace) {
         let mut count = 0;
         // check if index provided via brackets or ident, otherwise increment our count to build array at the end
         while {
             let start_brace = this.current_location;
-            if match this.peek()? {
+            if match this.peek(e)? {
                 Token::Identifier(_) => {
-                    this.store();
-                    if let Token::Assign = this.peek()? {
+                    this.store(e);
+                    if let Token::Assign = this.peek(e)? {
                         let ident = this.get_current()?.unwrap_identifier();
                         this.emit_identifer_constant_at(ident.clone());
-                        this.eat();
+                        this.eat(e);
                         true
                     } else {
-                        expression(this, true)?; // we skip the store because the ip is already where it needs to be
+                        expression(this, e, true)?; // we skip the store because the ip is already where it needs to be
                         false
                     }
                 }
                 Token::OpenBracket => {
-                    this.eat();
-                    expression(this, false)?;
+                    this.eat(e);
+                    expression(this, e, false)?;
                     expect_token!(
                         this,
+                        e,
                         CloseBracket,
                         this.error_at(SiltError::UnterminatedBracket(start_brace.0, start_brace.1))
                     );
-                    expect_token!(this, Assign, this.error_at(SiltError::ExpectedAssign));
+                    expect_token!(this, e, Assign, this.error_at(SiltError::ExpectedAssign));
                     true
                 }
                 _ => {
-                    expression(this, false)?; // normal store expression
+                    expression(this, e, false)?; // normal store expression
                     false
                 }
             } {
-                expression(this, false)?;
+                expression(this, e, false)?;
                 this.emit_at(OpCode::TABLE_INSERT { offset: count });
             } else {
                 count += 1;
             }
 
-            match this.peek()? {
+            match this.peek(e)? {
                 Token::Comma => {
-                    this.eat();
+                    this.eat(e);
                     true
                 }
                 Token::CloseBrace => false,
@@ -1744,6 +1789,7 @@ fn tabulate(this: &mut Compiler, _can_assign: bool) -> Catch {
 
     expect_token!(
         this,
+        e,
         CloseBrace,
         this.error_at(SiltError::TableExpectedCommaOrCloseBrace)
     );
@@ -1751,12 +1797,12 @@ fn tabulate(this: &mut Compiler, _can_assign: bool) -> Catch {
 }
 
 /** op unary or primary */
-fn unary(this: &mut Compiler, _can_assign: bool) -> Catch {
+fn unary(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "unary");
     let t = this.copy_store()?;
     // self.expression();
 
-    this.parse_precedence(Precedence::Unary, false)?;
+    this.parse_precedence(e, Precedence::Unary, false)?;
     match t {
         Token::Op(Operator::Sub) => this.emit_at(OpCode::NEGATE),
         Token::Op(Operator::Not) => this.emit_at(OpCode::NOT),
@@ -1777,22 +1823,23 @@ fn unary(this: &mut Compiler, _can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn table_indexer(this: &mut Compiler) -> Result<usize, ErrorTuple> {
+fn table_indexer(this: &mut Compiler, e: &mut Emphereal) -> Result<usize, ErrorTuple> {
     let mut count = 0;
-    while match this.peek()? {
+    while match this.peek(e)? {
         Token::OpenBracket => {
-            this.eat();
-            expression(this, false)?;
+            this.eat(e);
+            expression(this, e, false)?;
             expect_token!(
                 this,
+                e,
                 CloseBracket,
                 this.error_at(SiltError::UnterminatedBracket(0, 0))
             );
             true
         }
         Token::Dot => {
-            this.eat();
-            let t = this.pop();
+            this.eat(e);
+            let t = this.pop(e);
             this.current_location = t.1;
             let field = t.0?;
             devout!("table_indexer: {} p:{}", field, this.peek()?);
@@ -1810,12 +1857,12 @@ fn table_indexer(this: &mut Compiler) -> Result<usize, ErrorTuple> {
     Ok(count)
 }
 
-fn binary(this: &mut Compiler, _can_assign: bool) -> Catch {
+fn binary(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "binary");
     let t = this.copy_store()?;
     let l = this.current_location;
     let rule = Compiler::get_rule(&t);
-    this.parse_precedence(rule.precedence.next(), false)?;
+    this.parse_precedence(e, rule.precedence.next(), false)?;
     if let Token::Op(op) = t {
         match op {
             Operator::Add => this.emit(OpCode::ADD, l),
@@ -1840,12 +1887,12 @@ fn binary(this: &mut Compiler, _can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn concat(this: &mut Compiler, _can_assign: bool) -> Catch {
+fn concat(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "concat_binary");
     let t = this.copy_store()?;
     let l = this.current_location;
     let rule = Compiler::get_rule(&t);
-    this.parse_precedence(rule.precedence.next(), false)?;
+    this.parse_precedence(e, rule.precedence.next(), false)?;
 
     if let Token::Op(op) = t {
         match op {
@@ -1856,16 +1903,16 @@ fn concat(this: &mut Compiler, _can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn and(this: &mut Compiler, _can_assign: bool) -> Catch {
+fn and(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "and");
     let index = this.emit_index(OpCode::GOTO_IF_FALSE(0));
     this.emit_at(OpCode::POP);
-    this.parse_precedence(Precedence::And, false)?;
+    this.parse_precedence(e, Precedence::And, false)?;
     this.patch(index)?;
     Ok(())
 }
 
-fn or(this: &mut Compiler, _can_assign: bool) -> Catch {
+fn or(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "or");
 
     // the goofy way
@@ -1878,12 +1925,12 @@ fn or(this: &mut Compiler, _can_assign: bool) -> Catch {
 
     let index = this.emit_index(OpCode::GOTO_IF_TRUE(0));
     this.emit_at(OpCode::POP);
-    this.parse_precedence(Precedence::Or, false)?;
+    this.parse_precedence(e, Precedence::Or, false)?;
     this.patch(index)?;
     Ok(())
 }
 
-fn integer(this: &mut Compiler, can_assign: bool) -> Catch {
+fn integer(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "integer");
     let t = this.copy_store()?;
     let value = if let Token::Integer(i) = t {
@@ -1895,7 +1942,7 @@ fn integer(this: &mut Compiler, can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn number(this: &mut Compiler, can_assign: bool) -> Catch {
+fn number(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "number");
     let t = this.copy_store()?;
     let value = if let Token::Number(n) = t {
@@ -1907,7 +1954,7 @@ fn number(this: &mut Compiler, can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn string(this: &mut Compiler, can_assign: bool) -> Catch {
+fn string(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "string");
     let t = this.copy_store()?;
     let value = if let Token::StringLiteral(s) = t {
@@ -1919,7 +1966,7 @@ fn string(this: &mut Compiler, can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn literal(this: &mut Compiler, can_assign: bool) -> Catch {
+fn literal(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "literal");
     let t = this.copy_store()?;
     match t {
@@ -1931,7 +1978,7 @@ fn literal(this: &mut Compiler, can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn call(this: &mut Compiler, can_assign: bool) -> Catch {
+fn call(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(this "call");
     // let t = this.take_store()?;
     // let l = this.current_location;
@@ -1942,29 +1989,29 @@ fn call(this: &mut Compiler, can_assign: bool) -> Catch {
     //     this.emit(OpCode::CALL { arg_count }, l);
     // }
     let start = this.current_location;
-    let arg_count = arguments(this, start)?;
+    let arg_count = arguments(this, e, start)?;
     this.emit(OpCode::CALL(arg_count), start);
     Ok(())
 }
 
-fn call_table(this: &mut Compiler, can_assign: bool) -> Catch {
+fn call_table(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     todo!();
     Ok(())
 }
 
-fn call_string(this: &mut Compiler, can_assign: bool) -> Catch {
+fn call_string(this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     todo!();
     Ok(())
 }
-fn arguments(this: &mut Compiler, start: Location) -> Result<u8, ErrorTuple> {
+fn arguments(this: &mut Compiler, e: &mut Emphereal, start: Location) -> Result<u8, ErrorTuple> {
     devnote!(this "arguments");
     let mut args = 0;
-    if !matches!(this.peek()?, &Token::CloseParen) {
+    if !matches!(this.peek(e)?, &Token::CloseParen) {
         while {
-            expression(this, false)?;
+            expression(this, e, false)?;
             args += 1;
-            if let &Token::Comma = this.peek()? {
-                this.eat();
+            if let &Token::Comma = this.peek(e)? {
+                this.eat(e);
                 true
             } else {
                 false
@@ -1978,6 +2025,7 @@ fn arguments(this: &mut Compiler, start: Location) -> Result<u8, ErrorTuple> {
 
     expect_token!(
         this,
+        e,
         CloseParen,
         this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
     );
@@ -1986,15 +2034,15 @@ fn arguments(this: &mut Compiler, start: Location) -> Result<u8, ErrorTuple> {
     Ok(args)
 }
 
-fn print(this: &mut Compiler) -> Catch {
+fn print(this: &mut Compiler, e: &mut Emphereal) -> Catch {
     devnote!(this "print");
-    this.eat();
-    expression(this, false)?;
+    this.eat(e);
+    expression(this, e, false)?;
     this.emit_at(OpCode::PRINT);
     Ok(())
 }
 
-pub fn void(_this: &mut Compiler, _can_assign: bool) -> Catch {
+pub fn void(_this: &mut Compiler, e: &mut Emphereal, _can_assign: bool) -> Catch {
     devnote!(_this "void");
     Ok(())
 }

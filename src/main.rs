@@ -1,4 +1,4 @@
-use silt_lua::prelude::Lua;
+use silt_lua::prelude::{Compiler, Lua};
 
 const FALLBACK_FILE: &str = "scripts/test.lua";
 fn main() {
@@ -281,7 +281,7 @@ fn main() {
     // end
     // sprint a
     // end
-    // "#;
+// "#;
 
     // let mut compiler = Compiler::new();
     // let o = compiler.compile(source_in.to_string());
@@ -289,6 +289,9 @@ fn main() {
     // #[cfg(feature = "dev-out")]
     // o.chunk.print_chunk(None);
     // compiler.print_errors();
+
+    let compiler = Compiler::new();
+    let object = compiler.compile(source_in);
 
     let mut vm = Lua::new();
     vm.load_standard_library();

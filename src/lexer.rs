@@ -9,8 +9,8 @@ enum Mode {
     Typer,
     // LookAhead,
 }
-pub struct Lexer {
-    pub source: String,
+pub struct Lexer<'c> {
+    pub source: &'c str,
     pub iterator: std::iter::Peekable<std::vec::IntoIter<char>>,
     pub start: usize,
     pub end: usize,
@@ -26,7 +26,7 @@ pub type TokenTuple = (Token, Location);
 pub type TokenResult = Result<TokenTuple, ErrorTuple>;
 pub type TokenOption = Option<TokenResult>;
 
-impl Iterator for Lexer {
+impl Iterator for Lexer<'_> {
     type Item = TokenResult;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -55,14 +55,13 @@ impl Iterator for Lexer {
     }
 }
 
-impl<'a> Lexer {
-    pub fn new(source: String) -> Self {
-        let st = source.clone();
-        let len = st.len();
+impl<'c> Lexer<'c> {
+    pub fn new(source: &'c str) -> Self {
+        let len = source.len();
         // TODO is this insane?
         let chars = source.chars().collect::<Vec<_>>().into_iter().peekable();
         Lexer {
-            source: st,
+            source,
             start: 0,
             column: 0,
             column_start: 0,

@@ -2,7 +2,7 @@
 pub use crate::{
     error::{SiltError as LuaError, ValueTypes},
     function::{Closure, FunctionObject},
-    lua::Lua,
+    lua::VM,
     table::Table,
     userdata::UserData,
     value::{Reference, Value},

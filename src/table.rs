@@ -1,9 +1,14 @@
-use hashbrown::HashMap;
+use std::collections::HashMap;
+
+use gc_arena::Collect;
 
 use crate::value::{ExVal, Value};
 
-pub struct Table<'v> {
+#[derive(Collect)]
+#[collect(no_drop)]
+pub struct Table<'v>{
     data: HashMap<Value<'v>, Value<'v>>,
+    // data: RefLock<HashMap<String, String>>,
     /** replicate standard lua behavior */
     counter: i64,
     id: usize,

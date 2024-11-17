@@ -1,27 +1,23 @@
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
-use gc_arena::Collect;
+use gc_arena::{Collect, Gc};
 
-use crate::{chunk::Chunk, code::OpCode, lua::Lua, value::Value};
+use crate::{chunk::Chunk, code::OpCode, lua::VM, value::Value};
 
 /////////////
 ///
-pub struct CallFrame<'lua> {
-    pub function: Rc<Closure<'lua>>, // pointer
+pub struct CallFrame<'gc> {
+    pub function: Gc<'gc, Closure<'gc>>, // pointer
     // ip: *const OpCode
     // pub base: usize,
     // pointer point sinto VM values stack
     pub stack_snapshot: usize,
-    pub local_stack: *mut Value<'lua>,
+    pub local_stack: *mut Value<'gc>,
     pub ip: *const OpCode,
 }
 
 impl<'frame> CallFrame<'frame> {
-    pub fn new<'a>(function: Rc<Closure<'a>>, stack_snapshot: usize) -> Self
-    where
-        'a: 'frame,
-        'frame: 'a,
-    {
+    pub fn new<'a>(function: Gc<'frame, Closure<'frame>>, stack_snapshot: usize) -> Self {
         let ip = function.function.chunk.code.as_ptr();
         Self {
             function,
@@ -138,7 +134,7 @@ impl<'frame> CallFrame<'frame> {
     }
 }
 #[derive(Default, Collect)]
-#[collect(no_drop)]
+#[collect(require_static)]
 pub struct FunctionObject<'chnk> {
     pub is_script: bool,
     pub name: Option<String>,
@@ -185,7 +181,7 @@ impl Display for FunctionObject<'_> {
 //     pub function: NativeFunction<'static>,
 // }
 
-pub type NativeFunction<'lua> = fn(&mut Lua, Vec<Value>) -> Value<'lua>;
+pub type NativeFunction<'lua> = fn(&mut VM, Vec<Value>) -> Value<'lua>;
 
 // impl NativeObject {
 //     pub fn new(name: &'static str, function: NativeFunction) -> Self {
@@ -193,15 +189,17 @@ pub type NativeFunction<'lua> = fn(&mut Lua, Vec<Value>) -> Value<'lua>;
 //     }
 // }
 
+#[derive(Collect)]
+#[collect(no_drop)]
 pub struct Closure<'lua> {
-    pub function: Rc<FunctionObject<'lua>>,
-    pub upvalues: Vec<Rc<RefCell<UpValue<'lua>>>>,
+    pub function: Gc<'lua, FunctionObject<'lua>>,
+    pub upvalues: Vec<Gc<'lua, RefCell<UpValue<'lua>>>>,
 }
 
 impl<'chnk> Closure<'chnk> {
     pub fn new(
-        function: Rc<FunctionObject<'chnk>>,
-        upvalues: Vec<Rc<RefCell<UpValue<'chnk>>>>,
+        function: Gc<'chnk, FunctionObject<'chnk>>,
+        upvalues: Vec<Gc<'chnk, RefCell<UpValue<'chnk>>>>,
     ) -> Self {
         Self { function, upvalues }
     }
