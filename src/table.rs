@@ -6,7 +6,7 @@ use crate::value::{ExVal, Value};
 
 #[derive(Collect)]
 #[collect(no_drop)]
-pub struct Table<'v>{
+pub struct Table<'v> {
     data: HashMap<Value<'v>, Value<'v>>,
     // data: RefLock<HashMap<String, String>>,
     /** replicate standard lua behavior */
