@@ -193,12 +193,14 @@ impl Lua {
         Self { arena }
     }
 
-    pub fn run(&mut self, object: FunctionObject) -> Result<ExVal, Vec<ErrorTuple>> {
+    pub fn run<'a>(&mut self, object: FunctionObject<'a>) -> Result<ExVal, Vec<ErrorTuple>> {
         let o = self.arena.mutate_root(|mc, root| {
             let obj = Gc::new(mc, object);
-            root.run(mc, obj)
+            let ret=root.run(mc, obj);
+            ret
         });
-        o
+        // o
+        Ok(ExVal::Nil)
     }
 }
 
@@ -267,7 +269,7 @@ fn wrap_obj<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> 
 
 impl<'gc> VM<'gc> {
     /** Create a new lua compiler and runtime */
-    pub fn new(mc: &'gc Mutation<'gc>) ->VM<'gc> {
+    pub fn new(mc: &'gc Mutation<'gc>) ->Self {
         // TODO try the hard way
         // force array to be 256 Values
         // let stack = unsafe {
@@ -313,7 +315,7 @@ impl<'gc> VM<'gc> {
             stack_count: 0,
             stack,
             // stack_top,
-            globals: wrap_obj(mc, HashMap::new()), //Gc::new(mc, gtable),
+            globals: Gc::new(mc, RefLock::new(HashMap::new())), //Gc::new(mc, gtable),
             open_upvalues: vec![],
             table_counter: 1,
         }
@@ -479,13 +481,15 @@ impl<'gc> VM<'gc> {
         object: Gc<'gc, FunctionObject<'gc>>,
     ) -> Result<ExVal, Vec<ErrorTuple>> {
         // let object = self.compiler.compile(source.to_owned());
-        match self.execute(mc, object.into()) {
+        let out=match self.execute(mc, object.into()) {
             Ok(v) => Ok(v),
             Err(e) => Err(vec![ErrorTuple {
                 code: e,
                 location: (0, 0),
             }]),
-        }
+        };
+
+        Ok(ExVal::Nil)
     }
 
     pub fn execute(

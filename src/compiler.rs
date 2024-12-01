@@ -6,11 +6,10 @@ use std::{
     vec,
 };
 
-use gc_arena::Gc;
+use gc_arena::{Gc, Mutation};
 use hashbrown::HashMap;
 
 use crate::{
-    chunk::Chunk,
     code::OpCode,
     error::{ErrorTuple, Location, SiltError},
     function::FunctionObject,
@@ -24,7 +23,7 @@ macro_rules! build_block_until_then_eat {
         while match $self.peek($e)? {
             $( Token::$rule)|* => {$self.eat($e); false}
             Token::EOF => {
-                return Err($self.error_at(SiltError::UnterminatedBlock));
+                return Err($self.error_at($e,SiltError::UnterminatedBlock));
             }
             _ =>{declaration($self, $e)?; true}
         } {
@@ -37,7 +36,7 @@ macro_rules! build_block_until {
         while match $self.peek($e)? {
             $( Token::$rule)|* => false,
             Token::EOF => {
-                return Err($self.error_at(SiltError::UnterminatedBlock));
+                return Err($self.error_at($e,SiltError::UnterminatedBlock));
             }
             _ =>{declaration($self,$e)?; true}
         } {
@@ -106,7 +105,7 @@ macro_rules! expect_token {
         if let Token::$token = $self.peek($e)? {
             $self.eat($e);
         } else {
-            return Err($self.error_at(SiltError::ExpectedToken(Token::$token)));
+            return Err($self.error_at($e,SiltError::ExpectedToken(Token::$token)));
         }
     };};
     ($self:ident, $e:ident, $token:ident, $custom_error:expr) => {{
@@ -226,10 +225,12 @@ struct UpLocal {
 
 struct Emphereal<'c> {
     iterator: Peekable<Lexer<'c>>,
+    body: FunctionObject<'c>,
+    mc: &'c Mutation<'c>, 
 }
 
-pub struct Compiler<'chnk> {
-    pub body: FunctionObject<'chnk>,
+pub struct Compiler {
+    // pub body: FunctionObject<'chnk>,
     pub current_index: usize,
     pub errors: Vec<ErrorTuple>,
     pub valid: bool,
@@ -254,12 +255,12 @@ pub struct Compiler<'chnk> {
     override_pop: bool,
 }
 
-impl<'chnk> Compiler<'chnk> {
+impl Compiler {
     /** Create a new compiler instance */
-    pub fn new() -> Compiler<'chnk> {
+    pub fn new() -> Compiler {
         // assert!(p.len() == p.len());
         Self {
-            body: FunctionObject::new(None, true),
+            // body: FunctionObject::new(None, true),
             current: Ok(Token::Nil),
             current_location: (0, 0),
             current_index: 0,
@@ -288,15 +289,15 @@ impl<'chnk> Compiler<'chnk> {
     }
 
     /** Syntax error with code at location */
-    fn error_syntax(&mut self, code: SiltError, location: Location) -> ErrorTuple {
+    fn error_syntax(&mut self,e: &mut Emphereal, code: SiltError, location: Location) -> ErrorTuple {
         self.valid = false;
-        self.body.chunk.invalidate();
+        e.body.chunk.invalidate();
         ErrorTuple { code, location }
     }
 
     /**syntax error at current token location with provided code */
-    fn error_at(&mut self, code: SiltError) -> ErrorTuple {
-        self.error_syntax(code, self.current_location)
+    fn error_at(&mut self,e: &mut Emphereal, code: SiltError) -> ErrorTuple {
+        self.error_syntax(e,code, self.current_location)
     }
 
     /** Print all syntax errors */
@@ -331,35 +332,35 @@ impl<'chnk> Compiler<'chnk> {
         std::mem::replace(&mut self.errors, vec![])
     }
 
-    fn get_chunk(&self) -> &'chnk Chunk {
-        &self.body.chunk
+    // fn get_chunk(&self,e: &'a mut Emphereal) -> &'chnk Chunk {
+    //     &e.body.chunk
+    // }
+
+    // fn get_chunk_mut(&mut self) -> &'chnk mut Chunk {
+    //     &mut self.body.chunk
+    // }
+
+    fn get_chunk_size(&self,e: &mut Emphereal) -> usize {
+        e.body.chunk.code.len()
     }
 
-    fn get_chunk_mut(&mut self) -> &'chnk mut Chunk {
-        &mut self.body.chunk
+    fn write_code(&mut self,e: &mut Emphereal, byte: OpCode, location: Location) -> usize {
+       e.body.chunk.write_code(byte, location)
     }
 
-    fn get_chunk_size(&self) -> usize {
-        self.body.chunk.code.len()
+    fn read_last_code<'a, 'c: 'a>(&self, e: &'c mut Emphereal) -> &'a OpCode {
+        e.body.chunk.read_last_code()
     }
 
-    fn write_code(&mut self, byte: OpCode, location: Location) -> usize {
-        self.body.chunk.write_code(byte, location)
+    fn write_identifier(&mut self,e: &mut Emphereal, identifier: Box<String>) -> usize {
+        e.body.chunk.write_identifier(identifier)
     }
 
-    fn read_last_code(&self) -> &OpCode {
-        self.body.chunk.read_last_code()
+    fn change_code(&mut self,e: &mut Emphereal, offset: usize, byte: OpCode) {
+        e.body.chunk.code[offset] = byte;
     }
-
-    fn write_identifier(&mut self, identifier: Box<String>) -> usize {
-        self.body.chunk.write_identifier(identifier)
-    }
-
-    fn change_code(&mut self, offset: usize, byte: OpCode) {
-        self.body.chunk.code[offset] = byte;
-    }
-    fn get_code(&self, offset: usize) -> &OpCode {
-        &self.body.chunk.code[offset]
+    fn get_code<'a, 'c: 'a>(&self,e: &'c mut Emphereal, offset: usize) -> &'a OpCode {
+        &e.body.chunk.code[offset]
     }
 
     /** Tokens, not stack. Pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
@@ -379,9 +380,9 @@ impl<'chnk> Compiler<'chnk> {
     }
 
     /** Force stack to pop N values without usual niceties, this both emits opcode and drops off the emulated stack locals */
-    fn force_stack_pop(&mut self, n: usize) {
+    fn force_stack_pop(&mut self,e: &mut Emphereal, n: usize) {
         self.locals.truncate(self.locals.len() - n);
-        self.emit_at(OpCode::POPS(n as u8));
+        self.emit_at(e,OpCode::POPS(n as u8));
     }
 
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
@@ -497,101 +498,101 @@ impl<'chnk> Compiler<'chnk> {
     }
 
     /** emit op code at token location */
-    fn emit(&mut self, op: OpCode, location: Location) {
+    fn emit(&mut self,e: &mut Emphereal, op: OpCode, location: Location) {
         #[cfg(feature = "dev-out")]
         {
             println!("emit ... {}", op);
             // self.chunk.print_chunk();
         }
-        self.write_code(op, location);
+        self.write_code(e,op, location);
     }
 
     /** emit op code at current token location */
-    fn emit_at(&mut self, op: OpCode) {
+    fn emit_at(&mut self,e: &mut Emphereal, op: OpCode) {
         #[cfg(feature = "dev-out")]
         {
             println!("emit_at ...{}", op);
             // self.chunk.print_chunk()
         }
-        self.write_code(op, self.current_location);
+        self.write_code(e,op, self.current_location);
     }
 
     /** emit op code at current token location and return op index */
-    fn emit_index(&mut self, op: OpCode) -> usize {
+    fn emit_index(&mut self,e: &mut Emphereal, op: OpCode) -> usize {
         #[cfg(feature = "dev-out")]
         {
             println!("emit_index ... {}", op);
             // frame.chunk.print_chunk()
         }
-        self.write_code(op, self.current_location)
+        self.write_code(e,op, self.current_location)
     }
 
     /** patch the op code that specified index */
-    fn patch(&mut self, offset: usize) -> Catch {
-        let jump = self.get_chunk_size() - offset - 1;
+    fn patch(&mut self,e: &mut Emphereal, offset: usize) -> Catch {
+        let jump = self.get_chunk_size(e) - offset - 1;
         if jump > u16::MAX as usize {
-            return Err(self.error_at(SiltError::TooManyOperations));
+            return Err(self.error_at(e,SiltError::TooManyOperations));
         }
         // self.chunk.code[offset] = ((jump >> 8) & 0xff) as u8;
         // self.chunk.code[offset + 1] = (jump & 0xff) as u8;
-        let c = self.get_code(offset);
+        let c = self.get_code(e,offset);
         match c {
             OpCode::GOTO_IF_FALSE(_) => {
-                self.change_code(offset, OpCode::GOTO_IF_FALSE(jump as u16));
+                self.change_code(e,offset, OpCode::GOTO_IF_FALSE(jump as u16));
             }
             OpCode::GOTO_IF_TRUE(_) => {
-                self.change_code(offset, OpCode::GOTO_IF_TRUE(jump as u16));
+                self.change_code(e,offset, OpCode::GOTO_IF_TRUE(jump as u16));
             }
             OpCode::POP_AND_GOTO_IF_FALSE(_) => {
-                self.change_code(offset, OpCode::POP_AND_GOTO_IF_FALSE(jump as u16));
+                self.change_code(e,offset, OpCode::POP_AND_GOTO_IF_FALSE(jump as u16));
             }
-            OpCode::FORWARD(_) => self.change_code(offset, OpCode::FORWARD(jump as u16)),
-            OpCode::REWIND(_) => self.change_code(offset, OpCode::REWIND(jump as u16)),
-            OpCode::FOR_NUMERIC(_) => self.change_code(offset, OpCode::FOR_NUMERIC(jump as u16)),
+            OpCode::FORWARD(_) => self.change_code(e,offset, OpCode::FORWARD(jump as u16)),
+            OpCode::REWIND(_) => self.change_code(e,offset, OpCode::REWIND(jump as u16)),
+            OpCode::FOR_NUMERIC(_) => self.change_code(e,offset, OpCode::FOR_NUMERIC(jump as u16)),
             _ => {
-                return Err(self.error_at(SiltError::ChunkCorrupt));
+                return Err(self.error_at(e,SiltError::ChunkCorrupt));
             }
         }
         Ok(())
     }
 
-    fn emit_rewind(&mut self, start: usize) {
+    fn emit_rewind(&mut self,e: &mut Emphereal, start: usize) {
         // we base the jump off of the index we'll be at one we've written the rewind op below
-        let jump = (self.get_chunk_size() + 1) - start;
+        let jump = (self.get_chunk_size(e) + 1) - start;
         if jump > u16::MAX as usize {
-            self.error_at(SiltError::TooManyOperations);
+            self.error_at(e,SiltError::TooManyOperations);
         }
-        self.write_code(OpCode::REWIND(jump as u16), self.current_location);
+        self.write_code(e,OpCode::REWIND(jump as u16), self.current_location);
     }
 
-    fn set_label(&mut self, label: String) {
-        self.labels.insert(label, self.get_chunk_size());
+    fn set_label(&mut self,e: &mut Emphereal, label: String) {
+        self.labels.insert(label, self.get_chunk_size(e));
     }
 
-    fn identifer_constant(&mut self, ident: Box<String>) -> u8 {
-        self.write_identifier(ident) as u8
+    fn identifer_constant(&mut self,e: &mut Emphereal, ident: Box<String>) -> u8 {
+        self.write_identifier(e,ident) as u8
     }
 
     /** write to constant table  */
-    fn write_constant(&mut self, value: Value<'chnk>) -> u8 {
-        self.body.chunk.write_constant(value) as u8
+    fn write_constant<'c>(&mut self,e: &mut Emphereal<'c>, value: Value<'c>) -> u8 {
+        e.body.chunk.write_constant(value) as u8
     }
 
     /** write to constant table and emit the op code at location */
-    fn constant(&mut self, value: Value<'chnk>, location: Location) {
-        let constant = self.write_constant(value);
-        self.emit(OpCode::CONSTANT { constant }, location);
+    fn constant<'c>(&mut self,e: &'c mut Emphereal<'c>, value: Value<'c>, location: Location) {
+        let constant = self.write_constant(e,value);
+        self.emit(e,OpCode::CONSTANT { constant }, location);
     }
 
     /** write to constant table and emit the op code at the current location */
-    fn constant_at(&mut self, value: Value<'chnk>) {
-        self.constant(value, self.current_location);
+    fn constant_at<'c>(&mut self,e: &'c mut Emphereal<'c>, value: Value<'c>) {
+        self.constant(e,value, self.current_location);
     }
 
     /** write identifier to constant table, remove duplicates, and emit code */
-    fn emit_identifer_constant_at(&mut self, ident: Box<String>) {
-        let constant = self.write_identifier(ident) as u8;
-        self.emit(OpCode::CONSTANT { constant }, self.current_location);
+    fn emit_identifer_constant_at(&mut self,e: &mut Emphereal, ident: Box<String>) {
+        let constant = self.write_identifier(e,ident) as u8;
+        self.emit(e, OpCode::CONSTANT { constant }, self.current_location);
     }
 
     fn is_end(&mut self, e: &mut Emphereal) -> bool {
@@ -1126,14 +1127,14 @@ fn build_function(
             arity += 1;
             if arity > 255 {
                 // TODO we should use an arity value on the function object but let's make it only exist on compile time
-                return Err(this.error_at(SiltError::TooManyParameters));
+                return Err(this.error_at(e,SiltError::TooManyParameters));
             }
             build_param(this, e)?;
         }
     }
 
     block(this, e)?;
-    if let &OpCode::RETURN = this.read_last_code() {
+    if let &OpCode::RETURN = this.read_last_code(e) {
     } else {
         // TODO if last was semicolon we also push a nil
         if !implicit_return {
