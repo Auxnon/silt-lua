@@ -1,7 +1,9 @@
 use std::fmt::{self, Display, Formatter};
+use gc_arena::{Collect, Gc};
 
 #[allow(non_camel_case_types)]
-#[derive(Clone)]
+#[derive(Clone, Collect)]
+#[collect(no_drop)]
 pub enum OpCode {
     CONSTANT {
         constant: u8,

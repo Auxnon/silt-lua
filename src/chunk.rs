@@ -1,9 +1,11 @@
 use std::vec;
 
+use gc_arena::{Collect, Gc};
 use crate::{code::OpCode, error::Location, value::Value};
 
 // TODO benchmark/compare to using a manually resized array
-#[derive(Default)]
+#[derive(Default, Collect)]
+#[collect(no_drop)]
 pub struct Chunk<'chnk> {
     pub code: Vec<OpCode>,
     constants: Vec<Value<'chnk>>, //TODO VALUE ARRAY typedef faster?

@@ -3,12 +3,7 @@ use std::{cell::RefCell, collections::HashMap, mem::take, rc::Rc};
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
-    code::OpCode,
-    error::{ErrorTuple, SiltError, ValueTypes},
-    function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue},
-    table::Table,
-    userdata::MetaMethod,
-    value::{ExVal, Value},
+    code::OpCode, compiler::{self, Compiler}, error::{ErrorTuple, SiltError, ValueTypes}, function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue}, table::Table, userdata::MetaMethod, value::{ExVal, Value}
 };
 
 /** Convert Integer to Float, lossy for now */
@@ -192,12 +187,20 @@ impl Lua {
 
         Self { arena }
     }
-
-    pub fn run<'a>(&mut self, object: FunctionObject<'a>) -> Result<ExVal, Vec<ErrorTuple>> {
+// , object: FunctionObject<'a>
+    pub fn run<'a>(&mut self, code: &str, compiler: &mut Compiler) -> Result<ExVal, Vec<ErrorTuple>> {
         let o = self.arena.mutate_root(|mc, root| {
-            let obj = Gc::new(mc, object);
-            let ret=root.run(mc, obj);
-            ret
+            match compiler.try_compile(mc, code){
+                Ok(f)=>{
+                    f
+                }
+                Err(er)=>{
+                }
+            };
+
+            // let obj = Gc::new(mc, object);
+            // let ret=root.run(mc, obj);
+            // ret
         });
         // o
         Ok(ExVal::Nil)

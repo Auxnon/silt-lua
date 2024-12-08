@@ -134,7 +134,7 @@ impl<'frame> CallFrame<'frame> {
     }
 }
 #[derive(Default, Collect)]
-#[collect(require_static)]
+#[collect(no_drop)]
 pub struct FunctionObject<'chnk> {
     pub is_script: bool,
     pub name: Option<String>,
