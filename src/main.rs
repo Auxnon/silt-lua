@@ -290,12 +290,10 @@ fn main() {
     // o.chunk.print_chunk(None);
     // compiler.print_errors();
 
-    let compiler = Compiler::new();
-    let object = compiler.compile(source_in);
-
-    let mut vm = Lua::new();
-    vm.load_standard_library();
-    match vm.run(source_in) {
+    let mut compiler = Compiler::new();
+    let mut lua = Lua::new_with_standard();
+    match lua.run(source_in, &mut compiler)
+ {
         Ok(o) => {
             println!("-----------------");
             println!(">> {}", o);

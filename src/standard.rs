@@ -1,6 +1,6 @@
-use crate::{lua::Lua, value::Value};
+use crate::{prelude::VM, value::Value};
 
-pub fn clock<'lua>(_: &mut Lua, _: Vec<Value>) -> Value<'lua> {
+pub fn clock<'lua>(_: &mut VM, _: Vec<Value>) -> Value<'lua> {
     Value::Number(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -9,7 +9,7 @@ pub fn clock<'lua>(_: &mut Lua, _: Vec<Value>) -> Value<'lua> {
     )
 }
 
-pub fn print<'lua>(_: &mut Lua, args: Vec<Value>) -> Value<'lua> {
+pub fn print<'lua>(_: &mut VM, args: Vec<Value>) -> Value<'lua> {
     let s = args
         .iter()
         .map(|v| v.to_string())

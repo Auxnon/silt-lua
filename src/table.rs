@@ -27,9 +27,9 @@ impl<'v> Table<'v> {
         self.data.insert(key, value);
     }
 
-    pub fn get<'f>(&'v self, key: &Value<'f>) -> Option<&Value<'f>>
-    where
-        'v: 'f,
+    pub fn get<'f>(&self, key: &Value<'v>) -> Option<&Value<'v>>
+    // where
+    //     'v: 'f,
     {
         self.data.get(key)
     }

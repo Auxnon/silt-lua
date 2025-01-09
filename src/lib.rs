@@ -1,6 +1,6 @@
 use compiler::Compiler;
 use error::ErrorTuple;
-use lua::VM;
+use lua::{Lua, VM};
 use value::{ExVal, Value};
 
 mod chunk;
@@ -23,18 +23,21 @@ pub mod vec;
 use wasm_bindgen::prelude::*;
 
 fn simple(source: &str) -> ExVal {
-    let mut vm = VM::new();
-    vm.load_standard_library();
     let mut compiler = Compiler::new();
-    let v = match compiler.try_compile(source) {
-        Ok(obj) => match vm.run(obj) {
-            Ok(v) => v,
-            Err(e) => ExVal::String(Box::new(e[0].to_string())), //runtime error
-        },
-        Err(e) => ExVal::String(Box::new(e[0].to_string())), //compile time error
-    };
-    drop(vm);
-    v
+    let mut lua = Lua::new_with_standard();
+    match lua.run(source, &mut compiler) {
+        Ok(v) => v,
+        Err(e) => ExVal::String(Box::new(e[0].to_string())),
+    }
+    // let v = match compiler.try_compile(source) {
+    //     Ok(obj) => match vm.run(obj) {
+    //         Ok(v) => v,
+    //         Err(e) => ExVal::String(Box::new(e[0].to_string())), //runtime error
+    //     },
+    //     Err(e) => ExVal::String(Box::new(e[0].to_string())), //compile time error
+    // };
+    // drop(vm);
+    // v
 
     // let e = compiler.get_errors();
     // if e.len() > 0 {
@@ -44,16 +47,23 @@ fn simple(source: &str) -> ExVal {
 }
 
 fn complex(source: &str) -> Result<ExVal, ErrorTuple> {
-    let mut vm = VM::new();
-    vm.load_standard_library();
     let mut compiler = Compiler::new();
-    match compiler.try_compile(source) {
-        Ok(obj) => match vm.run(obj) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(e.get(0).unwrap().clone()),
-        },
+    let mut lua = Lua::new_with_standard();
+    match lua.run(source, &mut compiler) {
+        Ok(v) => Ok(v),
         Err(e) => Err(e.get(0).unwrap().clone()),
     }
+    //
+    // let mut vm = VM::new();
+    // vm.load_standard_library();
+    // let mut compiler = Compiler::new();
+    // match compiler.try_compile(source) {
+    //     Ok(obj) => match vm.run(obj) {
+    //         Ok(v) => Ok(v),
+    //         Err(e) => Err(e.get(0).unwrap().clone()),
+    //     },
+    //     Err(e) => Err(e.get(0).unwrap().clone()),
+    // }
 }
 
 // #[wasm_bindgen]

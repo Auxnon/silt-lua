@@ -11,7 +11,7 @@ use hashbrown::HashMap;
 use crate::vec::{Vec2, Vec3};
 use crate::{
     error::{SiltError, ValueTypes},
-    function::{Closure, FunctionObject, NativeFunction},
+    function::{Closure, FunctionObject, NativeFunction, WrappedFn},
     lua::VM,
     table::Table,
     token::Operator,
@@ -67,7 +67,7 @@ pub enum Value<'gc> {
     Function(Gc<'gc,FunctionObject<'gc>>), // closure: Environment,
     Closure(Gc<'gc, Closure<'gc>>),
     // Func(fn(Vec<Value>) -> Value)
-    NativeFunction(Gc<'gc, NativeFunction<'gc>>),
+    NativeFunction(Gc<'gc,  WrappedFn<'gc>>),
     UserData(Gc<'gc, dyn UserData<'gc>>),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),

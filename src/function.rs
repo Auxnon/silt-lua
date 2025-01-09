@@ -1,6 +1,6 @@
-use std::{cell::RefCell, fmt::Display, rc::Rc};
+use std::{cell::RefCell, fmt::Display, ptr::NonNull, rc::Rc};
 
-use gc_arena::{Collect, Gc};
+use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
 use crate::{chunk::Chunk, code::OpCode, lua::VM, value::Value};
 
@@ -63,7 +63,7 @@ impl<'frame> CallFrame<'frame> {
         unsafe { &*self.local_stack.add(index as usize) }
     }
 
-    pub fn get_val_mut(&self, index: u8) -> &mut Value<'frame> {
+    pub fn get_val_mut(&mut self, index: u8) -> &mut Value<'frame> {
         unsafe { &mut *self.local_stack.add(index as usize) }
     }
 
@@ -181,7 +181,20 @@ impl Display for FunctionObject<'_> {
 //     pub function: NativeFunction<'static>,
 // }
 
-pub type NativeFunction<'lua> = fn(&mut VM, Vec<Value>) -> Value<'lua>;
+pub type NativeFunction<'lua> = fn(&mut VM<'lua>, Vec<Value<'lua>>) -> Value<'lua>;
+
+pub struct WrappedFn<'gc> {
+    pub f: NativeFunction<'gc>,
+}
+
+unsafe impl<'gc> Collect for WrappedFn<'gc> {
+    fn needs_trace() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+}
 
 // impl NativeObject {
 //     pub fn new(name: &'static str, function: NativeFunction) -> Self {
@@ -193,13 +206,13 @@ pub type NativeFunction<'lua> = fn(&mut VM, Vec<Value>) -> Value<'lua>;
 #[collect(no_drop)]
 pub struct Closure<'lua> {
     pub function: Gc<'lua, FunctionObject<'lua>>,
-    pub upvalues: Vec<Gc<'lua, RefCell<UpValue<'lua>>>>,
+    pub upvalues: Vec<Gc<'lua, RefLock<UpValue<'lua>>>>,
 }
 
 impl<'chnk> Closure<'chnk> {
     pub fn new(
         function: Gc<'chnk, FunctionObject<'chnk>>,
-        upvalues: Vec<Gc<'chnk, RefCell<UpValue<'chnk>>>>,
+        upvalues: Vec<Gc<'chnk, RefLock<UpValue<'chnk>>>>,
     ) -> Self {
         Self { function, upvalues }
     }
@@ -214,7 +227,10 @@ pub struct UpValue<'lua> {
     // is_open: bool,
     // obj?
     pub index: u8,
+    /** the value */
     closed: Value<'lua>,
+    // pub location: NonNull<Value<'lua>>,
+    /** the pointer to the closed value */
     pub location: *mut Value<'lua>,
     // pub value: *mut Value, // TODO oshould be a RC mutex of the value ideally
 }
@@ -263,6 +279,13 @@ impl<'lua> UpValue<'lua> {
     // pub fn set(&mut self, value: Value) {
     //     unsafe { *self.value = value };
     // }
+}
+
+unsafe impl<'lua> Collect for UpValue<'lua> {
+    fn trace(&self, cc: &gc_arena::Collection) {
+        // location is just a helper, it's a pointer to closed, is that stupid? Probably.
+        self.closed.trace(cc);
+    }
 }
 
 impl Display for UpValue<'_> {

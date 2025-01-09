@@ -654,7 +654,7 @@ impl Compiler {
         }
     }
 
-    fn compile<'c>(&mut self, mc: &'c Mutation<'c>, source: &'c str) -> FunctionObject<'c> {
+    fn compile<'c>(&mut self, mc: &'c Mutation<'c>, source: &str) -> FunctionObject<'c> {
         #[cfg(feature = "dev-out")]
         {
             let lexer = Lexer::new(source.to_owned());
@@ -696,7 +696,7 @@ impl Compiler {
     pub fn try_compile<'c>(
         &mut self,
         mc: &'c Mutation<'c>,
-        source: &'c str,
+        source: &str,
     ) -> Result<FunctionObject<'c>, Vec<ErrorTuple>> {
         let obj = self.compile(mc, source);
         if obj.chunk.is_valid() {
