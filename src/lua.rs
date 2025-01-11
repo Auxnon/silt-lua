@@ -215,9 +215,8 @@ impl<'gc> Lua {
         Self { arena }
     }
 
-    // , object: FunctionObject<'a>
-    pub fn run<'a>(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
-        self.arena.mutate_root(|mc, root| {
+    pub fn run(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
+        let out = self.arena.mutate_root(|mc, root| {
             match compiler.try_compile(mc, code) {
                 Ok(f) => {
                     // let v: &VM=root.borrow();
@@ -227,15 +226,29 @@ impl<'gc> Lua {
                     res
                 }
                 Err(er) => Err(er),
-            };
+            }
 
             // let obj = Gc::new(mc, object);
             // let ret=root.run(mc, obj);
             // ret
         });
         // o
-        Ok(ExVal::Nil)
+        // Ok(ExVal::Nil)
+        out
     }
+
+    // fn fun<'a>(chunk: FunctionObject<'a>) -> FunctionObject<'a> {
+    //     chunk
+    // }
+    //
+    // pub fn run_chunk<'a>(&mut self, chunk: FunctionObject<'static>) -> LuaResult {
+    //     self.arena.mutate_root(|mc, root| {
+    //         let f = Self::fun(chunk);
+    //         let res: LuaResult = root.borrow_mut().run(mc, Gc::new(mc, f));
+    //         res
+    //     });
+    //     Ok(ExVal::Nil)
+    // }
 }
 
 #[derive(Collect)]

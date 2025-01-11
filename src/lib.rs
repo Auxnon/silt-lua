@@ -110,7 +110,7 @@ mod tests {
         complex,
         error::SiltError,
         function::FunctionObject,
-        lua::VM,
+        lua::{Lua, VM},
         prelude::ValueTypes,
         simple,
         token::{Operator, Token},
@@ -256,15 +256,17 @@ mod tests {
         let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
-        let mut vm = VM::new();
-        match vm.execute(Rc::new(tester)) {
-            Ok(v) => {
-                assert_eq!(v, ExVal::Number(-0.5));
-            }
-            Err(e) => {
-                panic!("Test should not fail with error: {}", e)
-            }
-        }
+        let mut lua = Lua::new();
+        // lua.run_chunk
+        // match vm.execute(Rc::new(tester)) {
+        //     Ok(v) => {
+        //         assert_eq!(v, ExVal::Number(-0.5));
+        //     }
+        //     Err(e) => {
+        //         panic!("Test should not fail with error: {}", e)
+        //     }
+        // }
+        panic!(" uh oh we can't eval this chunk!");
     }
 
     #[test]
