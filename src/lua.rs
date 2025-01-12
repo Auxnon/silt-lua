@@ -539,7 +539,8 @@ impl<'gc> VM<'gc> {
             }]),
         };
 
-        Ok(ExVal::Nil)
+        // Ok(ExVal::Nil)
+        out
     }
 
     pub fn execute(
