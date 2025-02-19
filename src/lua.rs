@@ -556,9 +556,9 @@ impl<'gc> VM<'gc> {
         #[cfg(feature = "dev-out")]
         object.chunk.print_chunk(None);
         let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr() as *mut Value);
-        // self.body = object.clone();
+        self.body = object;
         // *root = new_body(mc, object.clone());
-        let closure = Gc::new(mc, Closure::new(object.clone(), vec![]));
+        let closure = Gc::new(mc, Closure::new(object, vec![]));
 
         let mut frame = CallFrame::new(closure, 0);
         frame.ip = object.chunk.code.as_ptr();

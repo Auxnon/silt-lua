@@ -1,7 +1,7 @@
 use std::vec;
 
-use gc_arena::{Collect, Gc};
 use crate::{code::OpCode, error::Location, value::Value};
+use gc_arena::{Collect, Gc};
 
 // TODO benchmark/compare to using a manually resized array
 #[derive(Default, Collect)]
@@ -118,11 +118,7 @@ impl<'chnk> Chunk<'chnk> {
             println!(":{:02} | {} {}", l.1, c, constant);
             last = l.0;
         }
-        println!("constants: {}", self.constants.len());
-        self.constants.iter().for_each(|c| {
-            print!("  {},", c);
-        });
-        println!();
+        self.print_constants();
         self.constants.iter().for_each(|c| {
             if let Value::Function(f) = c {
                 f.chunk.print_chunk(match &f.name {
