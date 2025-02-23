@@ -2,7 +2,13 @@ use std::{cell::RefCell, fmt::Display, ptr::NonNull, rc::Rc};
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
-use crate::{chunk::Chunk, code::OpCode, lua::VM, value::Value};
+use crate::{
+    chunk::Chunk,
+    code::OpCode,
+    error::SiltError,
+    lua::{Ephemeral, VM},
+    value::{ExVal, Value},
+};
 
 /////////////
 ///
@@ -152,8 +158,69 @@ impl<'chnk> FunctionObject<'chnk> {
             upvalue_count: 0,
         }
     }
+
     pub fn set_chunk(&mut self, chunk: Chunk<'chnk>) {
         self.chunk = chunk;
+    }
+
+    pub(crate) fn push_closure<'a>(
+        func: Gc<'a, FunctionObject<'a>>,
+        vm: &mut VM<'a>,
+        frame: &mut CallFrame<'a>,
+        ep: &mut Ephemeral<'_, 'a>,
+    ) -> Result<(), SiltError> {
+        // f.upvalue_count
+        let mut closure = Closure::new(func, Vec::with_capacity(func.upvalue_count as usize));
+        // let reserved_value = self.reserve();
+        if func.upvalue_count >= 0 {
+            let next_instruction = frame.get_next_n_codes(func.upvalue_count as usize);
+            for i in 0..func.upvalue_count {
+                // devout!(" | {}", next_instruction[i as usize]);
+                if let OpCode::REGISTER_UPVALUE { index, neighboring } =
+                    next_instruction[i as usize]
+                {
+                    closure.upvalues.push(if neighboring {
+                        // insert at i
+                        vm.capture_upvalue(ep, index, frame)
+                        // closure.upvalues.insert(
+                        //     i as usize,
+                        //     frame.function.upvalues[index as usize].clone(),
+                        // );
+                        // *slots.add(index) ?
+                    } else {
+                        frame.function.upvalues[index as usize].clone()
+                    });
+                } else {
+                    println!(
+                        "next instruction is not CLOSE_UPVALUE {}",
+                        next_instruction[i as usize]
+                    );
+                    unreachable!()
+                }
+            }
+
+            vm.push(ep, Value::Closure(Gc::new(ep.mc, closure)));
+        } else {
+            // devout!("closure is of type {}", closure.function.function.name);
+            return Err(SiltError::VmRuntimeError);
+        }
+        frame.shift(func.upvalue_count as usize);
+        Ok(())
+    }
+
+    pub(crate) fn call_closure<'gc, 'a: 'gc>(
+        clos: &'a Gc<Closure<'gc>>,
+        frames: &'a mut Vec<CallFrame<'gc>>,
+        stack_count: usize,
+        arity: usize,
+        mut frame: &'a mut CallFrame<'gc>,
+        ep: &mut Ephemeral<'_, 'a>,
+    ) {
+        let frame_top = unsafe { ep.ip.sub(arity + 1) };
+        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1);
+        frames.push(new_frame);
+        frame = frames.last_mut().unwrap();
+        frame.local_stack = frame_top;
     }
 }
 
@@ -181,7 +248,7 @@ impl Display for FunctionObject<'_> {
 //     pub function: NativeFunction<'static>,
 // }
 
-pub type NativeFunction<'lua> = fn(&mut VM<'lua>, Vec<Value<'lua>>) -> Value<'lua>;
+pub type NativeFunction<'lua> = fn(&mut VM<'lua>, &Mutation<'lua>, Vec<Value<'lua>>) -> Value<'lua>;
 
 pub struct WrappedFn<'gc> {
     pub f: NativeFunction<'gc>,

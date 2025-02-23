@@ -1,13 +1,19 @@
 use std::collections::HashMap;
 
-use gc_arena::Collect;
+use gc_arena::{Collect, Gc};
 
-use crate::value::{ExVal, Value};
+use crate::{
+    error::SiltError,
+    prelude::FunctionObject,
+    userdata::MetaMethod,
+    value::{ExVal, Value},
+};
 
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct Table<'v> {
     data: HashMap<Value<'v>, Value<'v>>,
+    meta: Option<Value<'v>>,
     // data: RefLock<HashMap<String, String>>,
     /** replicate standard lua behavior */
     counter: i64,
@@ -18,6 +24,7 @@ impl<'v> Table<'v> {
     pub fn new(id: usize) -> Self {
         Table {
             data: HashMap::new(),
+            meta: None,
             counter: 0,
             id,
         }
@@ -28,7 +35,7 @@ impl<'v> Table<'v> {
     }
 
     pub fn get<'f>(&self, key: &Value<'v>) -> Option<&Value<'v>>
-    // where
+// where
     //     'v: 'f,
     {
         self.data.get(key)
@@ -71,6 +78,36 @@ impl<'v> Table<'v> {
             key.force_to_int(self.counter);
         }
         self.data.insert(key, value);
+    }
+
+    pub fn set_metatable(&mut self, metatable: Value<'v>) {
+        println!("setting metatable: {}", metatable);
+        self.meta = Some(metatable);
+    }
+
+    pub fn get_metatable(&self) -> Value<'v> {
+        self.meta.clone().unwrap_or(Value::Nil)
+    }
+
+    pub fn by_meta_method(
+        &self,
+        method: MetaMethod,
+    ) -> Result<Gc<'v, FunctionObject<'v>>, SiltError> {
+        if let Some(meta) = &self.meta {
+            if let Value::Table(t) = meta {
+                if let Some(func) = t
+                    .borrow()
+                    .get(&Value::String(Box::new(method.to_table_key().to_string())))
+                {
+                    return if let Value::Function(f) = func {
+                        Ok(f.clone())
+                    } else {
+                        Err(SiltError::MetaMethodNotCallable(method))
+                    };
+                }
+            }
+        }
+        return Err(SiltError::MetaMethodMissing(method));
     }
 }
 

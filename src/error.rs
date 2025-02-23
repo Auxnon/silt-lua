@@ -1,3 +1,5 @@
+use std::fmt::write;
+
 use crate::{
     token::{Operator, Token},
     userdata::MetaMethod,
@@ -50,6 +52,8 @@ pub enum SiltError {
     EvalNoInteger(ValueTypes),
     NotCallable(String),
     // Return(Value),
+    MetaMethodMissing(MetaMethod),
+    MetaMethodNotCallable(MetaMethod),
 
     //vm
     VmCompileError,
@@ -108,7 +112,6 @@ impl std::fmt::Display for SiltError {
             ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
             Self::TooManyParameters => write!(f, "Too many parameters, limited to 255"),
-            // Self::Return(v) => write!(f, "~Return {}~", v),
             Self::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
             Self::NotANumber(s) => write!(f, "Not a number: {}", s),
             Self::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),
@@ -168,7 +171,12 @@ impl std::fmt::Display for SiltError {
             Self::VmRuntimeError => write!(f, "Runtime error for chunk"),
             Self::VmCorruptConstant => write!(f, "Constant store corrupted"),
             Self::Unknown => write!(f, "Unknown error"),
-            // Self::ResReadInOwnInit => write!(f, "Cannot read variable in its own initializer"),
+            SiltError::MetaMethodMissing(meta_method) => {
+                write!(f, "Meta method missing for '{}'", meta_method)
+            }
+            SiltError::MetaMethodNotCallable(meta_method) => {
+                write!(f, "Value for meta method '{}' is not callable", meta_method)
+            }
         }
     }
 }

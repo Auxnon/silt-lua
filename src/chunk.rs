@@ -36,6 +36,7 @@ impl<'chnk> Chunk<'chnk> {
     }
 
     pub fn write_constant(&mut self, value: Value<'chnk>) -> usize {
+        // println!("add constant (size is {})", self.constants.len());
         self.constants.push(value);
         // TODO limit to u8
         self.constants.len() - 1
@@ -62,6 +63,7 @@ impl<'chnk> Chunk<'chnk> {
     }
 
     pub fn get_constant(&self, index: u8) -> &Value<'chnk> {
+        // println!("get constant (size is {})", self.constants.len());
         &self.constants[index as usize]
     }
 

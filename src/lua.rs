@@ -144,18 +144,19 @@ macro_rules! num_op_str{
 }
 
 macro_rules! binary_op_push {
-    ($src:ident, $ep:ident, $op:tt, $opp:tt) => {{
+    ($src:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $op:tt, $opp:tt) => {{
+        $src.body.chunk.print_constants();
         // TODO test speed of this vs 1 pop and a mutate
         let r = $src.pop($ep);
         let l = $src.pop($ep);
-        let res = binary_op!($src, l, $op, r, $opp);
+        let res = binary_op!($src, $ep, $frame, $frames, $frame_count, l, $op, r, $opp);
 
         $src.push($ep, res);
     }};
 }
 
 macro_rules! binary_op  {
-    ($lua:ident, $l:ident, $op:tt, $r:ident, $opp:tt) => {
+    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $l:ident, $op:tt, $r:ident, $opp:tt) => {
         match ($l, $r) {
             (Value::Number(left), Value::Number(right)) => (Value::Number(left $op right)),
             (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
@@ -166,6 +167,9 @@ macro_rules! binary_op  {
             (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp)?,
             (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
             (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
+            (Value::Table(left), _ ) => {
+                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $op, right, $opp)
+            },
             // TODO userdata
             (Value::UserData(left), c) => {
                 // if let Some(f) = left.by_meta_method($lua,$opp, $r) {
@@ -184,6 +188,29 @@ macro_rules! binary_op  {
             (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
         }
     };
+}
+
+macro_rules! table_meta_op {
+    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $left:ident, $op:tt, $right:ident, $opp:tt) => {{
+        let a = $left.borrow().by_meta_method(MetaMethod::$opp);
+        if let Ok(f) = a {
+            FunctionObject::push_closure(f, $lua, $frame, $ep)?;
+            let arity: u8 = 1;
+            let val = $lua.peekn($ep, arity);
+            if let Value::Closure(c) = val {
+                const arity: usize = 1;
+                let frame_top = unsafe { $ep.ip.sub(arity + 1) };
+                let new_frame = CallFrame::new(c.clone(), $lua.stack_count - arity - 1);
+                $frames.push(new_frame);
+                $frame = $frames.last_mut().unwrap();
+                $frame.local_stack = frame_top;
+                $frame_count += 1;
+            }
+            Value::Nil
+        } else {
+            return Err(SiltError::VmRuntimeError); // TODO
+        }
+    }};
 }
 
 type LuaArena = Arena<Rootable![VM<'_>]>;
@@ -292,9 +319,9 @@ pub struct VM<'gc> {
 type ObjectPtr<'gc, T> = Gc<'gc, RefLock<T>>;
 type Body<'gc> = Gc<'gc, RefLock<FunctionObject<'gc>>>;
 
-struct Ephemeral<'a, 'T> {
-    ip: *mut Value<'T>,
-    mc: &'a Mutation<'T>,
+pub(crate) struct Ephemeral<'a, 'T> {
+    pub(crate) ip: *mut Value<'T>,
+    pub(crate) mc: &'a Mutation<'T>,
 }
 
 impl<'a, 'T> Ephemeral<'a, 'T> {
@@ -369,7 +396,7 @@ impl<'gc> VM<'gc> {
         }
     }
 
-    fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
+    pub(crate) fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
         devout!(" | push: {}", value);
         unsafe { ep.ip.write(value) };
         ep.ip = unsafe { ep.ip.add(1) };
@@ -531,6 +558,7 @@ impl<'gc> VM<'gc> {
         object: Gc<'gc, FunctionObject<'gc>>,
     ) -> Result<ExVal, Vec<ErrorTuple>> {
         // let object = self.compiler.compile(source.to_owned());
+        // object.chunk.print_chunk(name)
         let out = match self.execute(mc, object.into()) {
             Ok(v) => Ok(v),
             Err(e) => Err(vec![ErrorTuple {
@@ -690,9 +718,9 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::DEFINE_LOCAL { constant } => todo!(),
-                OpCode::ADD => binary_op_push!(self,ep, +, Add),
-                OpCode::SUB => binary_op_push!(self,ep,-, Sub),
-                OpCode::MULTIPLY => binary_op_push!(self,ep,*, Mul),
+                OpCode::ADD => binary_op_push!(self, ep, frame, frames, frame_count, +, Add),
+                OpCode::SUB => binary_op_push!(self, ep, frame, frames, frame_count, -, Sub),
+                OpCode::MULTIPLY => binary_op_push!(self, ep, frame, frames, frame_count, *, Mul),
                 OpCode::DIVIDE => {
                     let right = self.pop(ep);
                     let left = self.pop(ep);
@@ -859,43 +887,46 @@ impl<'gc> VM<'gc> {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
                     devout!(" | => {}", value);
                     if let Value::Function(f) = value {
-                        // f.upvalue_count
-                        let mut closure =
-                            Closure::new(f.clone(), Vec::with_capacity(f.upvalue_count as usize));
-                        // let reserved_value = self.reserve();
-                        if f.upvalue_count >= 0 {
-                            let next_instruction = frame.get_next_n_codes(f.upvalue_count as usize);
-                            for i in 0..f.upvalue_count {
-                                devout!(" | {}", next_instruction[i as usize]);
-                                if let OpCode::REGISTER_UPVALUE { index, neighboring } =
-                                    next_instruction[i as usize]
-                                {
-                                    closure.upvalues.push(if neighboring {
-                                        // insert at i
-                                        self.capture_upvalue(ep, index, frame)
-                                        // closure.upvalues.insert(
-                                        //     i as usize,
-                                        //     frame.function.upvalues[index as usize].clone(),
-                                        // );
-                                        // *slots.add(index) ?
-                                    } else {
-                                        frame.function.upvalues[index as usize].clone()
-                                    });
-                                } else {
-                                    println!(
-                                        "next instruction is not CLOSE_UPVALUE {}",
-                                        next_instruction[i as usize]
-                                    );
-                                    unreachable!()
-                                }
-                            }
+                        //     // f.upvalue_count
+                        //     let mut closure =
+                        //         Closure::new(f.clone(), Vec::with_capacity(f.upvalue_count as usize));
+                        //     // let reserved_value = self.reserve();
+                        //     if f.upvalue_count >= 0 {
+                        //         let next_instruction = frame.get_next_n_codes(f.upvalue_count as usize);
+                        //         for i in 0..f.upvalue_count {
+                        //             devout!(" | {}", next_instruction[i as usize]);
+                        //             if let OpCode::REGISTER_UPVALUE { index, neighboring } =
+                        //                 next_instruction[i as usize]
+                        //             {
+                        //                 closure.upvalues.push(if neighboring {
+                        //                     // insert at i
+                        //                     self.capture_upvalue(ep, index, frame)
+                        //                     // closure.upvalues.insert(
+                        //                     //     i as usize,
+                        //                     //     frame.function.upvalues[index as usize].clone(),
+                        //                     // );
+                        //                     // *slots.add(index) ?
+                        //                 } else {
+                        //                     frame.function.upvalues[index as usize].clone()
+                        //                 });
+                        //             } else {
+                        //                 println!(
+                        //                     "next instruction is not CLOSE_UPVALUE {}",
+                        //                     next_instruction[i as usize]
+                        //                 );
+                        //                 unreachable!()
+                        //             }
+                        //         }
+                        //
+                        //         self.push(ep, Value::Closure(Gc::new(ep.mc, closure)));
+                        //     } else {
+                        //         // devout!("closure is of type {}", closure.function.function.name);
+                        //         return Err(SiltError::VmRuntimeError);
+                        //     }
+                        //     frame.shift(f.upvalue_count as usize);
+                        // }
 
-                            self.push(ep, Value::Closure(Gc::new(ep.mc, closure)));
-                        } else {
-                            // devout!("closure is of type {}", closure.function.function.name);
-                            return Err(SiltError::VmRuntimeError);
-                        }
-                        frame.shift(f.upvalue_count as usize);
+                        FunctionObject::push_closure(f.clone(), self, frame, ep)?;
                     }
                 }
 
@@ -922,23 +953,37 @@ impl<'gc> VM<'gc> {
                     // unsafe { *upvalue.value = value };
                 }
 
-                OpCode::CALL(param_count) => {
-                    let value = self.peekn(ep, *param_count);
+                OpCode::CALL(arity) => {
+                    let value = self.peekn(ep, *arity);
                     devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
                             // TODO this logic is identical to function, but to make this a function causes some lifetime issues. A macro would work but we're already a little macro heavy aren't we?
-                            let frame_top = unsafe { ep.ip.sub((*param_count as usize) + 1) };
-                            let new_frame = CallFrame::new(
-                                c.clone(),
-                                self.stack_count - (*param_count as usize) - 1,
-                            );
+                            // let frame_top = unsafe { ep.ip.sub((*param_count as usize) + 1) };
+                            // let new_frame = CallFrame::new(
+                            //     c.clone(),
+                            //     self.stack_count - (*param_count as usize) - 1,
+                            // );
+                            // frames.push(new_frame);
+                            // frame = frames.last_mut().unwrap();
+                            //
+                            // frame.local_stack = frame_top;
+
+                            // let frame_top = unsafe { ep.ip.sub((*arity as usize) + 1) };
+                            // let new_frame =
+                            //     CallFrame::new(c.clone(), self.stack_count - (*arity as usize) - 1);
+                            // frames.push(new_frame);
+                            // frame = frames.last_mut().unwrap();
+                            // frame.local_stack = frame_top;
+                            let arity = *arity as usize;
+
+                            let frame_top = unsafe { ep.ip.sub(arity + 1) };
+                            let new_frame = CallFrame::new(c.clone(), self.stack_count - arity - 1);
                             frames.push(new_frame);
                             frame = frames.last_mut().unwrap();
-
                             frame.local_stack = frame_top;
-                            devout!("top of frame stack {}", unsafe { &*frame.local_stack });
                             frame_count += 1;
+                            devout!("top of frame stack {}", unsafe { &*frame.local_stack });
                         }
                         Value::Function(func) => {
                             // let frame_top =
@@ -961,9 +1006,9 @@ impl<'gc> VM<'gc> {
                         }
                         Value::NativeFunction(_) => {
                             // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
-                            let mut args = self.popn(ep, *param_count + 1);
+                            let mut args = self.popn(ep, *arity + 1);
                             if let Value::NativeFunction(f) = args.remove(0) {
-                                let res = (f.f)(self, args);
+                                let res = (f.f)(self, ep.mc, args);
                                 // self.popn_drop(*param_count);
                                 self.push(ep, res);
                             } else {
@@ -1148,7 +1193,7 @@ impl<'gc> VM<'gc> {
         new_frame
     }
 
-    fn capture_upvalue(
+    pub(crate) fn capture_upvalue(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
         index: u8,
@@ -1382,6 +1427,7 @@ impl<'gc> VM<'gc> {
     pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
         self.register_native_function(mc, "clock", crate::standard::clock);
         self.register_native_function(mc, "print", crate::standard::print);
+        self.register_native_function(mc, "setmetatable", crate::standard::print);
     }
 
     fn print_raw_stack(&self) {

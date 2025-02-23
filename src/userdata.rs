@@ -1,6 +1,6 @@
 use crate::{
     code::OpCode,
-    prelude::{VM, LuaError},
+    prelude::{LuaError, VM},
     value::{FromLua, MultiValue, ToLua, Value},
 };
 
@@ -193,6 +193,40 @@ impl Into<MetaMethod> for OpCode {
             OpCode::DIVIDE => MetaMethod::Div,
             // OpCode::MODULO => MetaMethod::Mod,
             _ => unimplemented!(),
+        }
+    }
+}
+
+impl MetaMethod {
+    pub fn to_table_key(&self) -> &'static str {
+        match self {
+            MetaMethod::Add => "__add",
+            MetaMethod::Sub => "__sub",
+            MetaMethod::Mul => "__mul",
+            MetaMethod::Div => "__div",
+            MetaMethod::Mod => "__mod",
+            MetaMethod::Pow => "__pow",
+            MetaMethod::Unm => "__unm",
+            MetaMethod::IDiv => "__idiv",
+            MetaMethod::BAnd => "__band",
+            MetaMethod::BOr => "__bor",
+            MetaMethod::BXor => "__bxor",
+            MetaMethod::BNot => "__bnot",
+            MetaMethod::Shl => "__shl",
+            MetaMethod::Shr => "__shr",
+            MetaMethod::Concat => "__concat",
+            MetaMethod::Len => "__len",
+            MetaMethod::Eq => "__eq",
+            MetaMethod::Lt => "__lt",
+            MetaMethod::Le => "__le",
+            MetaMethod::Gt => "__gt",
+            MetaMethod::Ge => "__ge",
+            MetaMethod::Index => "__index",
+            MetaMethod::NewIndex => "__newindex",
+            MetaMethod::Call => "__call",
+            MetaMethod::ToString => "__tostring",
+            MetaMethod::Pairs => "__pairs",
+            MetaMethod::IPairs => "__ipairs",
         }
     }
 }
