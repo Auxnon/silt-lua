@@ -40,7 +40,7 @@ silt = [
     "bang",
     "under-number",
     "global",
-    "implicit-return",
+"implicit-return",
     "short-declare",
     "vectors",
 ]

@@ -32,8 +32,7 @@ pub fn setmetatable<'lua>(vm: &mut VM, mc: &Mutation<'lua>, args: Vec<Value<'lua
     // let metatable = args[1].clone();
     match &args[0] {
         Value::Table(t) => t.borrow_mut(mc).set_metatable(args[1].clone()),
-        Value::String(_s)=>{
-        },
+        Value::String(_s) => {}
         _ => {
             println!("cant set metatable on this non table"); // TODO
         }

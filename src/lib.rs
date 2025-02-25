@@ -66,20 +66,22 @@ fn complex(source: &str) -> Result<ExVal, ErrorTuple> {
     // }
 }
 
-// #[wasm_bindgen]
-// extern "C" {
-//     pub fn jprintln(s: &str);
-// }
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    pub fn jprintln(s: &str);
+}
 
-// #[wasm_bindgen]
-// pub fn run(source: &str) -> String {
-//     let mut vm = Lua::new();
-//     vm.load_standard_library();
-//     match vm.run(source) {
-//         Ok(v) => v.to_string(),
-//         Err(e) => e[0].to_string(),
-//     }
-// }
+// #[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn run(source: &str) -> String {
+    let mut compiler = Compiler::new();
+    let mut lua = Lua::new_with_standard();
+    match lua.run(source, &mut compiler) {
+        Ok(v) => v.to_string(),
+        Err(e) => e[0].to_string(),
+    }
+}
 
 macro_rules! valeq {
     ($source:literal, $val:expr) => {
