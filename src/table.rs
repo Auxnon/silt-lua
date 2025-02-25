@@ -4,7 +4,7 @@ use gc_arena::{Collect, Gc};
 
 use crate::{
     error::SiltError,
-    prelude::FunctionObject,
+    prelude::{Closure, FunctionObject},
     userdata::MetaMethod,
     value::{ExVal, Value},
 };
@@ -89,18 +89,19 @@ impl<'v> Table<'v> {
         self.meta.clone().unwrap_or(Value::Nil)
     }
 
-    pub fn by_meta_method(
-        &self,
-        method: MetaMethod,
-    ) -> Result<Gc<'v, FunctionObject<'v>>, SiltError> {
+    pub fn by_meta_method(&self, method: MetaMethod) -> Result<Value<'v>, SiltError> {
+        println!("meta: {}", self.meta.clone().unwrap_or(Value::Nil));
         if let Some(meta) = &self.meta {
             if let Value::Table(t) = meta {
+                let s = method.to_table_key().to_string();
+                println!("looking for meta method: {}", s);
                 if let Some(func) = t
                     .borrow()
                     .get(&Value::String(Box::new(method.to_table_key().to_string())))
                 {
-                    return if let Value::Function(f) = func {
-                        Ok(f.clone())
+                    println!("found meta method: {}", func);
+                    return if let Value::Closure(_) = func {
+                        Ok(func.clone())
                     } else {
                         Err(SiltError::MetaMethodNotCallable(method))
                     };

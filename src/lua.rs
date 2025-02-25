@@ -1,16 +1,6 @@
-use std::{
-    borrow::{Borrow, BorrowMut},
-    cell::RefCell,
-    collections::HashMap,
-    fmt::{Debug, Display},
-    mem::take,
-    rc::Rc,
-};
+use std::{borrow::BorrowMut, collections::HashMap, mem::take};
 
-use gc_arena::{
-    lock::{GcRefLock, RefLock},
-    Arena, Collect, Gc, Mutation, Rootable,
-};
+use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
     code::OpCode,
@@ -167,8 +157,8 @@ macro_rules! binary_op  {
             (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp)?,
             (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
             (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
-            (Value::Table(left), _ ) => {
-                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $op, right, $opp)
+            (Value::Table(left), rr ) => {
+                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $l, rr, $opp)
             },
             // TODO userdata
             (Value::UserData(left), c) => {
@@ -191,29 +181,43 @@ macro_rules! binary_op  {
 }
 
 macro_rules! table_meta_op {
-    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $left:ident, $op:tt, $right:ident, $opp:tt) => {{
-        let a = $left.borrow().by_meta_method(MetaMethod::$opp);
-        if let Ok(f) = a {
-            FunctionObject::push_closure(f, $lua, $frame, $ep)?;
-            let arity: u8 = 1;
-            let val = $lua.peekn($ep, arity);
-            if let Value::Closure(c) = val {
-                const arity: usize = 1;
-                let frame_top = unsafe { $ep.ip.sub(arity + 1) };
-                let new_frame = CallFrame::new(c.clone(), $lua.stack_count - arity - 1);
-                $frames.push(new_frame);
-                $frame = $frames.last_mut().unwrap();
-                $frame.local_stack = frame_top;
-                $frame_count += 1;
+    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $table:ident, $left:ident, $right:ident, $opp:tt) => {{
+        let a = $table.borrow().by_meta_method(MetaMethod::$opp);
+        match a {
+            Ok(f) => {
+                /*
+                 * we push our metamethod onto the stack followed by the Table and the operand
+                 * value.
+                 * Notice in a regular call our frame_top is +1 of arity and our snapshot is -1 of
+                 * arity, but here we dont do that. So... this should be tested better. 
+                 * This feels dirty, but I wrote this very sleep deprived and it works so this is a
+                 * future me problem.
+                 */
+                $lua.push($ep, f);
+                $lua.push($ep, Value::Table($table));
+                // $lua.push($ep,$right);
+                let arity: u8 = 1;
+                let val = $lua.peekn($ep, arity);
+                println!(" we attempt to call {}", val);
+                if let Value::Closure(c) = val {
+                    const ARITY: usize = 2;
+                    let frame_top = unsafe { $ep.ip.sub(ARITY) };
+                    let new_frame = CallFrame::new(c.clone(), $lua.stack_count - ARITY);
+                    $frames.push(new_frame);
+                    $frame = $frames.last_mut().unwrap();
+                    $frame.local_stack = frame_top;
+                    $frame_count += 1;
+
+                    $lua.print_stack();
+                }
+                // Value::Nil
+                $right
             }
-            Value::Nil
-        } else {
-            return Err(SiltError::VmRuntimeError); // TODO
+            Err(e) => return Err(e),
         }
     }};
 }
 
-type LuaArena = Arena<Rootable![VM<'_>]>;
 type LuaResult = Result<ExVal, Vec<ErrorTuple>>;
 pub struct Lua {
     arena: Arena<Rootable![VM<'_>]>,
@@ -737,6 +741,20 @@ impl<'gc> VM<'gc> {
                         }
                         (Value::Integer(left), Value::Number(right)) => {
                             self.push(ep, Value::Number(left as f64 / right))
+                        }
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self,
+                                ep,
+                                frame,
+                                frames,
+                                frame_count,
+                                table,
+                                left,
+                                rr,
+                                Div
+                            );
+                            self.push(ep, v);
                         }
                         (l, r) => {
                             return Err(SiltError::ExpOpValueWithValue(
@@ -1427,7 +1445,8 @@ impl<'gc> VM<'gc> {
     pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
         self.register_native_function(mc, "clock", crate::standard::clock);
         self.register_native_function(mc, "print", crate::standard::print);
-        self.register_native_function(mc, "setmetatable", crate::standard::print);
+        self.register_native_function(mc, "setmetatable", crate::standard::setmetatable);
+        self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
     }
 
     fn print_raw_stack(&self) {
@@ -1443,7 +1462,7 @@ impl<'gc> VM<'gc> {
 
     pub fn print_stack(&self) {
         println!("=== Stack ({}) ===", self.stack_count);
-        print!("[");
+        print!("░");
         let mut c = 0;
         for i in self.stack.iter() {
             c += 1;
@@ -1454,10 +1473,10 @@ impl<'gc> VM<'gc> {
             if s == "nil" {
                 print!("_");
             } else {
-                print!("{} ", i);
+                print!("▒ {} ", i);
             }
         }
-        print!("]");
-        println!("---");
+        println!("▒░");
+        // println!("---");
     }
 }

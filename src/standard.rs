@@ -12,6 +12,7 @@ pub fn clock<'lua>(_: &mut VM, _: &Mutation<'lua>, _: Vec<Value>) -> Value<'lua>
 }
 
 pub fn print<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
+    println!("we caled print");
     let s = args
         .iter()
         .map(|v| v.to_string())
@@ -25,11 +26,17 @@ pub fn print<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Va
     Value::Nil
 }
 
-pub fn setmetatable<'lua>(_: &mut VM, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
+pub fn setmetatable<'lua>(vm: &mut VM, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
+    // println!("we caled setmetatable");
     // let t=args.
-    let metatable = args[1].clone();
-    if let Value::Table(t) = args[0] {
-        t.borrow_mut(mc).set_metatable(args[1].clone());
+    // let metatable = args[1].clone();
+    match &args[0] {
+        Value::Table(t) => t.borrow_mut(mc).set_metatable(args[1].clone()),
+        Value::String(_s)=>{
+        },
+        _ => {
+            println!("cant set metatable on this non table"); // TODO
+        }
     }
     Value::Nil
 }

@@ -84,9 +84,9 @@ impl<'chnk> Chunk<'chnk> {
     pub fn print_constants(&self) {
         println!("constants: {}", self.constants.len());
         self.constants.iter().for_each(|c| {
-            print!("  {},", c);
+            print!("▐ {} ", c);
         });
-        println!();
+        println!("▐");
     }
 
     pub fn print_chunk(&self, name: Option<String>) {
