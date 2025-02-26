@@ -64,11 +64,11 @@ pub enum Value<'gc> {
     Table(Gc<'gc, RefLock<Table<'gc>>>),
     // Array // TODO lua 5 has an actual array type chosen contextually, how much faster can we make a table by using it?
     // Boxed()
-    Function(Gc<'gc,FunctionObject<'gc>>), // closure: Environment,
+    Function(Gc<'gc, FunctionObject<'gc>>), // closure: Environment,
     Closure(Gc<'gc, Closure<'gc>>),
     // Func(fn(Vec<Value>) -> Value)
-    NativeFunction(Gc<'gc,  WrappedFn<'gc>>),
-    UserData(Gc<'gc, dyn UserData<'gc>>),
+    NativeFunction(Gc<'gc, WrappedFn<'gc>>),
+    UserData(Gc<'gc, dyn UserData>),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
@@ -304,6 +304,28 @@ impl Clone for Value<'_> {
 impl Hash for Value<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
+    }
+}
+
+impl From<i64> for Value<'_> {
+    fn from(value: i64) -> Self {
+        Value::Integer(value)
+    }
+}
+
+impl From<f64> for Value<'_> {
+    fn from(value: f64) -> Self {
+        Value::Number(value)
+    }
+}
+impl From<()> for Value<'_> {
+    fn from(_: ()) -> Self {
+        Value::Nil
+    }
+}
+impl From<String> for Value<'_> {
+    fn from(value: String) -> Self {
+        Value::String(Box::new(value))
     }
 }
 

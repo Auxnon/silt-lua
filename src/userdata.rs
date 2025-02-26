@@ -1,23 +1,141 @@
+use std::collections::HashMap;
+
 use crate::{
     code::OpCode,
     prelude::{LuaError, VM},
-    value::{FromLua, MultiValue, ToLua, Value},
+    value::{MultiValue,  Value},
 };
 
-pub trait UserData<'lua> {
-    fn get_type(&self) -> String;
-    fn to_string(&self) -> String;
+pub trait UserData {
+    /// unique name for userdata to distinguish it from others in lookup
+    fn get_type(&self) -> &str;
+    /// lua's stringify used if metamethod not set, defaults to get_type output
+    fn to_string(&self) -> &str {
+        self.get_type()
+    }
     // fn add_methods<'lua, T: UserDataFields<'lua, Self>>(&self, _methods: &mut T);
-    fn by_meta_method(
-        &self,
-        lua: &mut VM,
-        method: MetaMethod,
-        inputs: Value<'lua>,
-    ) -> Result<Value<'lua>>;
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(_methods: &mut M)
+    where
+        Self: Sized,
+    {
+    }
+    fn add_fields<'lua, F: UserDataFields<'lua, Self>>(_fields: &mut F)
+    where
+        Self: Sized{}
+
+    // fn by_meta_method(
+    //     &self,
+    //     lua: &mut VM,
+    //     method: MetaMethod,
+    //     inputs: Value<'lua>,
+    // ) -> Result<Value<'lua>>;
     //dyn ToLuaMulti<'lua>;
     // fn get_meta_methods(&self) -> Option<MetaMethods> {
     //     None
     // }
+}
+
+// trait IV<'v> = Into<Value<'v>>;
+
+pub struct UserDataMethodsPayload<'v> {
+    methods: HashMap<Value<'v>, Value<'v>>,
+}
+
+pub trait UserDataFields<'v, S> {
+    fn add_field_method_get<F, R>(&mut self, _name: &str, _closure: F)
+    where
+        R: Into<Value<'v>>,
+        F: Fn(VM<'v>, S) -> Result<R>,
+    {
+    }
+
+    fn add_field_method_set<T, F, R>(&mut self, _name: &str, _closure: F)
+    where
+        T: Into<Value<'v>>,
+        R: Into<Value<'v>>,
+        F: Fn(VM<'v>, S, T) -> Result<R>,
+    {
+    }
+}
+
+// type IV<'v> = Into<Value<'v>>;
+pub trait UserDataMethods<'v, S> {
+    fn add_meta_method<T, M, R>(&mut self, name: &str, closure: M)
+    where
+        T: Into<Value<'v>>,
+        R: Into<Value<'v>>,
+        M: Fn(VM<'v>, S, T) -> Result<R>;
+
+    fn add_method_mut<T, M, R>(&mut self, name: &str, closure: &dyn Fn(VM<'v>, S, T) -> Result<R>)
+    where
+        T: Into<Value<'v>>,
+        R: Into<Value<'v>>,
+        M: Fn(VM<'v>, S, T) -> Result<T>;
+}
+
+pub struct UserDataFieldsPayload<'v> {
+    getters: HashMap<Value<'v>, Value<'v>>,
+    setters: HashMap<Value<'v>, Value<'v>>,
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+pub struct Ent {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+impl Ent {
+    pub fn get_id(&self) -> i64 {
+        0
+    }
+}
+
+impl UserData for Ent {
+    fn get_type(&self) -> &str {
+        "ent"
+    }
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_meta_method("__tostring", |_, this, _: ()| {
+            Ok(format!("[entity {}]", this.get_id()))
+        });
+        methods.add_meta_method("__concat", |_, this, _: ()| {
+            Ok(format!("[entity {}]", this.get_id()))
+        });
+        // methods.add_method_mut("pos", |_, this, p: (f64, f64, f64)| {
+        //     this.x = p.0;
+        //     this.y = p.1;
+        //     this.z = p.2;
+        //
+        //     Ok(())
+        // });
+    }
+
+    fn add_fields<'lua, F: UserDataFields<'lua, Self>>(fields: &mut F) {
+        fields.add_field_method_get("x", |_, this| Ok(this.x));
+        fields.add_field_method_set("x", |_, mut this, x: f64| {
+            this.x = x;
+            Ok(Value::Nil)
+        });
+
+        fields.add_field_method_get("y", |_, this| Ok(this.y));
+        fields.add_field_method_set("y", |_, mut this, y: f64| {
+            this.y = y;
+            Ok(Value::Nil)
+        });
+
+        fields.add_field_method_get("z", |_, this| Ok(this.z));
+        fields.add_field_method_set("z", |_, mut this, z: f64| {
+            this.z = z;
+            Ok(Value::Nil)
+        });
+        //
+        //     // fields.add_field_method_get("rx", |_, this| Ok(this.rot_x));
+        //     // fields.add_field_method_get("ry", |_, this| Ok(this.rot_y));
+        //     // fields.add_field_method_get("rz", |_, this| Ok(this.rot_z));
+    }
 }
 
 // pub struct MetaMethods {
@@ -51,10 +169,10 @@ pub trait UserData<'lua> {
 /// A specialized `Result` type used by `mlua`'s API.
 pub type Result<T> = std::result::Result<T, LuaError>;
 
-pub(crate) type Callback<'lua, 'a> =
-    Box<dyn Fn(&'lua VM, MultiValue<'lua>) -> Result<MultiValue<'lua>> + 'a>;
-pub trait MaybeSend {}
-impl<T> MaybeSend for T {}
+// pub(crate) type Callback<'lua, 'a> =
+//     Box<dyn Fn(&'lua VM, MultiValue<'lua>) -> Result<MultiValue<'lua>> + 'a>;
+// pub trait MaybeSend {}
+// impl<T> MaybeSend for T {}
 
 /// Shamelessly lifted from the mlua crate
 // pub trait UserDataFields<'lua, T: UserData> {
