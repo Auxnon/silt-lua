@@ -1,5 +1,5 @@
-use std::fmt::{self, Display, Formatter};
 use gc_arena::{Collect, Gc};
+use std::fmt::{self, Display, Formatter};
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Collect)]
