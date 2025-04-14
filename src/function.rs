@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fmt::Display, ptr::NonNull, rc::Rc};
+use std::{cell::RefCell, fmt::Display, ops::Deref, ptr::NonNull, rc::Rc};
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
@@ -253,6 +253,20 @@ pub type NativeFunction<'lua> = fn(&mut VM<'lua>, &Mutation<'lua>, Vec<Value<'lu
 pub struct WrappedFn<'gc> {
     pub f: NativeFunction<'gc>,
 }
+
+impl<'gc> Deref for WrappedFn<'gc>{
+    type Target = NativeFunction<'gc>;
+    fn deref(&self) -> &Self::Target {
+        &self.f
+    }
+}
+
+// impl WrappedFn{
+//     pub fn call(&self, vm: &mut VM<'lua>, m: &Mutation<'lua>, vals: Vec<Value<'lua>>)-> Value{
+//         self.f(vm,m,vals)
+//     }
+// }
+
 
 unsafe impl<'gc> Collect for WrappedFn<'gc> {
     fn needs_trace() -> bool

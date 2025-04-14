@@ -26,7 +26,7 @@ pub fn print<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Va
     Value::Nil
 }
 
-pub fn setmetatable<'lua>(vm: &mut VM, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
+pub fn setmetatable<'lua>(_: &mut VM, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
     // println!("we caled setmetatable");
     // let t=args.
     // let metatable = args[1].clone();
@@ -46,4 +46,10 @@ pub fn getmetatable<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>
     } else {
         Value::Nil
     }
+}
+
+pub fn select<'lua>(_: &mut VM, _: &Mutation<'lua>, _args: Vec<Value<'lua>>) -> Value<'lua> {
+    // Value::Nil
+    todo!()
+    
 }

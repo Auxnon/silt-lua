@@ -1906,6 +1906,7 @@ fn unary(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: b
     Ok(())
 }
 
+/// Walk down multiple table fields if necessary table1.table2.table3.field
 fn table_indexer(
     this: &mut Compiler,
     f: FnRef,

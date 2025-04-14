@@ -1,14 +1,14 @@
-use std::{borrow::BorrowMut, collections::HashMap, mem::take};
+use std::{any::Any, borrow::BorrowMut, collections::HashMap, mem::take};
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
     code::OpCode,
-    compiler::{self, Compiler},
+    compiler::Compiler,
     error::{ErrorTuple, SiltError, ValueTypes},
     function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue, WrappedFn},
     table::Table,
-    userdata::MetaMethod,
+    userdata::{FieldsLookup, MetaMethod, MethodsLookup},
     value::{ExVal, Value},
 };
 
@@ -19,11 +19,12 @@ macro_rules! int2f {
     };
 }
 
-macro_rules! intr2f {
-    ($left:ident) => {
-        *$left as f64
-    };
-}
+// macro_rules! intr2f {
+//     ($left:ident) => {
+//         *$left as f64
+//     };
+// }
+
 macro_rules! devout {
     ($($arg:tt)*) => {
         #[cfg(feature = "dev-out")]
@@ -95,15 +96,15 @@ macro_rules! int_op_str{
     }
 }
 
-macro_rules! op_error {
-    ($left:ident $op:ident $right:ident ) => {{
-        return Err(SiltError::ExpOpValueWithValue(
-            $left,
-            MetaMethod::$op,
-            $right,
-        ));
-    }};
-}
+// macro_rules! op_error {
+//     ($left:ident $op:ident $right:ident ) => {{
+//         return Err(SiltError::ExpOpValueWithValue(
+//             $left,
+//             MetaMethod::$op,
+//             $right,
+//         ));
+//     }};
+// }
 
 macro_rules! str_op_num{
     ($left:ident $op:tt $right:ident $enu:ident)=>{
@@ -162,18 +163,20 @@ macro_rules! binary_op  {
             },
             // TODO userdata
             (Value::UserData(left), c) => {
+                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $l, rr, $opp)
                 // if let Some(f) = left.by_meta_method($lua,$opp, $r) {
                 //     f(left, right)?
                 // } else {
                 //     op_error!(left.to_error(), $opp, right.to_error())
                 // }
-                if let Ok(f) = left.by_meta_method($lua, MetaMethod::$opp, c) {
-                    f
-                } else {
-                    return Err(SiltError::VmRuntimeError); // TODO
-                    // return Err(SiltError::ExpOpValueWithValue(ValueTypes::UserData, MetaMethod::$opp, c.to_error()));
-                    // op_error!(ValueTypes::UserData $opp right.to_error())
-                }
+                // if let Ok(f) = left.by_meta_method($lua, MetaMethod::$opp, c) {
+                //     f
+                // } else {
+                //     return Err(SiltError::VmRuntimeError); // TODO
+                //     // return Err(SiltError::ExpOpValueWithValue(ValueTypes::UserData, MetaMethod::$opp, c.to_error()));
+                //     // op_error!(ValueTypes::UserData $opp right.to_error())
+                // }
+                // Value::Nil
             }
             (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
         }
@@ -189,7 +192,7 @@ macro_rules! table_meta_op {
                  * we push our metamethod onto the stack followed by the Table and the operand
                  * value.
                  * Notice in a regular call our frame_top is +1 of arity and our snapshot is -1 of
-                 * arity, but here we dont do that. So... this should be tested better. 
+                 * arity, but here we dont do that. So... this should be tested better.
                  * This feels dirty, but I wrote this very sleep deprived and it works so this is a
                  * future me problem.
                  */
@@ -297,7 +300,7 @@ pub struct VM<'gc> {
     stack_count: usize,
     /** Next empty location */
     // stack_top: *mut Value,
-    globals: Gc<'gc, RefLock<HashMap<String, Value<'gc>>>>, // TODO store strings as identifer usize and use that as key
+    pub globals: Gc<'gc, RefLock<HashMap<String, Value<'gc>>>>, // TODO store strings as identifer usize and use that as key
     // original CI code uses linked list, most recent closed upvalue is the first and links to previous closed values down the chain
     // allegedly performance of a linked list is heavier then an array and shifting values but is that true here or the opposite?
     // resizing a sequential array is faster then non sequential heap items, BUT since we'll USUALLY resolve the upvalue on the top of the list we're derefencing once to get our Upvalue vs an index lookup which is slightly slower.
@@ -311,6 +314,10 @@ pub struct VM<'gc> {
     // gray_stack: Vec<Value>,
     // TODO temporary solution to a hash id
     table_counter: usize,
+    // meta_lookup: HashMap<String, MetaMethod>,
+    // string_meta: Option<Gc<Table>>,
+    pub userdata_methods_lookup: Gc<'gc, MethodsLookup<'gc>>,
+    pub userdata_fields_lookup: Gc<'gc, FieldsLookup>,
 }
 
 // #[derive(Copy, Clone, Collect)]
@@ -397,6 +404,8 @@ impl<'gc> VM<'gc> {
             globals: Gc::new(mc, RefLock::new(HashMap::new())), //Gc::new(mc, gtable),
             open_upvalues: vec![],
             table_counter: 1,
+            userdata_fields_lookup: Gc::new(mc, FieldsLookup::new()),
+            userdata_methods_lookup: Gc::new(mc, MethodsLookup::new()),
         }
     }
 
@@ -1067,7 +1076,24 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::TABLE_SET { depth } => {
                     let value = self.pop(ep);
-                    self.operate_table(ep, *depth, Some(value))?;
+                    match value {
+                        Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
+                        Value::UserData(u) => {
+                            let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
+                            let key = u.as_ref().type_id();
+                            match self.userdata_fields_lookup.0.get(&key) {
+                                Some(v) => match v.borrow_mut().getters.get(&field.to_string()) {
+                                    Some(getter) => {
+                                        let v = getter(self, &*u);
+                                        Ok(())
+                                    }
+                                    None => Err(SiltError::UDNoFieldRef),
+                                },
+                                None => Err(SiltError::UDNoInitField),
+                            }
+                        }
+                        _ => Err(SiltError::MetaMethodMissing(MetaMethod::Index)),
+                    }?;
                 }
                 // OpCode::TABLE_SET_BY_CONSTANT { constant } => {
                 //     let value = self.pop();

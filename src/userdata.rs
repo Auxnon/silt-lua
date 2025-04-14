@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{any::TypeId, collections::HashMap, marker::PhantomData};
 
 use crate::{
     code::OpCode,
@@ -6,22 +6,27 @@ use crate::{
     value::{MultiValue, Value},
 };
 
+type LuaResult<'v> = Result<Value<'v>>;
+
 pub trait UserData {
     /// unique name for userdata to distinguish it from others in lookup
-    fn get_type() -> &'static str;
+    fn get_type() -> &'static str
+    where
+        Self: Sized;
     /// lua's stringify used if metamethod not set, defaults to get_type output
-    fn to_string(&self) -> String {
-        Self::get_type().to_string()
-    }
-    fn populate() {}
+    fn to_stringy(&self) -> String;
+    //     let u=UserData::get_type();
+    //         'test'.to_string()
+    // }
+    // fn populate() {}
 
     // fn add_methods<'lua, T: UserDataFields<'lua, Self>>(&self, _methods: &mut T);
-    fn add_methods<'v, M: UserDataMethods<'v,Self>>(_methods: &mut M)
+    fn add_methods<'v, M: UserDataMethods<'v, Self>>(_methods: &mut M)
     where
         Self: Sized,
     {
     }
-    fn add_fields<'v, F: UserDataFields<'v,Self>>(_fields: &mut F)
+    fn add_fields<'v, F: UserDataFields<'v, Self>>(_fields: &mut F)
     where
         Self: Sized,
     {
@@ -39,33 +44,58 @@ pub trait UserData {
     // }
 }
 
+
 // trait IV<'v> = Into<Value<'v>>;
 // type ValueResult = Result<Value<'v>>
-// trait CC =  Fn(VM<'v>, S, impl Into<Value<'v>>) -> Result<Value<'v>>;
-// type Closer = impl Fn(VM<'v>, S, impl Into<Value<'v>>) -> Result<Value<'v>>;
+// trait CC =  Fn(VM<'v>, S, impl Into<Value<'v>>) -> LuaResult<'v>
+// type Closer = impl Fn(VM<'v>, S, impl Into<Value<'v>>) -> LuaResult<'v>
 // type C =  impl Fn(VM<'v>, S, Value<'v>) -> Result<Value<'v>>
 
+struct FromVal<'a>(Value<'a>);
+
+impl<'v> From<()> for FromVal<'v> {
+    fn from(_: ()) -> FromVal<'v> {
+        FromVal(Value::Nil)
+    }
+}
+
+impl From<i64> for FromVal<'_> {
+    fn from(value: i64) -> Self {
+        FromVal(Value::Integer(value))
+    }
+}
+
+impl Into<i64> for FromVal<'_> {
+    fn into(self) -> i64 {
+        match self.0 {
+            Value::Integer(i) => i,
+            _ => 0,
+        }
+    }
+}
 pub trait UserDataMethods<'v, T: UserData> {
-    fn add_meta_method<M>(&mut self, name: &str, closure: M) where
-    M: Fn(VM<'v>, &T, Value<'v>) -> Result<Box<Value<'v>>>;
-    
-    fn add_method_mut<M>(&mut self, name: &str, closure: M) where 
-    M: Fn(VM<'v>, &T, Value<'v>) -> Result<Box<Value<'v>>>;
-    
+    fn add_meta_method<M>(&mut self, name: &str, closure: M)
+    where
+        M: Fn(VM<'v>, &T, Value<'v>) -> LuaResult<'v>;
+
+    fn add_method_mut<M>(&mut self, name: &str, closure: M)
+    where
+        M: Fn(VM<'v>, &mut T, Value<'v>) -> LuaResult<'v>;
 }
 pub trait UserDataFields<'v, T: UserData> {
-fn add_field_method_get<F>(&mut self, name: &str, closure: F) where
-    F: Fn(VM<'v>, &T, Value<'v>) -> Result<Box<Value<'v>>>;
-    
-fn add_field_method_set<F>(&mut self, name: &str, closure: F) where 
-    F: Fn(VM<'v>, &T, Value<'v>) -> Result<Box<Value<'v>>>;
-    
+    fn add_field_method_get<F>(&mut self, name: &str, closure: F)
+    where
+        F: Fn(VM<'v>, &T) -> LuaResult<'v>;
+
+    fn add_field_method_set<F>(&mut self, name: &str, closure: F)
+    where
+        F: Fn(VM<'v>, &mut T, Value<'v>) -> LuaResult<'v>;
 }
 // macro_rules! Closur {
 //     () => {impl Fn(VM<'v>, S, Value<'v>) -> Result<Value<'v>>};
 // }
 
-struct UserDataMethodsStruct{
+struct UserDataMethodsStruct {
     methods: HashMap<String, fn()>,
 }
 
@@ -79,41 +109,48 @@ impl UserDataMethodsStruct
             methods: HashMap::new(),
         }
     }
-
 }
 
-struct UserDataFieldsStruct{
-    setters: HashMap<String, fn()>,
-    getters: HashMap<String, fn()>,
+struct UserDataFieldsStruct {
+    pub setters: HashMap<String,  for<'v> fn(&VM<'v>, &mut dyn UserData, Value<'v>) -> LuaResult<'v>>,
+    pub getters: HashMap<String, for<'v> fn(&VM<'v>, &dyn UserData) -> LuaResult<'v>>,
 }
 
-impl <'v>UserDataFieldsStruct{
+impl<'v> UserDataFieldsStruct {
     pub fn new() -> Self {
         Self {
             getters: HashMap::new(),
             setters: HashMap::new(),
         }
     }
-
 }
 
-impl <'v,T: UserData> UserDataMethods <'v,T>for  UserDataMethodsStruct{
-    fn add_meta_method<M>(&mut self, _name: &str, _closure: M) where
-    M: Fn(VM<'v>, &T, Value<'v>) -> Result<Box<Value<'v>>>,
-    {}
+type FromVal2<'a> = dyn Into<Value<'a>>;
 
-    fn add_method_mut<M>(&mut self, _name: &str, _closure: M) where 
-    M: Fn(VM<'v>, &T, Value<'v>) -> Result<Box<Value<'v>>>,
-    {}
-}
-
-impl <'v,T: UserData> UserDataFields <'v,T>for UserDataFieldsStruct{
-    fn add_field_method_get<F>(&mut self, _name: &str, _closure: F) where
-        F: Fn(VM<'v>, &T, Value<'v>) -> Result<Box<Value<'v>>> {
+impl<'v, T: UserData> UserDataMethods<'v, T> for UserDataMethodsStruct {
+    fn add_meta_method<M>(&mut self, _name: &str, _closure: M)
+    where
+        M: Fn(VM<'v>, &T, Value<'v>) -> Result<Value<'v>>,
+    {
     }
-    fn add_field_method_set<F>(&mut self, _name: &str, _closure: F) where 
-        F: Fn(VM<'v>, &T, Value<'v>) -> Result<Box<Value<'v>>> {
-        
+
+    fn add_method_mut<M>(&mut self, _name: &str, _closure: M)
+    where
+        M: Fn(VM<'v>, &mut T, Value<'v>) -> Result<Value<'v>>,
+    {
+    }
+}
+
+impl<'v, T: UserData> UserDataFields<'v, T> for UserDataFieldsStruct {
+    fn add_field_method_get<F>(&mut self, _name: &str, _closure: F)
+    where
+        F: Fn(VM<'v>, &T) -> Result<Value<'v>>,
+    {
+    }
+    fn add_field_method_set<F>(&mut self, _name: &str, _closure: F)
+    where
+        F: Fn(VM<'v>, &mut T, Value<'v>) -> Result<Value<'v>>,
+    {
     }
 }
 
@@ -197,12 +234,22 @@ impl <'v,T: UserData> UserDataFields <'v,T>for UserDataFieldsStruct{
 //     }
 // }
 
-pub struct MethodsLookup<'v>  (HashMap<&'v str, UserDataMethodsStruct>);
+pub struct MethodsLookup<'v>( pub HashMap<&'v str, UserDataMethodsStruct>);
 // pub type FieldsLookup<'v> = HashMap<&'v str, UserDataFieldMap<'v>>;
-pub struct FieldsLookup<'v >(HashMap<&'v str, UserDataFieldsStruct>);
+pub struct FieldsLookup( pub HashMap<TypeId, UserDataFieldsStruct>);
 
-unsafe impl<'v> gc_arena::Collect for FieldsLookup<'v> 
-{
+impl MethodsLookup<'_> {
+    pub fn new()->Self{
+        Self(HashMap::new())
+    }
+}
+impl FieldsLookup {
+    pub fn new()->Self{
+        Self(HashMap::new())
+    }
+}
+
+unsafe impl<'v> gc_arena::Collect for FieldsLookup {
     fn needs_trace() -> bool
     where
         Self: Sized,
@@ -211,8 +258,7 @@ unsafe impl<'v> gc_arena::Collect for FieldsLookup<'v>
     }
 }
 
-unsafe impl<'v> gc_arena::Collect for MethodsLookup<'v> 
-{
+unsafe impl<'v> gc_arena::Collect for MethodsLookup<'v> {
     fn needs_trace() -> bool
     where
         Self: Sized,
@@ -221,17 +267,18 @@ unsafe impl<'v> gc_arena::Collect for MethodsLookup<'v>
     }
 }
 
-
-pub(crate) fn build_userdata_maps<'v, U: UserData>(methods: &mut MethodsLookup, fields: &mut FieldsLookup<'v>)
-{
-    let key = U::get_type();
+pub(crate) fn build_userdata_maps<'v, U: UserData +'static>(
+    methods: &mut MethodsLookup,
+    fields: &mut FieldsLookup,
+) {
+    let key = TypeId::of::<U>().clone();
     let mut f = UserDataFieldsStruct::new();
     U::add_fields(&mut f);
 
     let mut m = UserDataMethodsStruct::new();
     U::add_methods(&mut m);
-    methods.0.insert(key, m);
-    fields.0.insert(key,f);
+    // methods.0.insert(key, m);
+    fields.0.insert(key, f);
     // fields.insert(key, f);
 }
 
@@ -274,19 +321,26 @@ impl UserData for Ent {
     fn get_type() -> &'static str {
         "ent"
     }
-    fn add_methods<'v,M: UserDataMethods<'v,Self>>(methods: &mut M) {
+    fn to_stringy(&self) -> String {
+        "ent".to_string()
+    }
+    fn add_methods<'v, M: UserDataMethods<'v, Self>>(methods: &mut M) {
         // let test=|_, this, _: ()| {
         //     Ok(format!("[entity {}]", this.get_id()))
         // };
         // let f: FU<Ent> = |_, this| {
         //     Ok(format!("[entity {}]", this.get_id()))
         // }
-        methods.add_meta_method("__tostring", |vm, this, val| {
-            // vm.
-            Ok(Box::new(format!("[entity {}]", this.get_id()).into()))
+        let val = Value::Integer(5);
+        //  : dyn Fn(Value)->i64
+
+        let v = |val: i64| val * 4;
+        let r = v(*val);
+        methods.add_meta_method("__tostring", |vm, this: &Self, val: Value| {
+            Ok(format!("[entity {}]", this.get_id()).into())
         });
-        methods.add_meta_method("__concat", |_, this, _: ()| {
-            Ok(format!("[entity {}]", this.get_id()))
+        methods.add_meta_method("__concat", |_, this, _: Value| {
+            Ok(format!("[entity {}]", this.get_id()).into())
         });
         // methods.add_method_mut("pos", |_, this, p: (f64, f64, f64)| {
         //     this.x = p.0;
@@ -297,22 +351,22 @@ impl UserData for Ent {
         // });
     }
 
-    fn add_fields<'v, F: UserDataFields<'v,Self>>(fields: &mut F) {
-        fields.add_field_method_get("x", |_, this| Ok(this.x));
-        fields.add_field_method_set("x", |_, mut this, x: f64| {
-            this.x = x;
+    fn add_fields<'v, F: UserDataFields<'v, Self>>(fields: &mut F) {
+        fields.add_field_method_get("x", |_, this| Ok(this.x.into()));
+        fields.add_field_method_set("x", |_, mut this, x: Value| {
+            this.x = x.into();
             Ok(Value::Nil)
         });
 
-        fields.add_field_method_get("y", |_, this| Ok(this.y));
-        fields.add_field_method_set("y", |_, mut this, y: f64| {
-            this.y = y;
+        fields.add_field_method_get("y", |_, this| Ok(this.y.into()));
+        fields.add_field_method_set("y", |_, mut this, y: Value| {
+            this.y = y.into();
             Ok(Value::Nil)
         });
 
-        fields.add_field_method_get("z", |_, this| Ok(this.z));
-        fields.add_field_method_set("z", |_, mut this, z: f64| {
-            this.z = z;
+        fields.add_field_method_get("z", |_, this| Ok(this.z.into()));
+        fields.add_field_method_set("z", |_, mut this, z: Value| {
+            this.z = z.into();
             Ok(Value::Nil)
         });
         //

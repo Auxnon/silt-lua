@@ -55,6 +55,12 @@ pub enum SiltError {
     MetaMethodMissing(MetaMethod),
     MetaMethodNotCallable(MetaMethod),
 
+    // Userdata errors
+    UDNoInitField,
+    UDNoInitMethod,
+    UDNoFieldRef,
+    UDNoMethodRef,
+
     //vm
     VmCompileError,
     VmRuntimeError,

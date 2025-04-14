@@ -1,10 +1,12 @@
 use std::{
+    borrow::Borrow,
     cell::RefCell,
     hash::{Hash, Hasher},
+    ops::Deref,
     rc::Rc,
 };
 
-use gc_arena::{lock::RefLock, Collect, Gc};
+use gc_arena::{barrier::Unlock, lock::RefLock, Collect, Gc};
 use hashbrown::HashMap;
 
 #[cfg(feature = "vectors")]
@@ -45,10 +47,15 @@ macro_rules! binary_self_op {
     };
 }
 
+trait Testo {
+    fn yes(&self);
+}
+
 /** Lua value enum representing different data types within a VM */
-#[derive(Collect)]
+#[derive(Collect, Default)]
 #[collect(no_drop)]
 pub enum Value<'gc> {
+    #[default]
     Nil,
     Integer(i64),
     Number(f64),
@@ -90,6 +97,20 @@ pub enum ExVal {
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
     Vec2(Vec2),
+}
+
+pub enum MultiVal<'a, 'b> {
+    Vecced(&'a [Value<'b>]),
+    Single(&'a Value<'b>),
+}
+
+impl<'a, 'b> Into<&'a Value<'b>> for MultiVal<'a,'b> {
+    fn into(self) -> &'a Value<'b> {
+        match self {
+            MultiVal::Vecced(a) => if !a.is_empty(){&a[0]}else{&Value::Nil},
+            MultiVal::Single(v) => v,
+        }
+    }
 }
 
 impl Eq for ExVal {}
@@ -174,12 +195,14 @@ impl std::fmt::Display for Value<'_> {
             Value::NativeFunction(_) => write!(f, "native_function"),
             Value::Closure(c) => write!(f, "=>({})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
-            Value::Table(t) => write!(f, "{}", t.borrow().to_string()),
-            Value::UserData(u) => write!(f, "{}", u.to_string()),
+            Value::Table(_t) => write!(f, "{}", 't'),
+                Value::UserData(u) => write!(f, "{}", u.to_stringy()),
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => write!(f, "{}", v),
             #[cfg(feature = "vectors")]
             Value::Vec2(v) => write!(f, "{}", v),
+            // Value::UserData(u) => write!(f, "{}", v),
+
         }
     }
 }
@@ -289,12 +312,6 @@ impl PartialEq for Value<'_> {
     }
 }
 
-impl Default for Value<'_> {
-    fn default() -> Self {
-        Value::Nil
-    }
-}
-
 impl Clone for Value<'_> {
     fn clone(&self) -> Self {
         self.clone()
@@ -313,19 +330,60 @@ impl From<i64> for Value<'_> {
     }
 }
 
-impl From<f64> for Value<'_> {
-    fn from(value: f64) -> Self {
-        Value::Number(value)
+impl Into<i64> for Value<'_> {
+    fn into(self) -> i64 {
+        match self {
+            Value::Integer(i) => i,
+            _ => 0,
+        }
     }
 }
-impl From<()> for Value<'_> {
-    fn from(_: ()) -> Self {
+
+impl Deref for Value<'_> {
+    type Target = i64;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Value::Integer(i) => &i,
+            _ => &0,
+        }
+    }
+}
+
+// impl From<f64> for Value<'_> {
+//     fn from(value: f64) -> Self {
+//         Value::Number(value)
+//     }
+// }
+impl<'a> Into<Value<'a>> for f64 {
+    fn into(self) -> Value<'a> {
+        Value::Number(self)
+    }
+}
+
+impl<'a> Into<f64> for Value<'a> {
+    fn into(self) -> f64 {
+        match self {
+            Value::Number(f) => f,
+            Value::Integer(i) => i as f64,
+            _ => 0.,
+        }
+    }
+}
+
+impl<'a> Into<Value<'a>> for () {
+    fn into(self) -> Value<'a> {
         Value::Nil
     }
 }
-impl From<String> for Value<'_> {
-    fn from(value: String) -> Self {
-        Value::String(Box::new(value))
+// impl From<String> for Value<'_> {
+//     fn from(value: String) -> Self {
+//         Value::String(Box::new(value))
+//     }
+// }
+
+impl<'v> Into<Value<'v>> for String {
+    fn into(self) -> Value<'v> {
+        Value::String(Box::new(self))
     }
 }
 
