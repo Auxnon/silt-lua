@@ -317,8 +317,7 @@ pub struct VM<'gc> {
     table_counter: usize,
     // meta_lookup: HashMap<String, MetaMethod>,
     // string_meta: Option<Gc<Table>>,
-    pub userdata_methods_lookup: Gc<'gc, MethodsLookup<'gc>>,
-    pub userdata_fields_lookup: Gc<'gc, FieldsLookup>,
+    pub userdata_registry: UserDataRegistry,
 }
 
 // #[derive(Copy, Clone, Collect)]
@@ -405,8 +404,7 @@ impl<'gc> VM<'gc> {
             globals: Gc::new(mc, RefLock::new(HashMap::new())), //Gc::new(mc, gtable),
             open_upvalues: vec![],
             table_counter: 1,
-            userdata_fields_lookup: Gc::new(mc, FieldsLookup::new()),
-            userdata_methods_lookup: Gc::new(mc, MethodsLookup::new()),
+            userdata_registry: UserDataRegistry::new(),
         }
     }
 
@@ -1081,16 +1079,12 @@ impl<'gc> VM<'gc> {
                         Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
                         Value::UserData(u) => {
                             let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
-                            let key = u.as_ref().type_id();
-                            match self.userdata_fields_lookup.0.get(&key) {
-                                Some(v) => match v.borrow_mut().getters.get(&field.to_string()) {
-                                    Some(getter) => {
-                                        let v = getter(self, &*u);
-                                        Ok(())
-                                    }
-                                    None => Err(SiltError::UDNoFieldRef),
-                                },
-                                None => Err(SiltError::UDNoInitField),
+                            let field_name = field.to_string();
+                            
+                            // Use the new VM integration helpers
+                            match userdata::vm_integration::set_field(self, &u, &field_name, set.unwrap()) {
+                                Ok(_) => Ok(()),
+                                Err(e) => Err(e),
                             }
                         }
                         _ => Err(SiltError::MetaMethodMissing(MetaMethod::Index)),
