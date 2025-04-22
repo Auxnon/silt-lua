@@ -1102,7 +1102,32 @@ impl<'gc> VM<'gc> {
                 //     }
                 // }
                 OpCode::TABLE_GET { depth } => {
-                    self.operate_table(ep, *depth, None)?;
+                    match self.operate_table(ep, *depth, None) {
+                        Ok(_) => {},
+                        Err(e) => {
+                            // If table operation failed, check if we're dealing with UserData
+                            let u = depth as usize + 1;
+                            let table_point = unsafe { ep.ip.sub(u) };
+                            let value = unsafe { &*table_point };
+                            
+                            if let Value::UserData(u) = value {
+                                let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
+                                let field_name = field.to_string();
+                                
+                                // Use the VM integration helpers
+                                match userdata::vm_integration::get_field(self, &u, &field_name) {
+                                    Ok(value) => {
+                                        self.stack_count -= u - 1;
+                                        unsafe { ep.ip = ep.ip.sub(u - 1) };
+                                        unsafe { table_point.replace(value) };
+                                    },
+                                    Err(_) => return Err(e),
+                                }
+                            } else {
+                                return Err(e);
+                            }
+                        }
+                    }
                 }
                 OpCode::TABLE_GET_FROM { index } => {
                     // let key = self.pop();
