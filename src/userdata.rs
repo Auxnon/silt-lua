@@ -44,7 +44,6 @@ pub trait UserData {
     // }
 }
 
-
 // trait IV<'v> = Into<Value<'v>>;
 // type ValueResult = Result<Value<'v>>
 // trait CC =  Fn(VM<'v>, S, impl Into<Value<'v>>) -> LuaResult<'v>
@@ -96,7 +95,7 @@ pub trait UserDataFields<'v, T: UserData> {
 // }
 
 struct UserDataMethodsStruct {
-    methods: HashMap<String, fn()>,
+    methods: HashMap<String, for<'v> fn(VM<'v>, &T, Value<'v>) -> LuaResult<'v>>,
 }
 
 // type IV<'v> = Into<Value<'v>>;
@@ -112,7 +111,8 @@ impl UserDataMethodsStruct
 }
 
 struct UserDataFieldsStruct {
-    pub setters: HashMap<String,  for<'v> fn(&VM<'v>, &mut dyn UserData, Value<'v>) -> LuaResult<'v>>,
+    pub setters:
+        HashMap<String, for<'v> fn(&VM<'v>, &mut dyn UserData, Value<'v>) -> LuaResult<'v>>,
     pub getters: HashMap<String, for<'v> fn(&VM<'v>, &dyn UserData) -> LuaResult<'v>>,
 }
 
@@ -234,17 +234,17 @@ impl<'v, T: UserData> UserDataFields<'v, T> for UserDataFieldsStruct {
 //     }
 // }
 
-pub struct MethodsLookup<'v>( pub HashMap<&'v str, UserDataMethodsStruct>);
+pub struct MethodsLookup<'v>(pub HashMap<&'v str, UserDataMethodsStruct>);
 // pub type FieldsLookup<'v> = HashMap<&'v str, UserDataFieldMap<'v>>;
-pub struct FieldsLookup( pub HashMap<TypeId, UserDataFieldsStruct>);
+pub struct FieldsLookup(pub HashMap<TypeId, UserDataFieldsStruct>);
 
 impl MethodsLookup<'_> {
-    pub fn new()->Self{
+    pub fn new() -> Self {
         Self(HashMap::new())
     }
 }
 impl FieldsLookup {
-    pub fn new()->Self{
+    pub fn new() -> Self {
         Self(HashMap::new())
     }
 }
@@ -267,7 +267,7 @@ unsafe impl<'v> gc_arena::Collect for MethodsLookup<'v> {
     }
 }
 
-pub(crate) fn build_userdata_maps<'v, U: UserData +'static>(
+pub(crate) fn build_userdata_maps<'v, U: UserData + 'static>(
     methods: &mut MethodsLookup,
     fields: &mut FieldsLookup,
 ) {
