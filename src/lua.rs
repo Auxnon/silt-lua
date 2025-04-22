@@ -7,6 +7,7 @@ use crate::{
     compiler::Compiler,
     error::{ErrorTuple, SiltError, ValueTypes},
     function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue, WrappedFn},
+    prelude::UserData,
     table::Table,
     userdata::{FieldsLookup, MetaMethod, MethodsLookup},
     value::{ExVal, Value},
@@ -163,7 +164,7 @@ macro_rules! binary_op  {
             },
             // TODO userdata
             (Value::UserData(left), c) => {
-                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $l, rr, $opp)
+                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $l, c, $opp)
                 // if let Some(f) = left.by_meta_method($lua,$opp, $r) {
                 //     f(left, right)?
                 // } else {
@@ -1449,6 +1450,21 @@ impl<'gc> VM<'gc> {
         // } else {
         //     unreachable!("Only tables can be indexed")
         // }
+    }
+
+    pub(crate) fn userdata_op(&mut self, ud: &mut UserData, op: MetaMethod, val: Value) {
+        match self
+            .userdata_methods_lookup
+            .borrow_mut()
+            .0
+            .get_mut(&ud.type_id)
+        {
+            Some(f) => f(self, ud, val),
+            None => Err(SiltError::MetaMethodNotCallable(op)),
+        }
+
+        // userdata_fields_lookup: Gc::new(mc, FieldsLookup::new()),
+        // userdata_methods_lookup: Gc::new(mc, MethodsLookup::new()),
     }
 
     /** Register a native function on the global table  */
