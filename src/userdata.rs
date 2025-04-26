@@ -73,14 +73,14 @@ pub trait UserDataFields<'v, T: UserData> {
 
 /// Type-erased function for calling a method on a UserData instance
 pub type UserDataMethodFn<'v> =
-    Box<dyn Fn(&mut VM, &mut dyn Any, Value) -> Result<Value<'v>, SiltError>>;
+    Box<dyn Fn(&mut VM<'v>, &mut dyn Any, Value<'v>) -> Result<Value<'v>, SiltError> + 'static>;
 
 /// Type-erased function for getting a field from a UserData instance
-pub type UserDataGetterFn<'v> = Box<dyn Fn(&mut VM, &dyn Any) -> Result<Value<'v>, SiltError>>;
+pub type UserDataGetterFn<'v> = Box<dyn Fn(&mut VM<'v>, &dyn Any) -> Result<Value<'v>, SiltError> + 'static>;
 
 /// Type-erased function for setting a field on a UserData instance
 pub type UserDataSetterFn<'v> =
-    Box<dyn Fn(&mut VM, &mut dyn Any, Value) -> Result<Value<'v>, SiltError>>;
+    Box<dyn Fn(&mut VM<'v>, &mut dyn Any, Value<'v>) -> Result<Value<'v>, SiltError> + 'static>;
 
 /// Stores methods for a UserData type
 #[derive(Default)]
@@ -140,9 +140,9 @@ impl<'v, T: UserData> UserDataMethodsImpl<'v, T> {
 impl<'v, T: UserData> UserDataMethods<'v, T> for UserDataMethodsImpl<'v, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &T, Value<'v>) -> LuaResult<'v>,
+        F: Fn(&mut VM<'v>, &T, Value<'v>) -> LuaResult<'v> + 'static,
     {
-        let func: UserDataMethodFn = Box::new(move |vm, ud, val| {
+        let func: UserDataMethodFn<'v> = Box::new(move |vm, ud, val| {
             let ud = ud.downcast_ref::<T>().unwrap();
             closure(vm, ud, val)
         });
@@ -151,9 +151,9 @@ impl<'v, T: UserData> UserDataMethods<'v, T> for UserDataMethodsImpl<'v, T> {
 
     fn add_method_mut<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v>,
+        F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v> + 'static,
     {
-        let func: UserDataMethodFn = Box::new(move |vm, ud, val| {
+        let func: UserDataMethodFn<'v> = Box::new(move |vm, ud, val| {
             let ud = ud.downcast_mut::<T>().unwrap();
             closure(vm, ud, val)
         });
@@ -162,9 +162,9 @@ impl<'v, T: UserData> UserDataMethods<'v, T> for UserDataMethodsImpl<'v, T> {
 
     fn add_method<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &T, Value<'v>) -> LuaResult<'v> ,
+        F: Fn(&mut VM<'v>, &T, Value<'v>) -> LuaResult<'v> + 'static,
     {
-        let func: UserDataMethodFn = Box::new(move |vm, ud, val| {
+        let func: UserDataMethodFn<'v> = Box::new(move |vm, ud, val| {
             let ud = ud.downcast_ref::<T>().unwrap();
             closure(vm, ud, val)
         });
@@ -190,9 +190,9 @@ impl<'v, T: UserData> UserDataFieldsImpl<'v, T> {
 impl<'v, T: UserData> UserDataFields<'v, T> for UserDataFieldsImpl<'v, T> {
     fn add_field_method_get<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &T) -> LuaResult<'v>,
+        F: Fn(&mut VM<'v>, &T) -> LuaResult<'v> + 'static,
     {
-        let func: UserDataGetterFn = Box::new(move |vm, ud| {
+        let func: UserDataGetterFn<'v> = Box::new(move |vm, ud| {
             let ud = ud.downcast_ref::<T>().unwrap();
             closure(vm, ud)
         });
@@ -201,9 +201,9 @@ impl<'v, T: UserData> UserDataFields<'v, T> for UserDataFieldsImpl<'v, T> {
 
     fn add_field_method_set<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v>,
+        F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v> + 'static,
     {
-        let func: UserDataSetterFn = Box::new(move |vm, ud, val| {
+        let func: UserDataSetterFn<'v> = Box::new(move |vm, ud, val| {
             let ud = ud.downcast_mut::<T>().unwrap();
             closure(vm, ud, val)
         });
@@ -217,7 +217,7 @@ pub struct UserDataRegistry<'v> {
     fields: HashMap<TypeId, UserDataFieldsMap<'v>>,
 }
 
-impl UserDataRegistry {
+impl<'gc> UserDataRegistry<'gc> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
@@ -243,12 +243,12 @@ impl UserDataRegistry {
     }
 
     /// Get methods for a UserData type
-    pub fn get_methods(&self, type_id: TypeId) -> Option<&UserDataMethodsMap> {
+    pub fn get_methods(&self, type_id: TypeId) -> Option<&UserDataMethodsMap<'gc>> {
         self.methods.get(&type_id)
     }
 
     /// Get fields for a UserData type
-    pub fn get_fields(&self, type_id: TypeId) -> Option<&UserDataFieldsMap> {
+    pub fn get_fields(&self, type_id: TypeId) -> Option<&UserDataFieldsMap<'gc>> {
         self.fields.get(&type_id)
     }
 }
@@ -293,7 +293,7 @@ pub struct UserDataWrapper {
     type_name: &'static str,
 }
 
-impl <'v> UserDataWrapper{
+impl UserDataWrapper {
     /// Create a new UserData wrapper
     pub fn new<T: UserData>(data: T) -> Self {
         Self {
@@ -324,14 +324,14 @@ impl <'v> UserDataWrapper{
     }
 
     /// Get a reference to the wrapped data as a specific type
-    // pub fn downcast_ref<T >(&self) -> Option<&T> {
-    //     self.data.downcast_ref::<T>()
-    // }
-    //
-    // /// Get a mutable reference to the wrapped data as a specific type
-    // pub fn downcast_mut<T: 'v>(&mut self) -> Option<&mut T> {
-    //     self.data.downcast_mut::<T>()
-    // }
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.data.downcast_ref::<T>()
+    }
+    
+    /// Get a mutable reference to the wrapped data as a specific type
+    pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.data.downcast_mut::<T>()
+    }
 
     /// Convert to a string representation
     pub fn to_string(&self) -> String {
@@ -601,8 +601,6 @@ pub mod vm_integration {
         // Register the type if it hasn't been registered yet
         let type_id = TypeId::of::<T>();
         if !vm.userdata_registry.methods.contains_key(&type_id) {
-            let mut registry = UserDataRegistry::new();
-
             vm.userdata_registry.register::<T>();
         }
 
@@ -614,18 +612,17 @@ pub mod vm_integration {
     /// Call a method on a UserData value
     pub fn call_method<'gc>(
         vm: &mut VM<'gc>,
-        userdata: &mut Gc<'gc, UserDataWrapper>,
+        userdata: &Gc<'gc, UserDataWrapper>,
         method_name: &str,
         arg: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
         let type_id = userdata.inner_type_id();
 
-        let met = vm.userdata_registry.methods.get(&type_id);
         // Look up the method in the registry
-        if let Some(methods) = met {
+        if let Some(methods) = vm.userdata_registry.methods.get(&type_id) {
             if let Some(method) = methods.get_method(method_name) {
                 // Call the method with the userdata and argument
-                return method(vm, userdata, arg);
+                return method(vm, userdata.as_mut(), arg);
             }
         }
 
@@ -635,8 +632,7 @@ pub mod vm_integration {
     /// Call a metamethod on a UserData value
     pub fn call_meta_method<'gc>(
         vm: &mut VM<'gc>,
-        userdata: &mut Gc<'gc, UserDataWrapper>,
-        registry: &UserDataRegistry,
+        userdata: &Gc<'gc, UserDataWrapper>,
         meta_method: MetaMethod,
         arg: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
@@ -644,10 +640,10 @@ pub mod vm_integration {
         let meta_key = meta_method.to_table_key();
 
         // Look up the metamethod in the registry
-        if let Some(methods) = registry.methods.get(&type_id) {
+        if let Some(methods) = vm.userdata_registry.methods.get(&type_id) {
             if let Some(method) = methods.get_meta_method(meta_key) {
                 // Call the metamethod with the userdata and argument
-                return method(vm, userdata, arg);
+                return method(vm, userdata.as_mut(), arg);
             }
         }
 
@@ -657,10 +653,10 @@ pub mod vm_integration {
     /// Get a field from a UserData value
     pub fn get_field<'gc>(
         vm: &mut VM<'gc>,
-        userdata: &Gc<UserDataWrapper>,
+        userdata: &Gc<'gc, UserDataWrapper>,
         field_name: &str,
     ) -> Result<Value<'gc>, SiltError> {
-        let type_id = userdata.type_id();
+        let type_id = userdata.inner_type_id();
 
         // Look up the field getter in the registry
         if let Some(fields) = vm.userdata_registry.fields.get(&type_id) {
@@ -676,11 +672,11 @@ pub mod vm_integration {
     /// Set a field on a UserData value
     pub fn set_field<'gc>(
         vm: &mut VM<'gc>,
-        userdata: &Gc<UserDataWrapper>,
+        userdata: &Gc<'gc, UserDataWrapper>,
         field_name: &str,
         value: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
-        let type_id = userdata.type_id();
+        let type_id = userdata.inner_type_id();
 
         // Look up the field setter in the registry
         if let Some(fields) = vm.userdata_registry.fields.get(&type_id) {

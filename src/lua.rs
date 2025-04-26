@@ -162,23 +162,16 @@ macro_rules! binary_op  {
             (Value::Table(left), rr ) => {
                 table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $l, rr, $opp)
             },
-            // TODO userdata
-            (Value::UserData(left), c) => {
-                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $l, c, $opp)
-                // if let Some(f) = left.by_meta_method($lua,$opp, $r) {
-                //     f(left, right)?
-                // } else {
-                //     op_error!(left.to_error(), $opp, right.to_error())
-                // }
-                // if let Ok(f) = left.by_meta_method($lua, MetaMethod::$opp, c) {
-                //     f
-                // } else {
-                //     return Err(SiltError::VmRuntimeError); // TODO
-                //     // return Err(SiltError::ExpOpValueWithValue(ValueTypes::UserData, MetaMethod::$opp, c.to_error()));
-                //     // op_error!(ValueTypes::UserData $opp right.to_error())
-                // }
-                // Value::Nil
-            }
+            (Value::UserData(left), right) => {
+                match $lua.handle_userdata_binary_op($ep, left, MetaMethod::$opp, right) {
+                    Ok(result) => result,
+                    Err(_) => return Err(SiltError::ExpOpValueWithValue(
+                        ValueTypes::UserData, 
+                        MetaMethod::$opp, 
+                        right.to_error()
+                    ))
+                }
+            },
             (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
         }
     };
@@ -1075,14 +1068,14 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::TABLE_SET { depth } => {
                     let value = self.pop(ep);
-                    match value {
+                    match self.grab(ep, *depth as usize + 1) {
                         Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
                         Value::UserData(u) => {
                             let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
                             let field_name = field.to_string();
                             
                             // Use the new VM integration helpers
-                            match crate::userdata::vm_integration::set_field(self, &u, &field_name, set.unwrap()) {
+                            match crate::userdata::vm_integration::set_field(self, u, &field_name, value) {
                                 Ok(_) => Ok(()),
                                 Err(e) => Err(e),
                             }
@@ -1102,31 +1095,32 @@ impl<'gc> VM<'gc> {
                 //     }
                 // }
                 OpCode::TABLE_GET { depth } => {
-                    match self.operate_table(ep, *depth, None) {
-                        Ok(_) => {},
-                        Err(e) => {
-                            // If table operation failed, check if we're dealing with UserData
-                            let u = *depth as usize + 1;
-                            let table_point = unsafe { ep.ip.sub(u) };
-                            let value = unsafe { &*table_point };
-                            
-                            if let Value::UserData(u) = value {
-                                let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
-                                let field_name = field.to_string();
-                                
-                                // Use the VM integration helpers
-                                match userdata::vm_integration::get_field(self, &u, &field_name) {
-                                    Ok(value) => {
-                                        self.stack_count -= u - 1;
-                                        unsafe { ep.ip = ep.ip.sub(u - 1) };
-                                        unsafe { table_point.replace(value) };
-                                    },
-                                    Err(_) => return Err(e),
-                                }
-                            } else {
-                                return Err(e);
+                    let u = *depth as usize + 1;
+                    let table_point = unsafe { ep.ip.sub(u) };
+                    let value = unsafe { &*table_point };
+                    
+                    match value {
+                        Value::Table(_) => {
+                            match self.operate_table(ep, *depth, None) {
+                                Ok(_) => {},
+                                Err(e) => return Err(e),
                             }
-                        }
+                        },
+                        Value::UserData(ud) => {
+                            let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
+                            let field_name = field.to_string();
+                            
+                            // Use the VM integration helpers
+                            match crate::userdata::vm_integration::get_field(self, ud, &field_name) {
+                                Ok(value) => {
+                                    self.stack_count -= u - 1;
+                                    unsafe { ep.ip = ep.ip.sub(u - 1) };
+                                    unsafe { table_point.replace(value) };
+                                },
+                                Err(e) => return Err(e),
+                            }
+                        },
+                        _ => return Err(SiltError::VmNonTableOperations(value.to_error())),
                     }
                 }
                 OpCode::TABLE_GET_FROM { index } => {
@@ -1471,19 +1465,16 @@ impl<'gc> VM<'gc> {
         // }
     }
 
-    pub(crate) fn userdata_op(&mut self, ud: &mut UserData, op: MetaMethod, val: Value) {
-        match self
-            .userdata_methods_lookup
-            .borrow_mut()
-            .0
-            .get_mut(&ud.type_id)
-        {
-            Some(f) => f(self, ud, val),
-            None => Err(SiltError::MetaMethodNotCallable(op)),
-        }
-
-        // userdata_fields_lookup: Gc::new(mc, FieldsLookup::new()),
-        // userdata_methods_lookup: Gc::new(mc, MethodsLookup::new()),
+    /// Handle binary operations with UserData
+    pub(crate) fn handle_userdata_binary_op<'gc>(
+        &mut self,
+        ep: &mut Ephemeral<'_, 'gc>,
+        userdata: &Gc<'gc, UserDataWrapper>,
+        op: MetaMethod,
+        right: Value<'gc>,
+    ) -> Result<Value<'gc>, SiltError> {
+        // Try to call the metamethod
+        crate::userdata::vm_integration::call_meta_method(self, userdata, op, right)
     }
 
     /** Register a native function on the global table  */
@@ -1503,6 +1494,16 @@ impl<'gc> VM<'gc> {
     }
 
     /** Load standard library functions */
+    /// Register a UserData type with the VM
+    pub fn register_userdata_type<T: UserData>(&mut self) {
+        self.userdata_registry.register::<T>();
+    }
+    
+    /// Create a UserData value
+    pub fn create_userdata<T: UserData>(&mut self, mc: &Mutation<'gc>, data: T) -> Value<'gc> {
+        crate::userdata::vm_integration::create_userdata(self, mc, data)
+    }
+    
     pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
         self.register_native_function(mc, "clock", crate::standard::clock);
         self.register_native_function(mc, "print", crate::standard::print);
