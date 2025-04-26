@@ -1,4 +1,4 @@
-use std::{any::Any, borrow::BorrowMut, collections::HashMap, mem::take};
+use std::{ borrow::BorrowMut, collections::HashMap, mem::take};
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
@@ -9,7 +9,7 @@ use crate::{
     function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue, WrappedFn},
     prelude::UserData,
     table::Table,
-    userdata::{FieldsLookup, MetaMethod, MethodsLookup},
+    userdata::{MetaMethod, UserDataRegistry},
     value::{ExVal, Value},
 };
 
@@ -198,7 +198,7 @@ macro_rules! table_meta_op {
                  * future me problem.
                  */
                 $lua.push($ep, f);
-                $lua.push($ep, Value::Table($table));
+                $lua.push($ep, $left);
                 // $lua.push($ep,$right);
                 let arity: u8 = 1;
                 let val = $lua.peekn($ep, arity);
@@ -317,7 +317,7 @@ pub struct VM<'gc> {
     table_counter: usize,
     // meta_lookup: HashMap<String, MetaMethod>,
     // string_meta: Option<Gc<Table>>,
-    pub userdata_registry: UserDataRegistry,
+    pub userdata_registry: UserDataRegistry
 }
 
 // #[derive(Copy, Clone, Collect)]
@@ -1082,7 +1082,7 @@ impl<'gc> VM<'gc> {
                             let field_name = field.to_string();
                             
                             // Use the new VM integration helpers
-                            match userdata::vm_integration::set_field(self, &u, &field_name, set.unwrap()) {
+                            match crate::userdata::vm_integration::set_field(self, &u, &field_name, set.unwrap()) {
                                 Ok(_) => Ok(()),
                                 Err(e) => Err(e),
                             }
@@ -1106,7 +1106,7 @@ impl<'gc> VM<'gc> {
                         Ok(_) => {},
                         Err(e) => {
                             // If table operation failed, check if we're dealing with UserData
-                            let u = depth as usize + 1;
+                            let u = *depth as usize + 1;
                             let table_point = unsafe { ep.ip.sub(u) };
                             let value = unsafe { &*table_point };
                             

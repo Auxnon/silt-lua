@@ -17,7 +17,7 @@ use crate::{
     lua::VM,
     table::Table,
     token::Operator,
-    userdata::{MetaMethod, UserData},
+    userdata::{MetaMethod, UserData, UserDataWrapper},
 };
 
 /**
@@ -75,7 +75,7 @@ pub enum Value<'gc> {
     Closure(Gc<'gc, Closure<'gc>>),
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(Gc<'gc, WrappedFn<'gc>>),
-    UserData(Gc<'gc, dyn UserData>),
+    UserData(Gc<'gc, UserDataWrapper>),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
@@ -196,7 +196,7 @@ impl std::fmt::Display for Value<'_> {
             Value::Closure(c) => write!(f, "=>({})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(_t) => write!(f, "{}", 't'),
-                Value::UserData(u) => write!(f, "{}", u.to_stringy()),
+                Value::UserData(u) => write!(f, "{}", u.to_string()),
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => write!(f, "{}", v),
             #[cfg(feature = "vectors")]
