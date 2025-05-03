@@ -60,6 +60,7 @@ pub enum SiltError {
     UDNoInitMethod,
     UDNoFieldRef,
     UDNoMethodRef,
+    UDTypeMismatch,
 
     //vm
     VmCompileError,
@@ -182,6 +183,9 @@ impl std::fmt::Display for SiltError {
             }
             SiltError::MetaMethodNotCallable(meta_method) => {
                 write!(f, "Value for meta method '{}' is not callable", meta_method)
+            }
+            SiltError::UDTypeMismatch => {
+                write!(f, "UserData type mismatch during method or field access")
             }
         }
     }

@@ -92,7 +92,7 @@ pub enum ExVal {
     String(Box<String>),
     Table(crate::table::ExTable),
     Meta(Box<String>),
-    // UserData(Rc<dyn UserData>),
+    UserData(Box<String>),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
@@ -142,7 +142,7 @@ impl Into<ExVal> for Value<'_> {
             Value::Function(f) => ExVal::Meta(format!("{}", f).into()),
             Value::Closure(c) => ExVal::Meta(format!("=>({})", c.function).into()),
             Value::NativeFunction(f) => ExVal::Meta(Box::new("native_function".to_string())),
-            Value::UserData(u) => ExVal::Nil,
+            Value::UserData(u) => ExVal::UserData(Box::new(format!("{} userdata", u.borrow().type_name()))),
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => ExVal::Vec3(v),
             #[cfg(feature = "vectors")]
@@ -196,7 +196,7 @@ impl std::fmt::Display for Value<'_> {
             Value::Closure(c) => write!(f, "=>({})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(_t) => write!(f, "{}", 't'),
-                Value::UserData(u) => write!(f, "{}", u.to_string()),
+            Value::UserData(u) => write!(f, "{}", u.borrow().to_string()),
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => write!(f, "{}", v),
             #[cfg(feature = "vectors")]

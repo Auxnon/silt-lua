@@ -8,7 +8,7 @@ use crate::{code::OpCode, error::SiltError, prelude::VM, value::Value};
 pub type LuaResult<'v> = Result<Value<'v>, SiltError>;
 
 /// Trait for Rust types that can be used as Lua UserData
-pub trait UserData{
+pub trait UserData: 'static {
     /// Returns a unique type name for this UserData type
     fn get_type() -> &'static str
     where
@@ -28,9 +28,10 @@ pub trait UserData{
     {
     }
 
-    // fn type_id(&self) -> TypeId {
-    //     TypeId::of::<Self>()
-    // }
+    /// Get the TypeId for this UserData type
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
 }
 
 // trait IV<'v> = Into<Value<'v>>;
@@ -75,11 +76,11 @@ pub type UserDataMethodFn<'v> =
     Box<dyn Fn(&mut VM<'v>, &mut dyn UserData, Value<'v>) -> Result<Value<'v>, SiltError> + 'static>;
 
 /// Type-erased function for getting a field from a UserData instance
-pub type UserDataGetterFn<'v> = Box<dyn Fn(&mut VM<'v>, &dyn Any) -> Result<Value<'v>, SiltError> + 'static>;
+pub type UserDataGetterFn<'v> = Box<dyn Fn(&mut VM<'v>, &dyn UserData) -> Result<Value<'v>, SiltError> + 'static>;
 
 /// Type-erased function for setting a field on a UserData instance
 pub type UserDataSetterFn<'v> =
-    Box<dyn Fn(&mut VM<'v>, &mut dyn Any, Value<'v>) -> Result<Value<'v>, SiltError> + 'static>;
+    Box<dyn Fn(&mut VM<'v>, &mut dyn UserData, Value<'v>) -> Result<Value<'v>, SiltError> + 'static>;
 
 /// Stores methods for a UserData type
 #[derive(Default)]
@@ -142,8 +143,12 @@ impl<'v, T: UserData> UserDataMethods<'v, T> for UserDataMethodsImpl<'v, T> {
         F: Fn(&mut VM<'v>, &T, Value<'v>) -> LuaResult<'v> + 'static,
     {
         let func: UserDataMethodFn<'v> = Box::new(move |vm, ud, val| {
-            let ud = ud.downcast_ref::<T>().unwrap();
-            closure(vm, ud, val)
+            // Safe downcast using our TypeId check
+            if let Some(typed_ud) = (ud as &dyn Any).downcast_ref::<T>() {
+                closure(vm, typed_ud, val)
+            } else {
+                Err(SiltError::UDTypeMismatch)
+            }
         });
         self.methods.meta_methods.insert(name.to_string(), func);
     }
@@ -153,8 +158,12 @@ impl<'v, T: UserData> UserDataMethods<'v, T> for UserDataMethodsImpl<'v, T> {
         F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v> + 'static,
     {
         let func: UserDataMethodFn<'v> = Box::new(move |vm, ud, val| {
-            let ud = ud.downcast_mut::<T>().unwrap();
-            closure(vm, ud, val)
+            // Safe downcast using our TypeId check
+            if let Some(typed_ud) = (ud as &mut dyn Any).downcast_mut::<T>() {
+                closure(vm, typed_ud, val)
+            } else {
+                Err(SiltError::UDTypeMismatch)
+            }
         });
         self.methods.methods.insert(name.to_string(), func);
     }
@@ -164,8 +173,12 @@ impl<'v, T: UserData> UserDataMethods<'v, T> for UserDataMethodsImpl<'v, T> {
         F: Fn(&mut VM<'v>, &T, Value<'v>) -> LuaResult<'v> + 'static,
     {
         let func: UserDataMethodFn<'v> = Box::new(move |vm, ud, val| {
-            let ud = ud.downcast_ref::<T>().unwrap();
-            closure(vm, ud, val)
+            // Safe downcast using our TypeId check
+            if let Some(typed_ud) = (ud as &dyn Any).downcast_ref::<T>() {
+                closure(vm, typed_ud, val)
+            } else {
+                Err(SiltError::UDTypeMismatch)
+            }
         });
         self.methods.methods.insert(name.to_string(), func);
     }
@@ -192,8 +205,12 @@ impl<'v, T: UserData> UserDataFields<'v, T> for UserDataFieldsImpl<'v, T> {
         F: Fn(&mut VM<'v>, &T) -> LuaResult<'v> + 'static,
     {
         let func: UserDataGetterFn<'v> = Box::new(move |vm, ud| {
-            let ud = ud.downcast_ref::<T>().unwrap();
-            closure(vm, ud)
+            // Safe downcast using our TypeId check
+            if let Some(typed_ud) = (ud as &dyn Any).downcast_ref::<T>() {
+                closure(vm, typed_ud)
+            } else {
+                Err(SiltError::UDTypeMismatch)
+            }
         });
         self.fields.getters.insert(name.to_string(), func);
     }
@@ -203,8 +220,12 @@ impl<'v, T: UserData> UserDataFields<'v, T> for UserDataFieldsImpl<'v, T> {
         F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v> + 'static,
     {
         let func: UserDataSetterFn<'v> = Box::new(move |vm, ud, val| {
-            let ud = ud.downcast_mut::<T>().unwrap();
-            closure(vm, ud, val)
+            // Safe downcast using our TypeId check
+            if let Some(typed_ud) = (ud as &mut dyn Any).downcast_mut::<T>() {
+                closure(vm, typed_ud, val)
+            } else {
+                Err(SiltError::UDTypeMismatch)
+            }
         });
         self.fields.setters.insert(name.to_string(), func);
     }
@@ -322,15 +343,25 @@ impl UserDataWrapper {
         self.data.as_mut()
     }
 
-    // /// Get a reference to the wrapped data as a specific type
-    // pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
-    //     self.data.downcast_ref::<T>()
-    // }
-    // 
-    // /// Get a mutable reference to the wrapped data as a specific type
-    // pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
-    //     self.data.downcast_mut::<T>()
-    // }
+    /// Get a reference to the wrapped data as a specific type
+    pub fn downcast_ref<T: UserData>(&self) -> Option<&T> {
+        if TypeId::of::<T>() == self.type_id {
+            // This is safe because we've verified the TypeId matches
+            unsafe { Some(&*(self.data.as_ref() as *const dyn UserData as *const T)) }
+        } else {
+            None
+        }
+    }
+    
+    /// Get a mutable reference to the wrapped data as a specific type
+    pub fn downcast_mut<T: UserData>(&mut self) -> Option<&mut T> {
+        if TypeId::of::<T>() == self.type_id {
+            // This is safe because we've verified the TypeId matches
+            unsafe { Some(&mut *(self.data.as_mut() as *mut dyn UserData as *mut T)) }
+        } else {
+            None
+        }
+    }
 
     /// Convert to a string representation
     pub fn to_string(&self) -> String {
@@ -631,7 +662,6 @@ pub mod vm_integration {
     /// Call a metamethod on a UserData value
     pub fn call_meta_method<'gc>(
         vm: &mut VM<'gc>,
-        reg: &UserDataRegistry<'gc>,
         userdata: &Gc<'gc, UserDataWrapper>,
         meta_method: MetaMethod,
         arg: Value<'gc>,
@@ -640,10 +670,10 @@ pub mod vm_integration {
         let meta_key = meta_method.to_table_key();
 
         // Look up the metamethod in the registry
-        if let Some(methods) = reg.methods.get(&type_id) {
+        if let Some(methods) = vm.userdata_registry.get_methods(type_id) {
             if let Some(method) = methods.get_meta_method(meta_key) {
                 // Call the metamethod with the userdata and argument
-                return method(vm, &mut userdata.data.as_mut(), arg);
+                return method(vm, userdata.as_mut(), arg);
             }
         }
 

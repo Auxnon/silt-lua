@@ -1468,7 +1468,7 @@ impl<'gc> VM<'gc> {
     /// Handle binary operations with UserData
     pub(crate) fn handle_userdata_binary_op(
         &mut self,
-        // ep: &mut Ephemeral<'_, 'gc>,
+        ep: &mut Ephemeral<'_, 'gc>,
         userdata: &Gc<'gc, UserDataWrapper>,
         op: MetaMethod,
         right: Value<'gc>,
