@@ -619,14 +619,19 @@ pub mod vm_integration {
         data: T,
     ) -> Value<'gc> {
         // Register the type if it hasn't been registered yet
-        let type_id = TypeId::of::<T>();
-        if !vm.userdata_registry.methods.contains_key(&type_id) {
+        let type_name = T::get_type();
+        if !vm.userdata_registry.methods.contains_key(type_name) {
             vm.userdata_registry.register::<T>();
         }
 
         // Create the UserData wrapper and return it as a Value
         let wrapper = UserDataWrapper::new(data);
-        Value::UserData(Gc::new(mc, wrapper))
+        let ud_gc = Gc::new(mc, wrapper);
+        
+        // Register the instance
+        vm.userdata_registry.register_instance(&ud_gc);
+        
+        Value::UserData(ud_gc)
     }
 
     /// Call a method on a UserData value
@@ -636,10 +641,10 @@ pub mod vm_integration {
         method_name: &str,
         arg: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
-        let type_id = userdata.inner_type_id();
+        let type_name = userdata.type_name();
 
         // Look up the method in the registry
-        if let Some(methods) = vm.userdata_registry.methods.get(&type_id) {
+        if let Some(methods) = vm.userdata_registry.get_methods(type_name) {
             if let Some(method) = methods.get_method(method_name) {
                 // Call the method with the userdata and argument
                 return method(vm, userdata.as_mut(), arg);
@@ -656,11 +661,11 @@ pub mod vm_integration {
         meta_method: MetaMethod,
         arg: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
-        let type_id = userdata.inner_type_id();
+        let type_name = userdata.type_name();
         let meta_key = meta_method.to_table_key();
 
         // Look up the metamethod in the registry
-        if let Some(methods) = vm.userdata_registry.get_methods(type_id) {
+        if let Some(methods) = vm.userdata_registry.get_methods(type_name) {
             if let Some(method) = methods.get_meta_method(meta_key) {
                 // Call the metamethod with the userdata and argument
                 return method(vm, userdata.as_mut(), arg);
@@ -676,10 +681,10 @@ pub mod vm_integration {
         userdata: &Gc<'gc, UserDataWrapper>,
         field_name: &str,
     ) -> Result<Value<'gc>, SiltError> {
-        let type_id = userdata.inner_type_id();
+        let type_name = userdata.type_name();
 
         // Look up the field getter in the registry
-        if let Some(fields) = vm.userdata_registry.fields.get(&type_id) {
+        if let Some(fields) = vm.userdata_registry.get_fields(type_name) {
             if let Some(getter) = fields.getters.get(field_name) {
                 // Call the getter with the userdata
                 return getter(vm, userdata.as_ref());
@@ -696,10 +701,10 @@ pub mod vm_integration {
         field_name: &str,
         value: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
-        let type_id = userdata.inner_type_id();
+        let type_name = userdata.type_name();
 
         // Look up the field setter in the registry
-        if let Some(fields) = vm.userdata_registry.fields.get(&type_id) {
+        if let Some(fields) = vm.userdata_registry.get_fields(type_name) {
             if let Some(setter) = fields.setters.get(field_name) {
                 // Call the setter with the userdata and value
                 return setter(vm, userdata.as_mut(), value);
