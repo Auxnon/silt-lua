@@ -8,7 +8,7 @@ use crate::{code::OpCode, error::SiltError, prelude::VM, value::Value};
 pub type LuaResult<'v> = Result<Value<'v>, SiltError>;
 
 /// Trait for Rust types that can be used as Lua UserData
-pub trait UserData: 'static {
+pub trait UserData{
     /// Returns a unique type name for this UserData type
     fn get_type() -> &'static str
     where
@@ -28,10 +28,9 @@ pub trait UserData: 'static {
     {
     }
 
-    /// Get the TypeId for this UserData type
-    fn type_id(&self) -> TypeId {
-        TypeId::of::<Self>()
-    }
+    // fn type_id(&self) -> TypeId {
+    //     TypeId::of::<Self>()
+    // }
 }
 
 // trait IV<'v> = Into<Value<'v>>;
@@ -73,7 +72,7 @@ pub trait UserDataFields<'v, T: UserData> {
 
 /// Type-erased function for calling a method on a UserData instance
 pub type UserDataMethodFn<'v> =
-    Box<dyn Fn(&mut VM<'v>, &mut dyn Any, Value<'v>) -> Result<Value<'v>, SiltError> + 'static>;
+    Box<dyn Fn(&mut VM<'v>, &mut dyn UserData, Value<'v>) -> Result<Value<'v>, SiltError> + 'static>;
 
 /// Type-erased function for getting a field from a UserData instance
 pub type UserDataGetterFn<'v> = Box<dyn Fn(&mut VM<'v>, &dyn Any) -> Result<Value<'v>, SiltError> + 'static>;
@@ -288,7 +287,7 @@ use std::any::Any;
 
 /// A wrapper for UserData objects
 pub struct UserDataWrapper {
-    data: Box<dyn Any>,
+    data: Box<dyn UserData>,
     type_id: TypeId,
     type_name: &'static str,
 }
@@ -314,24 +313,24 @@ impl UserDataWrapper {
     }
 
     /// Get a reference to the wrapped data
-    pub fn as_ref(&self) -> &dyn Any {
+    pub fn as_ref(&self) -> &dyn UserData {
         self.data.as_ref()
     }
 
     /// Get a mutable reference to the wrapped data
-    pub fn as_mut(&mut self) -> &mut dyn Any {
+    pub fn as_mut(&mut self) -> &mut dyn UserData {
         self.data.as_mut()
     }
 
-    /// Get a reference to the wrapped data as a specific type
-    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
-        self.data.downcast_ref::<T>()
-    }
-    
-    /// Get a mutable reference to the wrapped data as a specific type
-    pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.data.downcast_mut::<T>()
-    }
+    // /// Get a reference to the wrapped data as a specific type
+    // pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+    //     self.data.downcast_ref::<T>()
+    // }
+    // 
+    // /// Get a mutable reference to the wrapped data as a specific type
+    // pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+    //     self.data.downcast_mut::<T>()
+    // }
 
     /// Convert to a string representation
     pub fn to_string(&self) -> String {
@@ -632,6 +631,7 @@ pub mod vm_integration {
     /// Call a metamethod on a UserData value
     pub fn call_meta_method<'gc>(
         vm: &mut VM<'gc>,
+        reg: &UserDataRegistry<'gc>,
         userdata: &Gc<'gc, UserDataWrapper>,
         meta_method: MetaMethod,
         arg: Value<'gc>,
@@ -640,10 +640,10 @@ pub mod vm_integration {
         let meta_key = meta_method.to_table_key();
 
         // Look up the metamethod in the registry
-        if let Some(methods) = vm.userdata_registry.methods.get(&type_id) {
+        if let Some(methods) = reg.methods.get(&type_id) {
             if let Some(method) = methods.get_meta_method(meta_key) {
                 // Call the metamethod with the userdata and argument
-                return method(vm, userdata.as_mut(), arg);
+                return method(vm, &mut userdata.data.as_mut(), arg);
             }
         }
 

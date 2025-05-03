@@ -9,7 +9,7 @@ use crate::{
     function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue, WrappedFn},
     prelude::UserData,
     table::Table,
-    userdata::{MetaMethod, UserDataRegistry},
+    userdata::{MetaMethod, UserDataRegistry, UserDataWrapper},
     value::{ExVal, Value},
 };
 
@@ -310,7 +310,7 @@ pub struct VM<'gc> {
     table_counter: usize,
     // meta_lookup: HashMap<String, MetaMethod>,
     // string_meta: Option<Gc<Table>>,
-    pub userdata_registry: UserDataRegistry
+    pub userdata_registry: UserDataRegistry<'gc>
 }
 
 // #[derive(Copy, Clone, Collect)]
@@ -1466,9 +1466,9 @@ impl<'gc> VM<'gc> {
     }
 
     /// Handle binary operations with UserData
-    pub(crate) fn handle_userdata_binary_op<'gc>(
+    pub(crate) fn handle_userdata_binary_op(
         &mut self,
-        ep: &mut Ephemeral<'_, 'gc>,
+        // ep: &mut Ephemeral<'_, 'gc>,
         userdata: &Gc<'gc, UserDataWrapper>,
         op: MetaMethod,
         right: Value<'gc>,
