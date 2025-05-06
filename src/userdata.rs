@@ -1,100 +1,76 @@
-use std::{any::TypeId, collections::HashMap, marker::PhantomData};
+use std::{any::Any, collections::HashMap, marker::PhantomData};
 
-use gc_arena::Collect;
+use gc_arena::{Collect, Gc, Mutation};
 
-use crate::{code::OpCode, error::SiltError, prelude::VM, value::Value};
+use crate::{code::OpCode, error::SiltError, lua::VM, value::Value};
 
 /// Result type for Lua operations
-pub type LuaResult<'v> = Result<Value<'v>, SiltError>;
+pub type LuaResult<'gc> = Result<Value<'gc>, SiltError>;
 
 /// Trait for Rust types that can be used as Lua UserData
-pub trait UserData: Sized {
+pub trait UserData: 'static {
     /// Returns a unique type name for this UserData type
-    fn get_type() -> &'static str
-    where
-        Self: Sized;
+    fn type_name() -> &'static str;
 
     /// Register methods for this UserData type
-    fn add_methods<'v, M: UserDataMethods<'v, Self>>(methods: &mut M)
-    where
-        Self: Sized,
-    {
-    }
+    fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {}
 
     /// Register fields for this UserData type
-    fn add_fields<'v, F: UserDataFields<'v, Self>>(fields: &mut F)
-    where
-        Self: Sized,
-    {
-    }
+    fn add_fields<'gc, F: UserDataFields<'gc, Self>>(fields: &mut F) {}
 
     /// Get a unique identifier for this UserData instance
     fn get_id(&self) -> usize;
 }
 
-// trait IV<'v> = Into<Value<'v>>;
-// type ValueResult = Result<Value<'v>>
-// trait CC =  Fn(VM<'v>, S, impl Into<Value<'v>>) -> LuaResult<'v>
-// type Closer = impl Fn(VM<'v>, S, impl Into<Value<'v>>) -> LuaResult<'v>
-// type C =  impl Fn(VM<'v>, S, Value<'v>) -> Result<Value<'v>>
-
 /// Trait for registering methods on UserData types
-pub trait UserDataMethods<'v, T: UserData> {
+pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a metamethod to this UserData type
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &T, Value<'v>) -> LuaResult<'v> + 'static;
+        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static;
 
     /// Add a method that can mutate the UserData
     fn add_method_mut<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v> + 'static;
+        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &T, Value<'v>) -> LuaResult<'v> + 'static;
+        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static;
 }
 
 /// Trait for registering fields on UserData types
-pub trait UserDataFields<'v, T: UserData> {
+pub trait UserDataFields<'gc, T: UserData> {
     /// Add a field getter
     fn add_field_method_get<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &T) -> LuaResult<'v>;
+        F: Fn(&mut VM<'gc>, &T) -> LuaResult<'gc> + 'static;
 
     /// Add a field setter
     fn add_field_method_set<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v>;
+        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static;
 }
 
 /// Type-erased function for calling a method on a UserData instance
-pub type UserDataMethodFn<'v, U: UserData> =
-    Box<dyn Fn(&mut VM<'v>, &mut U, Value<'v>) -> Result<Value<'v>, SiltError>>;
+pub type UserDataMethodFn<'gc> = Box<dyn Fn(&mut VM<'gc>, &mut dyn Any, Value<'gc>) -> LuaResult<'gc>>;
 
 /// Type-erased function for getting a field from a UserData instance
-pub type UserDataGetterFn<'v, U> = Box<dyn Fn(&mut VM<'v>, &U) -> Result<Value<'v>, SiltError>>;
+pub type UserDataGetterFn<'gc> = Box<dyn Fn(&mut VM<'gc>, &dyn Any) -> LuaResult<'gc>>;
 
 /// Type-erased function for setting a field on a UserData instance
-pub type UserDataSetterFn<'v, U> =
-    Box<dyn Fn(&mut VM<'v>, &mut U, Value<'v>) -> Result<Value<'v>, SiltError>>;
+pub type UserDataSetterFn<'gc> = Box<dyn Fn(&mut VM<'gc>, &mut dyn Any, Value<'gc>) -> LuaResult<'gc>>;
 
-/// Stores methods for a UserData type
-#[derive(Default)]
-pub struct UserDataMap<'v, U: UserData> {
-    methods: HashMap<String, UserDataMethodFn<'v, U>>,
-    meta_methods: HashMap<String, UserDataMethodFn<'v, U>>,
-    pub getters: HashMap<String, UserDataGetterFn<'v, U>>,
-    pub setters: HashMap<String, UserDataSetterFn<'v, U>>,
+/// Stores methods and fields for a UserData type
+pub struct UserDataMethods<'gc> {
+    methods: HashMap<String, UserDataMethodFn<'gc>>,
+    meta_methods: HashMap<String, UserDataMethodFn<'gc>>,
+    getters: HashMap<String, UserDataGetterFn<'gc>>,
+    setters: HashMap<String, UserDataSetterFn<'gc>>,
 }
 
-pub trait UserDataTemplate<'v >: Sized {
-    // fn get_method(&self, name: &str) -> Option<&UserDataMethodFn<'v, U>>;
-    // fn get_meta_method(&self, name: &str) -> Option<&UserDataMethodFn<'v, U>>;
-}
-
-impl<'v, U: UserData> UserDataMap<'v, U> {
+impl<'gc> UserDataMethods<'gc> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
@@ -103,180 +79,166 @@ impl<'v, U: UserData> UserDataMap<'v, U> {
             setters: HashMap::new(),
         }
     }
-}
 
-// impl<'v, U: UserData> UserDataTemplate<'v, U> for UserDataMap<'v, U> {
-//     // fn get_method(&self, name: &str) -> Option<&UserDataMethodFn<'v, U>> {
-//     //     self.methods.get(name)
-//     // }
-//     //
-//     // fn get_meta_method(&self, name: &str) -> Option<&UserDataMethodFn<'v, U>> {
-//     //     self.meta_methods.get(name)
-//     // }
-// }
+    pub fn get_method(&self, name: &str) -> Option<&UserDataMethodFn<'gc>> {
+        self.methods.get(name)
+    }
+
+    pub fn get_meta_method(&self, name: &str) -> Option<&UserDataMethodFn<'gc>> {
+        self.meta_methods.get(name)
+    }
+
+    pub fn get_getter(&self, name: &str) -> Option<&UserDataGetterFn<'gc>> {
+        self.getters.get(name)
+    }
+
+    pub fn get_setter(&self, name: &str) -> Option<&UserDataSetterFn<'gc>> {
+        self.setters.get(name)
+    }
+}
 
 /// Implementation of UserDataMethods for registering methods
-// pub struct UserDataMethodsImpl<'v, U: UserData> {
-//     methods: &'v mut UserDataMethodsMap<'v,U>  ,
-//     _phantom: PhantomData<U>,
-// }
-
-// impl<'v, U: UserData> UserDataMethodsImpl<'v, U> {
-//     pub fn new(methods: &'v mut UserDataMethodsMap<'v, U>) -> Self {
-//         Self {
-//             methods,
-//             _phantom: PhantomData,
-//         }
-//     }
-// }
-
-// impl<'v, U: UserData> UserDataMethods<'v, U> for UserDataMethodsImpl<'v, U> {
-//     fn add_meta_method<F>(&mut self, name: &str, closure: F)
-//     where
-//         F: Fn(&mut VM<'v>, &U, Value<'v>) -> LuaResult<'v> + 'static,
-//     {
-//         let func: UserDataMethodFn<'v, U> = Box::new(move |vm, ud, val| {
-//             // We can't use Any::downcast_ref anymore since T isn't 'static
-//             // Instead, we use a type-erased approach with a closure that captures T
-//             let typed_ud = unsafe { &*(ud as *const dyn UserData as *const U) };
-//             closure(vm, typed_ud, val)
-//         });
-//         self.methods.meta_methods.insert(name.to_string(), func);
-//     }
-//
-//     fn add_method_mut<F>(&mut self, name: &str, closure: F)
-//     where
-//         F: Fn(&mut VM<'v>, &mut U, Value<'v>) -> LuaResult<'v> + 'static,
-//     {
-//         let func: UserDataMethodFn<'v> = Box::new(move |vm, ud, val| {
-//             // We can't use Any::downcast_mut anymore since T isn't 'static
-//             // Instead, we use a type-erased approach with a closure that captures T
-//             let typed_ud = unsafe { &mut *(ud as *mut dyn UserData as *mut U) };
-//             closure(vm, typed_ud, val)
-//         });
-//         self.methods.methods.insert(name.to_string(), func);
-//     }
-//
-//     fn add_method<F>(&mut self, name: &str, closure: F)
-//     where
-//         F: Fn(&mut VM<'v>, &U, Value<'v>) -> LuaResult<'v> + 'static,
-//     {
-//         let func: UserDataMethodFn<'v> = Box::new(move |vm, ud, val| {
-//             // We can't use Any::downcast_ref anymore since T isn't 'static
-//             // Instead, we use a type-erased approach with a closure that captures T
-//             let typed_ud = unsafe { &*(ud as *const dyn UserData as *const U) };
-//             closure(vm, typed_ud, val)
-//         });
-//         self.methods.methods.insert(name.to_string(), func);
-//     }
-// }
-
-/// Implementation of UserDataFields for registering fields
-// pub struct UserDataFieldsImpl<'v, T: UserData> {
-//     fields: &'v mut UserDataFieldsMap,
-//     _phantom: PhantomData<T>,
-// }
-//
-// impl<'v, T: UserData> UserDataFieldsImpl<'v, T> {
-//     pub fn new(fields: &'v mut UserDataFieldsMap) -> Self {
-//         Self {
-//             fields,
-//             _phantom: PhantomData,
-//         }
-//     }
-// }
-
-// impl<'v, T: UserData> UserDataFields<'v, T> for UserDataFieldsImpl<'v, T> {
-//     fn add_field_method_get<F>(&mut self, name: &str, closure: F)
-//     where
-//         F: Fn(&mut VM<'v>, &T) -> LuaResult<'v> + 'static,
-//     {
-//         let func: UserDataGetterFn<'v> = Box::new(move |vm, ud| {
-//             // We can't use Any::downcast_ref anymore since T isn't 'static
-//             // Instead, we use a type-erased approach with a closure that captures T
-//             let typed_ud = unsafe { &*(ud as *const dyn UserData as *const T) };
-//             closure(vm, typed_ud)
-//         });
-//         self.fields.getters.insert(name.to_string(), func);
-//     }
-//
-//     fn add_field_method_set<F>(&mut self, name: &str, closure: F)
-//     where
-//         F: Fn(&mut VM<'v>, &mut T, Value<'v>) -> LuaResult<'v> + 'static,
-//     {
-//         let func: UserDataSetterFn<'v> = Box::new(move |vm, ud, val| {
-//             // We can't use Any::downcast_mut anymore since T isn't 'static
-//             // Instead, we use a type-erased approach with a closure that captures T
-//             let typed_ud = unsafe { &mut *(ud as *mut dyn UserData as *mut T) };
-//             closure(vm, typed_ud, val)
-//         });
-//         self.fields.setters.insert(name.to_string(), func);
-//     }
-// }
-//
-/// Registry for UserData types
-pub struct UserDataRegistry<'v> {
-    maps: HashMap<&'static str, Box<UserDataMap<UserData>>>,
-    // fields: HashMap<&'static str, UserDataFieldsMap<'v, U>>,
-    // instance_data: HashMap<usize, (&'static str, usize)>, // Maps instance ID to (type_name, type_id)
-    // next_type_id: usize,
+pub struct UserDataMethodsImpl<'a, 'gc, T: UserData> {
+    methods: &'a mut UserDataMethods<'gc>,
+    _phantom: PhantomData<T>,
 }
 
-impl<'gc, U: UserData> UserDataRegistry<'gc, U> {
+impl<'a, 'gc, T: UserData> UserDataMethodsImpl<'a, 'gc, T> {
+    pub fn new(methods: &'a mut UserDataMethods<'gc>) -> Self {
+        Self {
+            methods,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a, 'gc, T: UserData> UserDataMethods<'gc, T> for UserDataMethodsImpl<'a, 'gc, T> {
+    fn add_meta_method<F>(&mut self, name: &str, closure: F)
+    where
+        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
+    {
+        let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
+            let typed_ud = ud.downcast_ref::<T>().unwrap();
+            closure(vm, typed_ud, val)
+        });
+        self.methods.meta_methods.insert(name.to_string(), func);
+    }
+
+    fn add_method_mut<F>(&mut self, name: &str, closure: F)
+    where
+        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
+    {
+        let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
+            let typed_ud = ud.downcast_mut::<T>().unwrap();
+            closure(vm, typed_ud, val)
+        });
+        self.methods.methods.insert(name.to_string(), func);
+    }
+
+    fn add_method<F>(&mut self, name: &str, closure: F)
+    where
+        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
+    {
+        let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
+            let typed_ud = ud.downcast_ref::<T>().unwrap();
+            closure(vm, typed_ud, val)
+        });
+        self.methods.methods.insert(name.to_string(), func);
+    }
+}
+
+/// Implementation of UserDataFields for registering fields
+pub struct UserDataFieldsImpl<'a, 'gc, T: UserData> {
+    methods: &'a mut UserDataMethods<'gc>,
+    _phantom: PhantomData<T>,
+}
+
+impl<'a, 'gc, T: UserData> UserDataFieldsImpl<'a, 'gc, T> {
+    pub fn new(methods: &'a mut UserDataMethods<'gc>) -> Self {
+        Self {
+            methods,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a, 'gc, T: UserData> UserDataFields<'gc, T> for UserDataFieldsImpl<'a, 'gc, T> {
+    fn add_field_method_get<F>(&mut self, name: &str, closure: F)
+    where
+        F: Fn(&mut VM<'gc>, &T) -> LuaResult<'gc> + 'static,
+    {
+        let func: UserDataGetterFn<'gc> = Box::new(move |vm, ud| {
+            let typed_ud = ud.downcast_ref::<T>().unwrap();
+            closure(vm, typed_ud)
+        });
+        self.methods.getters.insert(name.to_string(), func);
+    }
+
+    fn add_field_method_set<F>(&mut self, name: &str, closure: F)
+    where
+        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
+    {
+        let func: UserDataSetterFn<'gc> = Box::new(move |vm, ud, val| {
+            let typed_ud = ud.downcast_mut::<T>().unwrap();
+            closure(vm, typed_ud, val)
+        });
+        self.methods.setters.insert(name.to_string(), func);
+    }
+}
+
+/// Registry for UserData types
+pub struct UserDataRegistry<'gc> {
+    methods: HashMap<&'static str, UserDataMethods<'gc>>,
+    instance_data: HashMap<usize, &'static str>, // Maps instance ID to type_name
+}
+
+impl<'gc> UserDataRegistry<'gc> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
-            fields: HashMap::new(),
             instance_data: HashMap::new(),
-            next_type_id: 1,
         }
     }
 
     /// Register a UserData type
     pub fn register<T: UserData>(&mut self) {
-        let type_name = T::get_type();
+        let type_name = T::type_name();
 
         // Only register if not already registered
         if !self.methods.contains_key(type_name) {
+            // Create methods container
+            let mut methods = UserDataMethods::new();
+            
             // Register methods
-            let mut methods_map = UserDataMethodsMap::new();
-            let mut methods_impl = UserDataMethodsImpl::<T>::new(&mut methods_map);
+            let mut methods_impl = UserDataMethodsImpl::<T>::new(&mut methods);
             T::add_methods(&mut methods_impl);
-            self.methods.insert(type_name, methods_map);
-
+            
             // Register fields
-            let mut fields_map = UserDataFieldsMap::new();
-            let mut fields_impl = UserDataFieldsImpl::<T>::new(&mut fields_map);
+            let mut fields_impl = UserDataFieldsImpl::<T>::new(&mut methods);
             T::add_fields(&mut fields_impl);
-            self.fields.insert(type_name, fields_map);
-
-            self.next_type_id += 1;
+            
+            // Store in registry
+            self.methods.insert(type_name, methods);
         }
     }
 
     /// Register a UserData instance
     pub fn register_instance(&mut self, wrapper: &UserDataWrapper) {
-        self.instance_data
-            .insert(wrapper.id(), (wrapper.type_name(), 0));
+        self.instance_data.insert(wrapper.id(), wrapper.type_name());
     }
 
     /// Get methods for a UserData type
-    pub fn get_methods(&self, type_name: &'static str) -> Option<&UserDataMethodsMap<'gc>> {
+    pub fn get_methods(&self, type_name: &'static str) -> Option<&UserDataMethods<'gc>> {
         self.methods.get(type_name)
-    }
-
-    /// Get fields for a UserData type
-    pub fn get_fields(&self, type_name: &'static str) -> Option<&UserDataFieldsMap<'gc>> {
-        self.fields.get(type_name)
     }
 
     /// Get type name for a UserData instance
     pub fn get_type_for_instance(&self, id: usize) -> Option<&'static str> {
-        self.instance_data.get(&id).map(|(type_name, _)| *type_name)
+        self.instance_data.get(&id).copied()
     }
 }
 
-unsafe impl Collect for UserDataRegistry {
+unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
     fn needs_trace() -> bool {
         false
     }
@@ -286,32 +248,9 @@ unsafe impl Collect for UserDataRegistry {
     }
 }
 
-// pub struct UserDataFields<'v,  F> where
-// F: Fn(VM<'v>, dyn UserData) -> Result<Box<Value<'v>>>
-// impl<'v, S> UserDataMethods<'v, M> for UserDataMethodMap<'v> {
-//     fn add_method_mut<T, M, R>(&mut self, name: &str, closure: M)
-//     where
-//         T: Into<Value<'v>>,
-//         R: Into<Value<'v>>,
-//         M: Fn(VM<'v>, S, T) -> Result<R>,
-//     {
-//         // self.methods.insert(name, closure);
-//     }
-//
-//     fn add_meta_method<T, M, R>(&mut self, name: &str, closure: M)
-//     where
-//         T: Into<Value<'v>>,
-//         R: Into<Value<'v>>,
-//         M: Fn(VM<'v>, S, T) -> Result<R>,
-//     {
-//     }
-// }
-
-use std::any::Any;
-
 /// A wrapper for UserData objects
 pub struct UserDataWrapper {
-    data: Box<dyn UserData>,
+    data: Box<dyn Any>,
     id: usize,
     type_name: &'static str,
 }
@@ -319,7 +258,7 @@ pub struct UserDataWrapper {
 impl UserDataWrapper {
     /// Create a new UserData wrapper
     pub fn new<T: UserData>(data: T) -> Self {
-        let type_name = T::get_type();
+        let type_name = T::type_name();
         let id = data.get_id();
         Self {
             data: Box::new(data),
@@ -338,13 +277,13 @@ impl UserDataWrapper {
         self.type_name
     }
 
-    /// Get a reference to the wrapped data
-    pub fn as_ref(&self) -> &dyn UserData {
+    /// Get a reference to the wrapped data as Any
+    pub fn as_any(&self) -> &dyn Any {
         self.data.as_ref()
     }
 
-    /// Get a mutable reference to the wrapped data
-    pub fn as_mut(&mut self) -> &mut dyn UserData {
+    /// Get a mutable reference to the wrapped data as Any
+    pub fn as_any_mut(&mut self) -> &mut dyn Any {
         self.data.as_mut()
     }
 
@@ -382,7 +321,7 @@ impl Ent {
 }
 
 impl UserData for Ent {
-    fn get_type() -> &'static str {
+    fn type_name() -> &'static str {
         "ent"
     }
 
@@ -394,7 +333,7 @@ impl UserData for Ent {
             ^ (self.z.to_bits() as usize)
     }
 
-    fn add_methods<'v, M: UserDataMethods<'v, Self>>(methods: &mut M) {
+    fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {
         methods.add_meta_method("__tostring", |_, this, _| {
             Ok(Value::String(Box::new(format!(
                 "[entity {}]",
@@ -430,7 +369,7 @@ impl UserData for Ent {
         });
     }
 
-    fn add_fields<'v, F: UserDataFields<'v, Self>>(fields: &mut F) {
+    fn add_fields<'gc, F: UserDataFields<'gc, Self>>(fields: &mut F) {
         fields.add_field_method_get("x", |_, this| Ok(Value::Number(this.x)));
 
         fields.add_field_method_set("x", |_, this, val| {
@@ -605,10 +544,6 @@ impl MetaMethod {
 /// Helper functions for VM integration
 pub mod vm_integration {
     use super::*;
-    use crate::error::SiltError;
-    use crate::lua::VM;
-    use crate::value::Value;
-    use gc_arena::{Gc, Mutation};
 
     /// Create a new UserData value
     pub fn create_userdata<'gc, T: UserData>(
@@ -617,7 +552,7 @@ pub mod vm_integration {
         data: T,
     ) -> Value<'gc> {
         // Register the type if it hasn't been registered yet
-        let type_name = T::get_type();
+        let type_name = T::type_name();
         if !vm.userdata_registry.methods.contains_key(type_name) {
             vm.userdata_registry.register::<T>();
         }
@@ -635,18 +570,17 @@ pub mod vm_integration {
     /// Call a method on a UserData value
     pub fn call_method<'gc>(
         vm: &mut VM<'gc>,
-        reg: &UserDataRegistry<'gc>,
-        userdata: &mut UserDataWrapper,
+        userdata: &Gc<'gc, UserDataWrapper>,
         method_name: &str,
         arg: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
         let type_name = userdata.type_name();
 
         // Look up the method in the registry
-        if let Some(methods) = reg.get_methods(type_name) {
+        if let Some(methods) = vm.userdata_registry.get_methods(type_name) {
             if let Some(method) = methods.get_method(method_name) {
                 // Call the method with the userdata and argument
-                return method(vm, userdata, arg);
+                return method(vm, userdata.as_any_mut(), arg);
             }
         }
 
@@ -667,7 +601,7 @@ pub mod vm_integration {
         if let Some(methods) = vm.userdata_registry.get_methods(type_name) {
             if let Some(method) = methods.get_meta_method(meta_key) {
                 // Call the metamethod with the userdata and argument
-                return method(vm, userdata.as_mut(), arg);
+                return method(vm, userdata.as_any_mut(), arg);
             }
         }
 
@@ -683,10 +617,10 @@ pub mod vm_integration {
         let type_name = userdata.type_name();
 
         // Look up the field getter in the registry
-        if let Some(fields) = vm.userdata_registry.get_fields(type_name) {
-            if let Some(getter) = fields.getters.get(field_name) {
+        if let Some(methods) = vm.userdata_registry.get_methods(type_name) {
+            if let Some(getter) = methods.get_getter(field_name) {
                 // Call the getter with the userdata
-                return getter(vm, userdata.as_ref());
+                return getter(vm, userdata.as_any());
             }
         }
 
@@ -703,10 +637,10 @@ pub mod vm_integration {
         let type_name = userdata.type_name();
 
         // Look up the field setter in the registry
-        if let Some(fields) = vm.userdata_registry.get_fields(type_name) {
-            if let Some(setter) = fields.setters.get(field_name) {
+        if let Some(methods) = vm.userdata_registry.get_methods(type_name) {
+            if let Some(setter) = methods.get_setter(field_name) {
                 // Call the setter with the userdata and value
-                return setter(vm, userdata.as_mut(), value);
+                return setter(vm, userdata.as_any_mut(), value);
             }
         }
 
