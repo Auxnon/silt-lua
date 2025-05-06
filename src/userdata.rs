@@ -8,7 +8,7 @@ use crate::{code::OpCode, error::SiltError, lua::VM, value::Value};
 pub type LuaResult<'gc> = Result<Value<'gc>, SiltError>;
 
 /// Trait for Rust types that can be used as Lua UserData
-pub trait UserData: 'static {
+pub trait UserData: Sized {
     /// Returns a unique type name for this UserData type
     fn type_name() -> &'static str;
 
@@ -63,14 +63,14 @@ pub type UserDataGetterFn<'gc> = Box<dyn Fn(&mut VM<'gc>, &dyn Any) -> LuaResult
 pub type UserDataSetterFn<'gc> = Box<dyn Fn(&mut VM<'gc>, &mut dyn Any, Value<'gc>) -> LuaResult<'gc>>;
 
 /// Stores methods and fields for a UserData type
-pub struct UserDataMethods<'gc> {
+pub struct UserDataMap<'gc> {
     methods: HashMap<String, UserDataMethodFn<'gc>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc>>,
     getters: HashMap<String, UserDataGetterFn<'gc>>,
     setters: HashMap<String, UserDataSetterFn<'gc>>,
 }
 
-impl<'gc> UserDataMethods<'gc> {
+impl<'gc> UserDataMap<'gc> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
@@ -99,12 +99,12 @@ impl<'gc> UserDataMethods<'gc> {
 
 /// Implementation of UserDataMethods for registering methods
 pub struct UserDataMethodsImpl<'a, 'gc, T: UserData> {
-    methods: &'a mut UserDataMethods<'gc>,
+    methods: &'a mut UserDataMap<'gc>,
     _phantom: PhantomData<T>,
 }
 
 impl<'a, 'gc, T: UserData> UserDataMethodsImpl<'a, 'gc, T> {
-    pub fn new(methods: &'a mut UserDataMethods<'gc>) -> Self {
+    pub fn new(methods: &'a mut UserDataMap<'gc>) -> Self {
         Self {
             methods,
             _phantom: PhantomData,
@@ -112,49 +112,49 @@ impl<'a, 'gc, T: UserData> UserDataMethodsImpl<'a, 'gc, T> {
     }
 }
 
-impl<'a, 'gc, T: UserData> UserDataMethods<'gc, T> for UserDataMethodsImpl<'a, 'gc, T> {
-    fn add_meta_method<F>(&mut self, name: &str, closure: F)
-    where
-        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
-    {
-        let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
-            let typed_ud = ud.downcast_ref::<T>().unwrap();
-            closure(vm, typed_ud, val)
-        });
-        self.methods.meta_methods.insert(name.to_string(), func);
-    }
-
-    fn add_method_mut<F>(&mut self, name: &str, closure: F)
-    where
-        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
-    {
-        let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
-            let typed_ud = ud.downcast_mut::<T>().unwrap();
-            closure(vm, typed_ud, val)
-        });
-        self.methods.methods.insert(name.to_string(), func);
-    }
-
-    fn add_method<F>(&mut self, name: &str, closure: F)
-    where
-        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
-    {
-        let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
-            let typed_ud = ud.downcast_ref::<T>().unwrap();
-            closure(vm, typed_ud, val)
-        });
-        self.methods.methods.insert(name.to_string(), func);
-    }
-}
+// impl<'a, 'gc, T: UserData> UserDataMethods<'gc, T> for UserDataMethodsImpl<'a, 'gc, T> {
+//     fn add_meta_method<F>(&mut self, name: &str, closure: F)
+//     where
+//         F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
+//     {
+//         let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
+//             let typed_ud = ud.downcast_ref::<T>().unwrap();
+//             closure(vm, typed_ud, val)
+//         });
+//         self.methods.meta_methods.insert(name.to_string(), func);
+//     }
+//
+//     fn add_method_mut<F>(&mut self, name: &str, closure: F)
+//     where
+//         F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
+//     {
+//         let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
+//             let typed_ud = ud.downcast_mut::<T>().unwrap();
+//             closure(vm, typed_ud, val)
+//         });
+//         self.methods.methods.insert(name.to_string(), func);
+//     }
+//
+//     fn add_method<F>(&mut self, name: &str, closure: F)
+//     where
+//         F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
+//     {
+//         let func: UserDataMethodFn<'gc> = Box::new(move |vm, ud, val| {
+//             let typed_ud = ud.downcast_ref::<T>().unwrap();
+//             closure(vm, typed_ud, val)
+//         });
+//         self.methods.methods.insert(name.to_string(), func);
+//     }
+// }
 
 /// Implementation of UserDataFields for registering fields
 pub struct UserDataFieldsImpl<'a, 'gc, T: UserData> {
-    methods: &'a mut UserDataMethods<'gc>,
+    methods: &'a mut UserDataMap<'gc>,
     _phantom: PhantomData<T>,
 }
 
 impl<'a, 'gc, T: UserData> UserDataFieldsImpl<'a, 'gc, T> {
-    pub fn new(methods: &'a mut UserDataMethods<'gc>) -> Self {
+    pub fn new(methods: &'a mut UserDataMap<'gc>) -> Self {
         Self {
             methods,
             _phantom: PhantomData,
@@ -188,7 +188,7 @@ impl<'a, 'gc, T: UserData> UserDataFields<'gc, T> for UserDataFieldsImpl<'a, 'gc
 
 /// Registry for UserData types
 pub struct UserDataRegistry<'gc> {
-    methods: HashMap<&'static str, UserDataMethods<'gc>>,
+    methods: HashMap<&'static str, UserDataMap<'gc>>,
     instance_data: HashMap<usize, &'static str>, // Maps instance ID to type_name
 }
 
@@ -207,7 +207,7 @@ impl<'gc> UserDataRegistry<'gc> {
         // Only register if not already registered
         if !self.methods.contains_key(type_name) {
             // Create methods container
-            let mut methods = UserDataMethods::new();
+            let mut methods = UserDataMap::new();
             
             // Register methods
             let mut methods_impl = UserDataMethodsImpl::<T>::new(&mut methods);
@@ -228,7 +228,7 @@ impl<'gc> UserDataRegistry<'gc> {
     }
 
     /// Get methods for a UserData type
-    pub fn get_methods(&self, type_name: &'static str) -> Option<&UserDataMethods<'gc>> {
+    pub fn get_methods(&self, type_name: &'static str) -> Option<&UserDataMap<'gc>> {
         self.methods.get(type_name)
     }
 
