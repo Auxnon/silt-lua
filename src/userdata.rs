@@ -8,7 +8,7 @@ use crate::{code::OpCode, error::SiltError, lua::VM, value::Value};
 pub type LuaResult<'gc> = Result<Value<'gc>, SiltError>;
 
 /// Trait for Rust types that can be used as Lua UserData
-pub trait UserData: Sized {
+pub trait UserData: Sized + 'static {
     /// Returns a unique type name for this UserData type
     fn type_name() -> &'static str;
 
@@ -63,7 +63,7 @@ pub type UserDataGetterFn<'gc, T> = Box<dyn Fn(&mut VM<'gc>, &T) -> LuaResult<'g
 pub type UserDataSetterFn<'gc, T> = Box<dyn Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc>>;
 
 /// Trait object for type-erased UserData methods
-pub trait UserDataMethodsTraitObj<'gc> {
+pub trait UserDataMethodsTraitObj<'gc>: 'gc {
     fn call_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc>;
     fn call_meta_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc>;
     fn get_field(&self, vm: &mut VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc>;
@@ -71,25 +71,27 @@ pub trait UserDataMethodsTraitObj<'gc> {
 }
 
 /// Stores methods and fields for a specific UserData type T
-pub struct UserDataMethods<'gc, T: UserData> {
+pub struct UserDataMethods<'gc, T: UserData + 'static> {
     methods: HashMap<String, UserDataMethodFn<'gc, T>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
     getters: HashMap<String, UserDataGetterFn<'gc, T>>,
     setters: HashMap<String, UserDataSetterFn<'gc, T>>,
+    _phantom: PhantomData<&'gc ()>,
 }
 
-impl<'gc, T: UserData> UserDataMethods<'gc, T> {
+impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
             meta_methods: HashMap::new(),
             getters: HashMap::new(),
             setters: HashMap::new(),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<'gc, T: UserData> UserDataMethodsTraitObj<'gc> for UserDataMethods<'gc, T> {
+impl<'gc, T: UserData + 'static> UserDataMethodsTraitObj<'gc> for UserDataMethods<'gc, T> {
     fn call_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
         if let Some(method) = self.methods.get(name) {
             if let Some(data) = ud.data.downcast_mut::<T>() {
@@ -129,11 +131,11 @@ impl<'gc, T: UserData> UserDataMethodsTraitObj<'gc> for UserDataMethods<'gc, T> 
 
 /// Type-erased container for UserData methods
 pub struct UserDataMap<'gc> {
-    methods: Box<dyn UserDataMethodsTraitObj<'gc>>,
+    methods: Box<dyn UserDataMethodsTraitObj<'gc> + 'gc>,
 }
 
 impl<'gc> UserDataMap<'gc> {
-    pub fn new<T: UserData>(methods: UserDataMethods<'gc, T>) -> Self {
+    pub fn new<T: UserData + 'static>(methods: UserDataMethods<'gc, T>) -> Self {
         Self {
             methods: Box::new(methods),
         }
@@ -157,17 +159,17 @@ impl<'gc> UserDataMap<'gc> {
 }
 
 /// Implementation of UserDataMethods for registering methods
-pub struct UserDataMethodsImpl<'a, 'gc, T: UserData> {
+pub struct UserDataMethodsImpl<'a, 'gc, T: UserData + 'static> {
     methods: &'a mut UserDataMethods<'gc, T>,
 }
 
-impl<'a, 'gc, T: UserData> UserDataMethodsImpl<'a, 'gc, T> {
+impl<'a, 'gc, T: UserData + 'static> UserDataMethodsImpl<'a, 'gc, T> {
     pub fn new(methods: &'a mut UserDataMethods<'gc, T>) -> Self {
         Self { methods }
     }
 }
 
-impl<'a, 'gc, T: UserData> UserDataMethods<'gc, T> for UserDataMethodsImpl<'a, 'gc, T> {
+impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataMethodsImpl<'a, 'gc, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
         F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
@@ -200,17 +202,17 @@ impl<'a, 'gc, T: UserData> UserDataMethods<'gc, T> for UserDataMethodsImpl<'a, '
 }
 
 /// Implementation of UserDataFields for registering fields
-pub struct UserDataFieldsImpl<'a, 'gc, T: UserData> {
+pub struct UserDataFieldsImpl<'a, 'gc, T: UserData + 'static> {
     methods: &'a mut UserDataMethods<'gc, T>,
 }
 
-impl<'a, 'gc, T: UserData> UserDataFieldsImpl<'a, 'gc, T> {
+impl<'a, 'gc, T: UserData + 'static> UserDataFieldsImpl<'a, 'gc, T> {
     pub fn new(methods: &'a mut UserDataMethods<'gc, T>) -> Self {
         Self { methods }
     }
 }
 
-impl<'a, 'gc, T: UserData> UserDataFields<'gc, T> for UserDataFieldsImpl<'a, 'gc, T> {
+impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataFieldsImpl<'a, 'gc, T> {
     fn add_field_method_get<F>(&mut self, name: &str, closure: F)
     where
         F: Fn(&mut VM<'gc>, &T) -> LuaResult<'gc> + 'static,
