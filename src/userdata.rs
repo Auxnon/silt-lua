@@ -27,17 +27,17 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a metamethod to this UserData type
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static;
+        F: Fn(&VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static;
 
     /// Add a method that can mutate the UserData
     fn add_method_mut<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static;
+        F: Fn(&VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static;
+        F: Fn(&VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static;
 }
 
 /// Trait for registering fields on UserData types
@@ -45,29 +45,29 @@ pub trait UserDataFields<'gc, T: UserData> {
     /// Add a field getter
     fn add_field_method_get<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &T) -> LuaResult<'gc> + 'static;
+        F: Fn(&VM<'gc>, &T) -> LuaResult<'gc> + 'static;
 
     /// Add a field setter
     fn add_field_method_set<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static;
+        F: Fn(&VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static;
 }
 
 /// Type-erased function for calling a method on a UserData instance
-pub type UserDataMethodFn<'gc, T> = Box<dyn Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc>>;
+pub type UserDataMethodFn<'gc, T> = Box<dyn Fn(&VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc>>;
 
 /// Type-erased function for getting a field from a UserData instance
-pub type UserDataGetterFn<'gc, T> = Box<dyn Fn(&mut VM<'gc>, &T) -> LuaResult<'gc>>;
+pub type UserDataGetterFn<'gc, T> = Box<dyn Fn(&VM<'gc>, &T) -> LuaResult<'gc>>;
 
 /// Type-erased function for setting a field on a UserData instance
-pub type UserDataSetterFn<'gc, T> = Box<dyn Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc>>;
+pub type UserDataSetterFn<'gc, T> = Box<dyn Fn(&VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc>>;
 
 /// Trait object for type-erased UserData methods
 pub trait UserDataMapTraitObj<'gc>: 'gc {
-    fn call_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc>;
-    fn call_meta_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc>;
-    fn get_field(&self, vm: &mut VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc>;
-    fn set_field(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc>;
+    fn call_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc>;
+    fn call_meta_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc>;
+    fn get_field(&self, vm: &VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc>;
+    fn set_field(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc>;
 }
 
 /// Stores methods and fields for a specific UserData type T
@@ -92,7 +92,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
 }
 
 impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'gc, T> {
-    fn call_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
+    fn call_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
         if let Some(method) = self.methods.get(name) {
             if let Some(data) = ud.data.downcast_mut::<T>() {
                 return method(vm, data, arg);
@@ -101,7 +101,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         Err(SiltError::UDNoMethodRef)
     }
 
-    fn call_meta_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
+    fn call_meta_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
         if let Some(method) = self.meta_methods.get(name) {
             if let Some(data) = ud.data.downcast_mut::<T>() {
                 return method(vm, data, arg);
@@ -110,7 +110,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         Err(SiltError::UDNoMethodRef)
     }
 
-    fn get_field(&self, vm: &mut VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc> {
+    fn get_field(&self, vm: &VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc> {
         if let Some(getter) = self.getters.get(name) {
             if let Some(data) = ud.data.downcast_ref::<T>() {
                 return getter(vm, data);
@@ -119,7 +119,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         Err(SiltError::UDNoFieldRef)
     }
 
-    fn set_field(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc> {
+    fn set_field(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc> {
         if let Some(setter) = self.setters.get(name) {
             if let Some(data) = ud.data.downcast_mut::<T>() {
                 return setter(vm, data, value);
@@ -141,19 +141,19 @@ impl<'gc> UserDataMap<'gc> {
         }
     }
 
-    pub fn call_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
+    pub fn call_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
         self.data.call_method(vm, ud, name, arg)
     }
 
-    pub fn call_meta_method(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
+    pub fn call_meta_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
         self.data.call_meta_method(vm, ud, name, arg)
     }
 
-    pub fn get_field(&self, vm: &mut VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc> {
+    pub fn get_field(&self, vm: &VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc> {
         self.data.get_field(vm, ud, name)
     }
 
-    pub fn set_field(&self, vm: &mut VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc> {
+    pub fn set_field(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc> {
         self.data.set_field(vm, ud, name, value)
     }
 }
@@ -173,7 +173,7 @@ impl<'gc> UserDataMap<'gc> {
 impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
+        F: Fn(&VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
     {
         let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| {
             closure(vm, ud, val)
@@ -183,7 +183,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
 
     fn add_method_mut<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
+        F: Fn(&VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
     {
         let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| {
             closure(vm, ud, val)
@@ -193,7 +193,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
 
     fn add_method<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
+        F: Fn(&VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
     {
         let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| {
             closure(vm, ud, val)
@@ -205,7 +205,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
 impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_field_method_get<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &T) -> LuaResult<'gc> + 'static,
+        F: Fn(&VM<'gc>, &T) -> LuaResult<'gc> + 'static,
     {
         let func: UserDataGetterFn<'gc, T> = Box::new(move |vm, ud| {
             closure(vm, ud)
@@ -215,7 +215,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
 
     fn add_field_method_set<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
+        F: Fn(&VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
     {
         let func: UserDataSetterFn<'gc, T> = Box::new(move |vm, ud, val| {
             closure(vm, ud, val)
@@ -584,14 +584,14 @@ pub mod vm_integration {
 
     /// Create a new UserData value
     pub fn create_userdata<'gc, T: UserData>(
-        vm: &mut VM<'gc>,
+        reg: &mut UserDataRegistry<'gc>,
         mc: &Mutation<'gc>,
         data: T,
     ) -> Value<'gc> {
         // Register the type if it hasn't been registered yet
         let type_name = T::type_name();
-        if !vm.userdata_registry.maps.contains_key(type_name) {
-            vm.userdata_registry.register::<T>();
+        if !reg.maps.contains_key(type_name) {
+            reg.register::<T>();
         }
 
         // Create the UserData wrapper and return it as a Value
@@ -599,14 +599,14 @@ pub mod vm_integration {
         let ud_gc = Gc::new(mc, wrapper);
 
         // Register the instance
-        vm.userdata_registry.register_instance(&ud_gc);
+        reg.register_instance(&ud_gc);
 
         Value::UserData(ud_gc)
     }
 
     /// Call a method on a UserData value
     pub fn call_method<'gc>(
-        vm: &mut VM<'gc>,
+        vm: &VM<'gc>,
         reg: &UserDataRegistry<'gc>,
         userdata: &mut UserDataWrapper,
         method_name: &str,
@@ -624,7 +624,7 @@ pub mod vm_integration {
 
     /// Call a metamethod on a UserData value
     pub fn call_meta_method<'gc>(
-        vm: &mut VM<'gc>,
+        vm: &VM<'gc>,
         reg: &UserDataRegistry<'gc>,
         userdata: &mut UserDataWrapper,
         meta_method: MetaMethod,
@@ -643,7 +643,7 @@ pub mod vm_integration {
 
     /// Get a field from a UserData value
     pub fn get_field<'gc>(
-        vm: &mut VM<'gc>,
+        vm: &VM<'gc>,
         reg: &UserDataRegistry<'gc>,
         userdata: &mut UserDataWrapper,
         field_name: &str,
@@ -660,7 +660,7 @@ pub mod vm_integration {
 
     /// Set a field on a UserData value
     pub fn set_field<'gc>(
-        vm: &mut VM<'gc>,
+        vm: &VM<'gc>,
         reg: &UserDataRegistry<'gc>,
         userdata: &mut UserDataWrapper,
         field_name: &str,

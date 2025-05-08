@@ -163,7 +163,7 @@ macro_rules! binary_op  {
                 table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $l, rr, $opp)
             },
             (Value::UserData(left), right) => {
-                match $lua.handle_userdata_binary_op($ep, left, MetaMethod::$opp, right) {
+                match $lua.handle_userdata_binary_op($ep, &left, MetaMethod::$opp, right) {
                     Ok(result) => result,
                     Err(_) => return Err(SiltError::ExpOpValueWithValue(
                         ValueTypes::UserData, 
@@ -534,15 +534,15 @@ impl<'gc> VM<'gc> {
     }
 
     /** Look and get mutable reference to top of stack */
-    fn peek_mut(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> &mut Value<'gc> {
+    fn peek_mut(&self, ep: &mut Ephemeral<'_, 'gc>) -> &mut Value<'gc> {
         unsafe { &mut *ep.ip.sub(1) }
     }
 
-    fn grab(&mut self, ep: &mut Ephemeral<'_, 'gc>, n: usize) -> &Value<'gc> {
+    fn grab(&self, ep: &mut Ephemeral<'_, 'gc>, n: usize) -> &Value<'gc> {
         unsafe { &*ep.ip.sub(n) }
     }
 
-    fn grab_mut(&mut self, ep: &mut Ephemeral<'_, 'gc>, n: usize) -> &mut Value<'gc> {
+    fn grab_mut(&self, ep: &mut Ephemeral<'_, 'gc>, n: usize) -> &mut Value<'gc> {
         unsafe { &mut *ep.ip.sub(n) }
     }
 
@@ -1070,12 +1070,14 @@ impl<'gc> VM<'gc> {
                     let value = self.pop(ep);
                     match self.grab(ep, *depth as usize + 1) {
                         Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
-                        Value::UserData(u) => {
+                        Value::UserData(mut u) => {
                             let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
                             let field_name = field.to_string();
                             
                             // Use the new VM integration helpers
-                            match crate::userdata::vm_integration::set_field(self, u, &field_name, value) {
+                            // u.de
+                            let reg=&self.userdata_registry;
+                            match crate::userdata::vm_integration::set_field(self,reg, u.borrow_mut(), &field_name, value) {
                                 Ok(_) => Ok(()),
                                 Err(e) => Err(e),
                             }
@@ -1111,7 +1113,7 @@ impl<'gc> VM<'gc> {
                             let field_name = field.to_string();
                             
                             // Use the VM integration helpers
-                            match crate::userdata::vm_integration::get_field(self, ud, &field_name) {
+                            match crate::userdata::vm_integration::get_field(self,&self.userdata_registry, ud.borrow_mut(), &field_name) {
                                 Ok(value) => {
                                     self.stack_count -= u - 1;
                                     unsafe { ep.ip = ep.ip.sub(u - 1) };
@@ -1474,7 +1476,7 @@ impl<'gc> VM<'gc> {
         right: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
         // Try to call the metamethod
-        crate::userdata::vm_integration::call_meta_method(self, userdata, op, right)
+        crate::userdata::vm_integration::call_meta_method(self, &self.userdata_registry, userdata.borrow_mut(), op, right)
     }
 
     /** Register a native function on the global table  */
