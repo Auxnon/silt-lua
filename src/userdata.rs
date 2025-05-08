@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, marker::PhantomData};
+use std::{any::Any, collections::HashMap, marker::PhantomData, ops::{Deref, DerefMut}};
 
 use gc_arena::{Collect, Gc, Mutation};
 
@@ -327,6 +327,20 @@ impl UserDataWrapper {
     /// Convert to a string representation
     pub fn to_string(&self) -> String {
         format!("{} userdata (id: {})", self.type_name, self.id)
+    }
+}
+
+impl Deref for UserDataWrapper {
+    type Target = dyn Any;
+
+    fn deref(&self) -> &Self::Target {
+        self.data.as_ref()
+    }
+}
+
+impl DerefMut for UserDataWrapper {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.data.as_mut()
     }
 }
 
