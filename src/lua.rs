@@ -1,4 +1,4 @@
-use std::{ borrow::BorrowMut, collections::HashMap, mem::take};
+use std::{borrow::BorrowMut, collections::HashMap, mem::take, ops::DerefMut};
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
@@ -160,15 +160,16 @@ macro_rules! binary_op  {
             (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
             (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
             (Value::Table(left), rr ) => {
-                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left, $l, rr, $opp)
+                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left,  rr, $opp)
             },
             (Value::UserData(left), right) => {
-                match $lua.handle_userdata_binary_op($ep, &left, MetaMethod::$opp, right) {
+                let er = right.to_error(); // just in case, cheap op
+                match $lua.handle_userdata_binary_op($ep, left, MetaMethod::$opp, right) {
                     Ok(result) => result,
                     Err(_) => return Err(SiltError::ExpOpValueWithValue(
-                        ValueTypes::UserData, 
-                        MetaMethod::$opp, 
-                        right.to_error()
+                        ValueTypes::UserData,
+                        MetaMethod::$opp,
+                        er
                     ))
                 }
             },
@@ -178,7 +179,7 @@ macro_rules! binary_op  {
 }
 
 macro_rules! table_meta_op {
-    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $table:ident, $left:ident, $right:ident, $opp:tt) => {{
+    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $table:ident, $right:ident, $opp:tt) => {{
         let a = $table.borrow().by_meta_method(MetaMethod::$opp);
         match a {
             Ok(f) => {
@@ -191,7 +192,7 @@ macro_rules! table_meta_op {
                  * future me problem.
                  */
                 $lua.push($ep, f);
-                $lua.push($ep, $left);
+                $lua.push($ep, Value::Table($table));
                 // $lua.push($ep,$right);
                 let arity: u8 = 1;
                 let val = $lua.peekn($ep, arity);
@@ -216,6 +217,7 @@ macro_rules! table_meta_op {
 }
 
 type LuaResult = Result<ExVal, Vec<ErrorTuple>>;
+type InnerUserData<'a> = Gc<'a,RefLock<UserDataWrapper>>;
 pub struct Lua {
     arena: Arena<Rootable![VM<'_>]>,
 }
@@ -310,7 +312,7 @@ pub struct VM<'gc> {
     table_counter: usize,
     // meta_lookup: HashMap<String, MetaMethod>,
     // string_meta: Option<Gc<Table>>,
-    pub userdata_registry: UserDataRegistry<'gc>
+    pub userdata_registry: UserDataRegistry<'gc>,
 }
 
 // #[derive(Copy, Clone, Collect)]
@@ -751,7 +753,6 @@ impl<'gc> VM<'gc> {
                                 frames,
                                 frame_count,
                                 table,
-                                left,
                                 rr,
                                 Div
                             );
@@ -1070,14 +1071,20 @@ impl<'gc> VM<'gc> {
                     let value = self.pop(ep);
                     match self.grab(ep, *depth as usize + 1) {
                         Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
-                        Value::UserData(mut u) => {
+                        Value::UserData(u) => {
                             let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
                             let field_name = field.to_string();
-                            
+
                             // Use the new VM integration helpers
-                            // u.de
-                            let reg=&self.userdata_registry;
-                            match crate::userdata::vm_integration::set_field(self,reg, u.borrow_mut(), &field_name, value) {
+                            let u=&mut * (*u).borrow_mut(ep.mc);
+                            let reg = &self.userdata_registry;
+                            match crate::userdata::vm_integration::set_field(
+                                self,
+                                reg,
+                                u,
+                                &field_name,
+                                value,
+                            ) {
                                 Ok(_) => Ok(()),
                                 Err(e) => Err(e),
                             }
@@ -1100,28 +1107,33 @@ impl<'gc> VM<'gc> {
                     let u = *depth as usize + 1;
                     let table_point = unsafe { ep.ip.sub(u) };
                     let value = unsafe { &*table_point };
-                    
+
                     match value {
-                        Value::Table(_) => {
-                            match self.operate_table(ep, *depth, None) {
-                                Ok(_) => {},
-                                Err(e) => return Err(e),
-                            }
+                        Value::Table(_) => match self.operate_table(ep, *depth, None) {
+                            Ok(_) => {}
+                            Err(e) => return Err(e),
                         },
                         Value::UserData(ud) => {
                             let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
                             let field_name = field.to_string();
-                            
+                            let mut mu =(*ud).borrow_mut(ep.mc);
+                            let rud = mu.deref_mut();
+
                             // Use the VM integration helpers
-                            match crate::userdata::vm_integration::get_field(self,&self.userdata_registry, ud.borrow_mut(), &field_name) {
+                            match crate::userdata::vm_integration::get_field(
+                                self,
+                                &self.userdata_registry,
+                                rud,
+                                &field_name,
+                            ) {
                                 Ok(value) => {
                                     self.stack_count -= u - 1;
                                     unsafe { ep.ip = ep.ip.sub(u - 1) };
                                     unsafe { table_point.replace(value) };
-                                },
+                                }
                                 Err(e) => return Err(e),
                             }
-                        },
+                        }
                         _ => return Err(SiltError::VmNonTableOperations(value.to_error())),
                     }
                 }
@@ -1471,12 +1483,20 @@ impl<'gc> VM<'gc> {
     pub(crate) fn handle_userdata_binary_op(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
-        userdata: &Gc<'gc, UserDataWrapper>,
+         userdata: InnerUserData<'gc>,
         op: MetaMethod,
         right: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
+        let u= &mut *userdata.borrow_mut(ep.mc);
+        // let rud = u.deref_mut() ;
         // Try to call the metamethod
-        crate::userdata::vm_integration::call_meta_method(self, &self.userdata_registry, userdata.borrow_mut(), op, right)
+        crate::userdata::vm_integration::call_meta_method(
+            self,
+            &self.userdata_registry,
+           u,
+            op,
+            right,
+        )
     }
 
     /** Register a native function on the global table  */
@@ -1500,12 +1520,12 @@ impl<'gc> VM<'gc> {
     pub fn register_userdata_type<T: UserData>(&mut self) {
         self.userdata_registry.register::<T>();
     }
-    
+
     /// Create a UserData value
     pub fn create_userdata<T: UserData>(&mut self, mc: &Mutation<'gc>, data: T) -> Value<'gc> {
-        crate::userdata::vm_integration::create_userdata(self, mc, data)
+        crate::userdata::vm_integration::create_userdata(&mut self.userdata_registry, mc, data)
     }
-    
+
     pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
         self.register_native_function(mc, "clock", crate::standard::clock);
         self.register_native_function(mc, "print", crate::standard::print);

@@ -184,6 +184,11 @@ impl std::fmt::Display for SiltError {
             SiltError::MetaMethodNotCallable(meta_method) => {
                 write!(f, "Value for meta method '{}' is not callable", meta_method)
             }
+
+            SiltError::UDNoInitField=> write!(f, "UserData field not setup"),
+            SiltError::UDNoInitMethod=> write!(f, "UserData method not setup"),
+            SiltError::UDNoFieldRef=> write!(f, "UserData field does not exist"),
+            SiltError::UDNoMethodRef=> write!(f, "UserData method does not exist"),
             SiltError::UDTypeMismatch => {
                 write!(f, "UserData type mismatch during method or field access")
             }

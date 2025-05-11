@@ -75,7 +75,7 @@ pub enum Value<'gc> {
     Closure(Gc<'gc, Closure<'gc>>),
     // Func(fn(Vec<Value>) -> Value)
     NativeFunction(Gc<'gc, WrappedFn<'gc>>),
-    UserData(Gc<'gc, UserDataWrapper>),
+    UserData(Gc<'gc, RefLock<UserDataWrapper>>),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
@@ -167,6 +167,8 @@ impl std::fmt::Display for ExVal {
             ExVal::String(s) | ExVal::Meta(s) => write!(f, "\"{}\"", s),
             ExVal::Infinity(b) => write!(f, "{}inf", if *b { "-" } else { "" }),
             ExVal::Table(t) => write!(f, "{}", t.to_string()),
+            ExVal::UserData(u) => write!(f, "{}", u.to_string()),
+
             #[cfg(feature = "vectors")]
             ExVal::Vec3(v) => write!(f, "{}", v),
             #[cfg(feature = "vectors")]
@@ -196,7 +198,7 @@ impl std::fmt::Display for Value<'_> {
             Value::Closure(c) => write!(f, "=>({})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(_t) => write!(f, "{}", 't'),
-            Value::UserData(u) => write!(f, "{}", u.borrow().to_string()),
+            Value::UserData(u) => write!(f, "userdata"), // TODO 
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => write!(f, "{}", v),
             #[cfg(feature = "vectors")]

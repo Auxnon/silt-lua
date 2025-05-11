@@ -265,7 +265,7 @@ impl<'gc> UserDataRegistry<'gc> {
     }
 
     /// Get methods for a UserData type
-    pub fn get_methods(&self, type_name: &'static str) -> Option<&UserDataMap<'gc>> {
+    pub fn get_map(&self, type_name: &'static str) -> Option<&UserDataMap<'gc>> {
         self.maps.get(type_name)
     }
 
@@ -594,6 +594,8 @@ impl MetaMethod {
 
 /// Helper functions for VM integration
 pub mod vm_integration {
+    use gc_arena::lock::RefLock;
+
     use super::*;
 
     /// Create a new UserData value
@@ -610,10 +612,10 @@ pub mod vm_integration {
 
         // Create the UserData wrapper and return it as a Value
         let wrapper = UserDataWrapper::new(data);
-        let ud_gc = Gc::new(mc, wrapper);
+        let ud_gc = Gc::new(mc, RefLock::new(wrapper));
 
         // Register the instance
-        reg.register_instance(&ud_gc);
+        // reg.register_instance(&ud_gc); // TODO
 
         Value::UserData(ud_gc)
     }
@@ -629,7 +631,7 @@ pub mod vm_integration {
         let type_name = userdata.type_name();
 
         // Look up the method in the registry
-        if let Some(methods) = reg.get_methods(type_name) {
+        if let Some(methods) = reg.get_map(type_name) {
             return methods.call_method(vm, userdata, method_name, arg);
         }
 
@@ -648,7 +650,7 @@ pub mod vm_integration {
         let meta_key = meta_method.to_table_key();
 
         // Look up the metamethod in the registry
-        if let Some(methods) = reg.get_methods(type_name) {
+        if let Some(methods) = reg.get_map(type_name) {
             return methods.call_meta_method(vm, userdata, meta_key, arg);
         }
 
@@ -665,7 +667,7 @@ pub mod vm_integration {
         let type_name = userdata.type_name();
 
         // Look up the field getter in the registry
-        if let Some(methods) = reg.get_methods(type_name) {
+        if let Some(methods) = reg.get_map(type_name) {
             return methods.get_field(vm, userdata, field_name);
         }
 
@@ -683,7 +685,7 @@ pub mod vm_integration {
         let type_name = userdata.type_name();
 
         // Look up the field setter in the registry
-        if let Some(methods) = reg.get_methods(type_name) {
+        if let Some(methods) = reg.get_map(type_name) {
             return methods.set_field(vm, userdata, field_name, value);
         }
 

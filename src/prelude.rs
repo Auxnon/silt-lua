@@ -5,6 +5,6 @@ pub use crate::{
     function::{Closure, FunctionObject},
     lua::{Lua, VM},
     table::Table,
-    userdata::{UserData, UserDataMethods, UserDataFields},
+    userdata::{UserData, UserDataTypedMap, UserDataFields},
     value::{Reference, Value},
 };
