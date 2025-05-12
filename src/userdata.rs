@@ -1,4 +1,9 @@
-use std::{any::Any, collections::HashMap, marker::PhantomData, ops::{Deref, DerefMut}};
+use std::{
+    any::Any,
+    collections::HashMap,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use gc_arena::{Collect, Gc, Mutation};
 
@@ -64,10 +69,28 @@ pub type UserDataSetterFn<'gc, T> = Box<dyn Fn(&VM<'gc>, &mut T, Value<'gc>) -> 
 
 /// Trait object for type-erased UserData methods
 pub trait UserDataMapTraitObj<'gc>: 'gc {
-    fn call_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc>;
-    fn call_meta_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc>;
+    fn call_method(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        arg: Value<'gc>,
+    ) -> LuaResult<'gc>;
+    fn call_meta_method(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        arg: Value<'gc>,
+    ) -> LuaResult<'gc>;
     fn get_field(&self, vm: &VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc>;
-    fn set_field(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc>;
+    fn set_field(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        value: Value<'gc>,
+    ) -> LuaResult<'gc>;
 }
 
 /// Stores methods and fields for a specific UserData type T
@@ -89,10 +112,24 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
             _phantom: PhantomData,
         }
     }
+    pub fn to_string(&self) -> String {
+        self.getters
+            .keys()
+            .map(|s| &**s)
+            .collect::<Vec<&str>>()
+            .join(",")
+    }
 }
 
 impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'gc, T> {
-    fn call_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
+    fn call_method(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        arg: Value<'gc>,
+    ) -> LuaResult<'gc> {
+        // println!("method list");
         if let Some(method) = self.methods.get(name) {
             if let Some(data) = ud.data.downcast_mut::<T>() {
                 return method(vm, data, arg);
@@ -101,7 +138,13 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         Err(SiltError::UDNoMethodRef)
     }
 
-    fn call_meta_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
+    fn call_meta_method(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        arg: Value<'gc>,
+    ) -> LuaResult<'gc> {
         if let Some(method) = self.meta_methods.get(name) {
             if let Some(data) = ud.data.downcast_mut::<T>() {
                 return method(vm, data, arg);
@@ -111,15 +154,41 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
     }
 
     fn get_field(&self, vm: &VM<'gc>, ud: &UserDataWrapper, name: &str) -> LuaResult<'gc> {
+        // println!("field getters {}", name);
+        // println!(
+        //     "{}",
+        //     self.getters
+        //         .keys()
+        //         .map(|s| &**s)
+        //         .collect::<Vec<&str>>()
+        //         .join(",")
+        // );
+        // let temp="NA".to_string();
+        // let mut ar=self.getters.keys().map(|s|&**s);
+        // ar.next();
+        // ar.next();
+        // let first= ar.next().unwrap_or(&temp);
+        // println!("first {}",first);
+        // println!("name {}",name);
+        // println!("eq {}",first==name);
         if let Some(getter) = self.getters.get(name) {
+            // println!("yeah we exist {}", name);
             if let Some(data) = ud.data.downcast_ref::<T>() {
                 return getter(vm, data);
             }
         }
+        println!("we dont exist");
         Err(SiltError::UDNoFieldRef)
     }
 
-    fn set_field(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc> {
+    fn set_field(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        value: Value<'gc>,
+    ) -> LuaResult<'gc> {
+        // println!("field setters");
         if let Some(setter) = self.setters.get(name) {
             if let Some(data) = ud.data.downcast_mut::<T>() {
                 return setter(vm, data, value);
@@ -141,11 +210,23 @@ impl<'gc> UserDataMap<'gc> {
         }
     }
 
-    pub fn call_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
+    pub fn call_method(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        arg: Value<'gc>,
+    ) -> LuaResult<'gc> {
         self.data.call_method(vm, ud, name, arg)
     }
 
-    pub fn call_meta_method(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, arg: Value<'gc>) -> LuaResult<'gc> {
+    pub fn call_meta_method(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        arg: Value<'gc>,
+    ) -> LuaResult<'gc> {
         self.data.call_meta_method(vm, ud, name, arg)
     }
 
@@ -153,7 +234,13 @@ impl<'gc> UserDataMap<'gc> {
         self.data.get_field(vm, ud, name)
     }
 
-    pub fn set_field(&self, vm: &VM<'gc>, ud: &mut UserDataWrapper, name: &str, value: Value<'gc>) -> LuaResult<'gc> {
+    pub fn set_field(
+        &self,
+        vm: &VM<'gc>,
+        ud: &mut UserDataWrapper,
+        name: &str,
+        value: Value<'gc>,
+    ) -> LuaResult<'gc> {
         self.data.set_field(vm, ud, name, value)
     }
 }
@@ -175,9 +262,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     where
         F: Fn(&VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
     {
-        let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| {
-            closure(vm, ud, val)
-        });
+        let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| closure(vm, ud, val));
         self.meta_methods.insert(name.to_string(), func);
     }
 
@@ -185,9 +270,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     where
         F: Fn(&VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
     {
-        let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| {
-            closure(vm, ud, val)
-        });
+        let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| closure(vm, ud, val));
         self.methods.insert(name.to_string(), func);
     }
 
@@ -195,9 +278,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     where
         F: Fn(&VM<'gc>, &T, Value<'gc>) -> LuaResult<'gc> + 'static,
     {
-        let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| {
-            closure(vm, ud, val)
-        });
+        let func: UserDataMethodFn<'gc, T> = Box::new(move |vm, ud, val| closure(vm, ud, val));
         self.methods.insert(name.to_string(), func);
     }
 }
@@ -207,9 +288,8 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
     where
         F: Fn(&VM<'gc>, &T) -> LuaResult<'gc> + 'static,
     {
-        let func: UserDataGetterFn<'gc, T> = Box::new(move |vm, ud| {
-            closure(vm, ud)
-        });
+        println!("add getter {}", name);
+        let func: UserDataGetterFn<'gc, T> = Box::new(move |vm, ud| closure(vm, ud));
         self.getters.insert(name.to_string(), func);
     }
 
@@ -217,9 +297,8 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
     where
         F: Fn(&VM<'gc>, &mut T, Value<'gc>) -> LuaResult<'gc> + 'static,
     {
-        let func: UserDataSetterFn<'gc, T> = Box::new(move |vm, ud, val| {
-            closure(vm, ud, val)
-        });
+        println!("add setter {}", name);
+        let func: UserDataSetterFn<'gc, T> = Box::new(move |vm, ud, val| closure(vm, ud, val));
         self.setters.insert(name.to_string(), func);
     }
 }
@@ -243,17 +322,16 @@ impl<'gc> UserDataRegistry<'gc> {
         let type_name = T::type_name();
         // Only register if not already registered
         if !self.maps.contains_key(type_name) {
-            let mut typed_map=UserDataTypedMap::<T>::new(); 
-            // Create methods container
-            
+            let mut typed_map = UserDataTypedMap::<T>::new();
+
             // Register methods
-            // let mut methods_impl = UserDataMethodsImpl::<T>::new(&mut methods);
             T::add_methods(&mut typed_map);
-            
+
             // Register fields
             T::add_fields(&mut typed_map);
+            println!("TypedMap {}", typed_map.to_string());
             let map = UserDataMap::new(typed_map);
-            
+
             // Store in registry
             self.maps.insert(type_name, map);
         }
@@ -631,11 +709,11 @@ pub mod vm_integration {
         let type_name = userdata.type_name();
 
         // Look up the method in the registry
-        if let Some(methods) = reg.get_map(type_name) {
-            return methods.call_method(vm, userdata, method_name, arg);
+        if let Some(map) = reg.get_map(type_name) {
+            return map.call_method(vm, userdata, method_name, arg);
         }
 
-        Err(SiltError::UDNoMethodRef)
+        Err(SiltError::UDNoMap)
     }
 
     /// Call a metamethod on a UserData value
@@ -650,11 +728,11 @@ pub mod vm_integration {
         let meta_key = meta_method.to_table_key();
 
         // Look up the metamethod in the registry
-        if let Some(methods) = reg.get_map(type_name) {
-            return methods.call_meta_method(vm, userdata, meta_key, arg);
+        if let Some(map) = reg.get_map(type_name) {
+            return map.call_meta_method(vm, userdata, meta_key, arg);
         }
 
-        Err(SiltError::MetaMethodMissing(meta_method))
+        Err(SiltError::UDNoMap)
     }
 
     /// Get a field from a UserData value
@@ -667,11 +745,11 @@ pub mod vm_integration {
         let type_name = userdata.type_name();
 
         // Look up the field getter in the registry
-        if let Some(methods) = reg.get_map(type_name) {
-            return methods.get_field(vm, userdata, field_name);
+        if let Some(map) = reg.get_map(type_name) {
+            return map.get_field(vm, userdata, field_name);
         }
 
-        Err(SiltError::UDNoFieldRef)
+        Err(SiltError::UDNoMap)
     }
 
     /// Set a field on a UserData value
@@ -685,10 +763,10 @@ pub mod vm_integration {
         let type_name = userdata.type_name();
 
         // Look up the field setter in the registry
-        if let Some(methods) = reg.get_map(type_name) {
-            return methods.set_field(vm, userdata, field_name, value);
+        if let Some(map) = reg.get_map(type_name) {
+            return map.set_field(vm, userdata, field_name, value);
         }
 
-        Err(SiltError::UDNoFieldRef)
+        Err(SiltError::UDNoMap)
     }
 }

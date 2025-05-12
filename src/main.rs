@@ -281,7 +281,7 @@ fn main() {
     // end
     // sprint a
     // end
-// "#;
+    // "#;
 
     // let mut compiler = Compiler::new();
     // let o = compiler.compile(source_in.to_string());
@@ -290,10 +290,41 @@ fn main() {
     // o.chunk.print_chunk(None);
     // compiler.print_errors();
 
+    // let source_in = r#"
+    // local a={}
+    // a.b=5
+    // function adder(self,k,h)
+    //     return self.b+k
+    // end
+    // function subber(self,k,h)
+    //     return self.b-k
+    // end
+    // local mt={__add=adder,__sub=subber}
+    // setmetatable(a,mt)
+    // return a+7
+    // "#;
+
+
+
+    // let source_in = r#"
+    //         local a= 1+2
+    //         return a
+    //         "#;
+    // let source_in = r#"
+    //         local a= {b=5,c=6}
+    //         return a
+    //         "#;
+    // let source_in = r#"
+    //     function test(a,b)
+    //     return a+b
+    //     end
+    //     local x=4
+    //     local z=6
+    //     return test(x,z)
+    //     "#;
     let mut compiler = Compiler::new();
     let mut lua = Lua::new_with_standard();
-    match lua.run(source_in, &mut compiler)
- {
+    match lua.run(source_in, &mut compiler) {
         Ok(o) => {
             println!("-----------------");
             println!(">> {}", o);

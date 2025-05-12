@@ -236,7 +236,26 @@ impl<'v> Value<'v> {
             Value::Vec2(_) => ValueTypes::Vec2,
         }
     }
+    /** normal to_string takes some liberties for convenient display purposes. This more raw
+     * approach is used for UserData hashmap lookup*/
+    pub fn pure_string(&self)-> String{
 
+        match self{
+            // Value::Integer(i) => i.to_string(),
+            // Value::Number(n) => write!(f, "{}", n),
+            // Value::Bool(b) => write!(f, "{}", b),
+            // Value::Nil => write!(f, "nil"),
+            // Value::String(s) => write!(f, "\"{}\"", s),
+            // Value::Infinity(b) => write!(f, "{}inf", if *b { "-" } else { "" }),
+            // Value::NativeFunction(_) => write!(f, "native_function"),
+            // Value::Closure(c) => write!(f, "=>({})", c.function),
+            // Value::Function(ff) => write!(f, "{}", ff),
+            // Value::Table(_t) => write!(f, "{}", 't'),
+            // Value::UserData(u) => write!(f, "userdata") 
+            Value::String(s)=>s.to_string(),
+            _=> "NA".to_string()
+        }
+    }
     pub fn force_to_int(&mut self, n: i64) {
         *self = Value::Integer(n);
     }

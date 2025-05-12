@@ -1073,9 +1073,8 @@ impl<'gc> VM<'gc> {
                         Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
                         Value::UserData(u) => {
                             let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
-                            let field_name = field.to_string();
+                            let field_name = field.pure_string();
 
-                            // Use the new VM integration helpers
                             let u=&mut * (*u).borrow_mut(ep.mc);
                             let reg = &self.userdata_registry;
                             match crate::userdata::vm_integration::set_field(
@@ -1115,11 +1114,10 @@ impl<'gc> VM<'gc> {
                         },
                         Value::UserData(ud) => {
                             let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
-                            let field_name = field.to_string();
+                            let field_name = field.pure_string();
                             let mut mu =(*ud).borrow_mut(ep.mc);
                             let rud = mu.deref_mut();
 
-                            // Use the VM integration helpers
                             match crate::userdata::vm_integration::get_field(
                                 self,
                                 &self.userdata_registry,
@@ -1515,22 +1513,24 @@ impl<'gc> VM<'gc> {
             .insert(name.to_string(), Value::NativeFunction(Gc::new(mc, f)));
     }
 
-    /** Load standard library functions */
-    /// Register a UserData type with the VM
-    pub fn register_userdata_type<T: UserData>(&mut self) {
-        self.userdata_registry.register::<T>();
-    }
+    // /// Register a UserData type with the VM
+    // pub fn register_userdata_type<T: UserData>(&mut self) {
+    //     self.userdata_registry.register::<T>();
+    // }
 
     /// Create a UserData value
     pub fn create_userdata<T: UserData>(&mut self, mc: &Mutation<'gc>, data: T) -> Value<'gc> {
         crate::userdata::vm_integration::create_userdata(&mut self.userdata_registry, mc, data)
     }
 
+    /** Load standard library functions */
     pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
         self.register_native_function(mc, "clock", crate::standard::clock);
         self.register_native_function(mc, "print", crate::standard::print);
         self.register_native_function(mc, "setmetatable", crate::standard::setmetatable);
         self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
+        self.register_native_function(mc, "teste", crate::standard::test);
+
     }
 
     fn print_raw_stack(&self) {
