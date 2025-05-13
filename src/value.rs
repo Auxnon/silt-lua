@@ -76,6 +76,8 @@ pub enum Value<'gc> {
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
     Vec2(Vec2),
+    /// Multiple return values
+    MultiValue(Vec<Value<'gc>>),
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +95,7 @@ pub enum ExVal {
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
     Vec2(Vec2),
+    MultiValue(Vec<ExVal>),
 }
 
 pub enum MultiVal<'a, 'b> {
@@ -150,6 +153,10 @@ impl Into<ExVal> for Value<'_> {
             Value::Vec3(v) => ExVal::Vec3(v),
             #[cfg(feature = "vectors")]
             Value::Vec2(v) => ExVal::Vec2(v),
+            Value::MultiValue(values) => {
+                let ex_values = values.into_iter().map(|v| v.into()).collect();
+                ExVal::MultiValue(ex_values)
+            }
         }
     }
 }
@@ -171,7 +178,16 @@ impl std::fmt::Display for ExVal {
             ExVal::Infinity(b) => write!(f, "{}inf", if *b { "-" } else { "" }),
             ExVal::Table(t) => write!(f, "{}", t.to_string()),
             ExVal::UserData(u) => write!(f, "{}", u.to_string()),
-
+            ExVal::MultiValue(values) => {
+                write!(f, "(")?;
+                for (i, value) in values.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", value)?;
+                }
+                write!(f, ")")
+            },
             #[cfg(feature = "vectors")]
             ExVal::Vec3(v) => write!(f, "{}", v),
             #[cfg(feature = "vectors")]
@@ -202,6 +218,16 @@ impl std::fmt::Display for Value<'_> {
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(_t) => write!(f, "{}", 't'),
             Value::UserData(_) => write!(f, "userdata"), // TODO
+            Value::MultiValue(values) => {
+                write!(f, "(")?;
+                for (i, value) in values.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", value)?;
+                }
+                write!(f, ")")
+            },
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => write!(f, "{}", v),
             #[cfg(feature = "vectors")]
@@ -232,6 +258,7 @@ impl<'v> Value<'v> {
             Value::Closure(_) => ValueTypes::Closure,
             Value::Table(_) => ValueTypes::Table,
             Value::UserData(_) => ValueTypes::UserData,
+            Value::MultiValue(_) => ValueTypes::MultiValue,
             #[cfg(feature = "vectors")]
             Value::Vec3(_) => ValueTypes::Vec3,
             #[cfg(feature = "vectors")]
@@ -302,6 +329,9 @@ impl<'v> Value<'v> {
             // }),
             Value::Table(t) => Value::Table(Gc::clone(t)),
             Value::UserData(u) => Value::UserData(Gc::clone(u)),
+            Value::MultiValue(values) => {
+                Value::MultiValue(values.iter().map(|v| v.clone()).collect())
+            },
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => Value::Vec3(*v),
             #[cfg(feature = "vectors")]
