@@ -1,10 +1,9 @@
-use std::{collections::HashMap, fmt::Display};
+use std::collections::HashMap;
 
-use gc_arena::{Collect, Gc};
+use gc_arena::Collect;
 
 use crate::{
     error::SiltError,
-    prelude::{Closure, FunctionObject},
     userdata::MetaMethod,
     value::{ExVal, Value},
 };
@@ -97,7 +96,7 @@ impl<'v> Table<'v> {
                 println!("looking for meta method: {}", s);
                 if let Some(func) = t
                     .borrow()
-                    .get(&Value::String(Box::new(method.to_table_key().to_string())))
+                    .get(&Value::String(method.to_table_key().to_string()))
                 {
                     println!("found meta method: {}", func);
                     return if let Value::Closure(_) = func {

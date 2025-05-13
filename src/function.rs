@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fmt::Display, ops::Deref, ptr::NonNull, rc::Rc};
+use std::{fmt::Display, ops::Deref };
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
@@ -7,7 +7,7 @@ use crate::{
     code::OpCode,
     error::SiltError,
     lua::{Ephemeral, VM},
-    value::{ExVal, Value},
+    value::Value,
 };
 
 /////////////
@@ -119,7 +119,7 @@ impl<'frame> CallFrame<'frame> {
     // }
 
     /** take and replace with a Nil */
-    pub fn take(&'frame mut self) -> &Value {
+    pub fn take<'a>(&'frame mut self) -> &'a Value<'frame> {
         // self.stack_top = unsafe { self.stack_top.sub(1) };
         // unsafe { *self.stack_top }
         let v = unsafe { &*self.local_stack };

@@ -1,7 +1,7 @@
-use gc_arena::{Collect, Gc};
+use gc_arena::Collect;
 use std::fmt::{self, Display, Formatter};
 
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Clone, Collect)]
 #[collect(no_drop)]
 pub enum OpCode {
@@ -103,10 +103,6 @@ pub enum OpCode {
     INCREMENT {
         index: u8,
     },
-}
-pub enum Tester {
-    CONSTANT(u8),
-    RETURN,
 }
 
 impl Display for OpCode {

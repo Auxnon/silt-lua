@@ -205,7 +205,7 @@ struct ParseRule {
 
 /** stores a local identifier's name by boxed string, if none is provbided it serves as a placeholder for statements such as a loop, this way they cannot be resolved as variables */
 struct Local {
-    ident: Option<Box<String>>,
+    ident: Option<String>,
     /** scope depth, indepedent of functional depth */
     depth: usize,
     /** how many layers deep the local value is nested in a function, with 0 being global (should only happen once to reserve the root func on the stack) */
@@ -353,7 +353,7 @@ impl Compiler {
     //     // self.code.last().unwrap()
     // }
 
-    fn write_identifier(&mut self, f: FnRef, identifier: Box<String>) -> usize {
+    fn write_identifier(&mut self, f: FnRef, identifier: String) -> usize {
         f.chunk.write_identifier(identifier)
     }
 
@@ -570,7 +570,7 @@ impl Compiler {
         self.labels.insert(label, self.get_chunk_size(f));
     }
 
-    fn identifer_constant(&mut self, f: FnRef, ident: Box<String>) -> u8 {
+    fn identifer_constant(&mut self, f: FnRef, ident: String) -> u8 {
         self.write_identifier(f, ident) as u8
     }
 
@@ -591,7 +591,7 @@ impl Compiler {
     }
 
     /** write identifier to constant table, remove duplicates, and emit code */
-    fn emit_identifer_constant_at<'a, 'c: 'a>(&mut self, f: FnRef, ident: Box<String>) {
+    fn emit_identifer_constant_at<'a, 'c: 'a>(&mut self, f: FnRef, ident: String) {
         let constant = self.write_identifier(f, ident) as u8;
         self.emit(f, OpCode::CONSTANT { constant }, self.current_location);
     }
@@ -851,7 +851,7 @@ fn declaration_scope<'a, 'c: 'a>(
     this: &mut Compiler,
     f: FnRef,
     it: &mut Peekable<Lexer>,
-    ident: Box<String>,
+    ident: String,
     local: bool,
     location: Location,
 ) -> Catch {
@@ -886,7 +886,7 @@ fn declaration_scope<'a, 'c: 'a>(
 fn add_local(
     this: &mut Compiler,
     it: &mut Peekable<Lexer>,
-    ident: Box<String>,
+    ident: String,
 ) -> Result<u8, ErrorTuple> {
     _add_local(this, it, Some(ident))
 }
@@ -899,7 +899,7 @@ fn add_local_placeholder(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Resul
 fn _add_local(
     this: &mut Compiler,
     it: &mut Peekable<Lexer>,
-    ident: Option<Box<String>>,
+    ident: Option<String>,
 ) -> Result<u8, ErrorTuple> {
     devnote!(this it "add_local");
     // let offset = if this.functional_depth > 0 {
@@ -936,7 +936,7 @@ fn _add_local(
 fn resolve_local(
     this: &mut Compiler,
     it: &mut Peekable<Lexer>,
-    ident: &Box<String>,
+    ident: &String,
 ) -> Option<(u8, bool)> {
     devnote!(this it "resolve_local");
     for (i, l) in this.locals.iter_mut().enumerate().rev() {
@@ -1127,10 +1127,10 @@ fn define_function<'c>(
             unreachable!()
         }
     } else {
-        (Box::new("anonymous".to_string()), this.current_location)
+        ("anonymous".to_string(), this.current_location)
     };
 
-    let ident_clone = *ident.clone();
+    let ident_clone = ident.clone();
     let global_ident = if this.scope_depth > 0 && local {
         //local
         //TODO should we warn? redefine_behavior(this,ident)?
@@ -1500,7 +1500,7 @@ fn set_goto_label(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Ca
     this.eat(it);
     let token = this.pop(it).0?;
     if let Token::Identifier(ident) = token {
-        this.labels.insert(*ident, this.get_chunk_size(f));
+        this.labels.insert(ident, this.get_chunk_size(f));
     } else {
         return Err(this.error_at(SiltError::ExpectedLabelIdentifier));
     }
@@ -2046,7 +2046,7 @@ fn string(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: 
     devnote!(this it "string");
     let t = this.copy_store()?;
     let value = if let Token::StringLiteral(s) = t {
-        Value::String(Box::new(s.into_string()))
+        Value::String(s.into_string())
     } else {
         unreachable!()
     };

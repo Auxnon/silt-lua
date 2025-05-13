@@ -6,7 +6,7 @@ pub enum Token {
     // TODO temporary
     Print,
 
-    Identifier(Box<String>),
+    Identifier(String),
     Break,
     Do,
     If,
@@ -113,7 +113,7 @@ pub enum Flag {
     Local,
 }
 impl Token {
-    pub fn unwrap_identifier(&self) -> &Box<String> {
+    pub fn unwrap_identifier(&self) -> &String {
         match self {
             Token::Identifier(s) => s,
             _ => panic!("unwrap_identifier"),

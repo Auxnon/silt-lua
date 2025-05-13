@@ -1,23 +1,19 @@
 use std::{
-    borrow::Borrow,
-    cell::RefCell,
     hash::{Hash, Hasher},
     ops::Deref,
     rc::Rc,
 };
 
-use gc_arena::{barrier::Unlock, lock::RefLock, Collect, Gc};
-use hashbrown::HashMap;
+use gc_arena::{lock::RefLock, Collect, Gc};
 
 #[cfg(feature = "vectors")]
 use crate::vec::{Vec2, Vec3};
 use crate::{
     error::{SiltError, ValueTypes},
-    function::{Closure, FunctionObject, NativeFunction, WrappedFn},
+    function::{Closure, FunctionObject, WrappedFn},
     lua::VM,
     table::Table,
-    token::Operator,
-    userdata::{MetaMethod, UserData, UserDataWrapper},
+    userdata::{MetaMethod, UserDataWrapper},
 };
 
 /**
@@ -47,9 +43,9 @@ macro_rules! binary_self_op {
     };
 }
 
-trait Testo {
-    fn yes(&self);
-}
+// trait Testo {
+//     fn yes(&self);
+// }
 
 /** Lua value enum representing different data types within a VM */
 #[derive(Collect, Default)]
@@ -65,7 +61,7 @@ pub enum Value<'gc> {
     // Bool(bool),
     // TODO in most cases strings are just copied around on the heap, this is expensive but saves us from using GC here
     // TODO 2 consider other encoding options for efficiency. Is having a seperate ASCII string type beneficial to only english speakers? how would other speaking languages handle ascii strings without needed glyphs?
-    String(Box<String>),
+    String(String),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
     Table(Gc<'gc, RefLock<Table<'gc>>>),
@@ -89,10 +85,10 @@ pub enum ExVal {
     Number(f64),
     Bool(bool),
     Infinity(bool),
-    String(Box<String>),
+    String(String),
     Table(crate::table::ExTable),
-    Meta(Box<String>),
-    UserData(Box<String>),
+    Meta(String),
+    UserData(String),
     #[cfg(feature = "vectors")]
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
@@ -104,14 +100,21 @@ pub enum MultiVal<'a, 'b> {
     Single(&'a Value<'b>),
 }
 
-impl<'a, 'b> Into<&'a Value<'b>> for MultiVal<'a,'b> {
+impl<'a, 'b> Into<&'a Value<'b>> for MultiVal<'a, 'b> {
     fn into(self) -> &'a Value<'b> {
         match self {
-            MultiVal::Vecced(a) => if !a.is_empty(){&a[0]}else{&Value::Nil},
+            MultiVal::Vecced(a) => {
+                if !a.is_empty() {
+                    &a[0]
+                } else {
+                    &Value::Nil
+                }
+            }
             MultiVal::Single(v) => v,
         }
     }
 }
+
 
 impl Eq for ExVal {}
 impl PartialEq for ExVal {
@@ -141,8 +144,8 @@ impl Into<ExVal> for Value<'_> {
             Value::Table(t) => ExVal::Table(t.borrow().to_exval()),
             Value::Function(f) => ExVal::Meta(format!("{}", f).into()),
             Value::Closure(c) => ExVal::Meta(format!("=>({})", c.function).into()),
-            Value::NativeFunction(f) => ExVal::Meta(Box::new("native_function".to_string())),
-            Value::UserData(u) => ExVal::UserData(Box::new(format!("{} userdata", u.borrow().type_name()))),
+            Value::NativeFunction(_) => ExVal::Meta("native_function".to_string()),
+            Value::UserData(u) => ExVal::UserData(format!("{} userdata", u.borrow().type_name())),
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => ExVal::Vec3(v),
             #[cfg(feature = "vectors")]
@@ -198,13 +201,12 @@ impl std::fmt::Display for Value<'_> {
             Value::Closure(c) => write!(f, "=>({})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(_t) => write!(f, "{}", 't'),
-            Value::UserData(u) => write!(f, "userdata"), // TODO 
+            Value::UserData(_) => write!(f, "userdata"), // TODO
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => write!(f, "{}", v),
             #[cfg(feature = "vectors")]
             Value::Vec2(v) => write!(f, "{}", v),
             // Value::UserData(u) => write!(f, "{}", v),
-
         }
     }
 }
@@ -238,9 +240,8 @@ impl<'v> Value<'v> {
     }
     /** normal to_string takes some liberties for convenient display purposes. This more raw
      * approach is used for UserData hashmap lookup*/
-    pub fn pure_string(&self)-> String{
-
-        match self{
+    pub fn pure_string(&self) -> String {
+        match self {
             // Value::Integer(i) => i.to_string(),
             // Value::Number(n) => write!(f, "{}", n),
             // Value::Bool(b) => write!(f, "{}", b),
@@ -251,9 +252,9 @@ impl<'v> Value<'v> {
             // Value::Closure(c) => write!(f, "=>({})", c.function),
             // Value::Function(ff) => write!(f, "{}", ff),
             // Value::Table(_t) => write!(f, "{}", 't'),
-            // Value::UserData(u) => write!(f, "userdata") 
-            Value::String(s)=>s.to_string(),
-            _=> "NA".to_string()
+            // Value::UserData(u) => write!(f, "userdata")
+            Value::String(s) => s.to_string(),
+            _ => "NA".to_string(),
         }
     }
     pub fn force_to_int(&mut self, n: i64) {
@@ -370,11 +371,6 @@ impl Deref for Value<'_> {
     }
 }
 
-// impl From<f64> for Value<'_> {
-//     fn from(value: f64) -> Self {
-//         Value::Number(value)
-//     }
-// }
 impl<'a> Into<Value<'a>> for f64 {
     fn into(self) -> Value<'a> {
         Value::Number(self)
@@ -396,28 +392,21 @@ impl<'a> Into<Value<'a>> for () {
         Value::Nil
     }
 }
-// impl From<String> for Value<'_> {
-//     fn from(value: String) -> Self {
-//         Value::String(Box::new(value))
-//     }
-// }
 
 impl<'v> Into<Value<'v>> for String {
     fn into(self) -> Value<'v> {
-        Value::String(Box::new(self))
+        Value::String(self)
     }
 }
 
 impl Eq for Value<'_> {}
 
 pub trait ToLua<'lua> {
-    /// Performs the conversion.
     fn to_lua(self, lua: &'lua VM) -> Result<Value<'lua>, SiltError>;
 }
 
 /// Trait for types convertible from `Value`.
 pub trait FromLua<'lua>: Sized {
-    /// Performs the conversion.
     fn from_lua(lua_value: Value<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
 }
 

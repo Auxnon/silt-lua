@@ -1,6 +1,6 @@
-use gc_arena::{lock::RefLock, Gc, Mutation};
+use gc_arena::Mutation;
 
-use crate::{prelude::VM, userdata::{Ent, UserDataWrapper}, value::Value};
+use crate::{prelude::VM, userdata::TestEnt, value::Value};
 
 pub fn clock<'lua>(_: &mut VM, _: &Mutation<'lua>, _: Vec<Value>) -> Value<'lua> {
     Value::Number(
@@ -54,7 +54,7 @@ pub fn select<'lua>(_: &mut VM, _: &Mutation<'lua>, _args: Vec<Value<'lua>>) -> 
     
 }
 
-pub fn test<'lua>(vm: &mut VM<'lua>, mc: &Mutation<'lua>, _args: Vec<Value<'lua>>) -> Value<'lua> {
-    let e=Ent::new(4.,5.,6.);
+pub fn test_ent<'lua>(vm: &mut VM<'lua>, mc: &Mutation<'lua>, _args: Vec<Value<'lua>>) -> Value<'lua> {
+    let e=TestEnt::new(4.,5.,6.);
     vm.create_userdata(mc, e)
 }

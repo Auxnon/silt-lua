@@ -1,9 +1,7 @@
-use std::fmt::write;
 
 use crate::{
-    token::{Operator, Token},
+    token::Token,
     userdata::MetaMethod,
-    value::{self, Value},
 };
 
 #[derive(Clone, PartialEq, Debug)]

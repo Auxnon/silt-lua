@@ -1,7 +1,7 @@
 use compiler::Compiler;
 use error::ErrorTuple;
-use lua::{Lua, VM};
-use value::{ExVal, Value};
+use lua::Lua;
+use value::ExVal;
 
 mod chunk;
 mod code;
@@ -27,7 +27,7 @@ fn simple(source: &str) -> ExVal {
     let mut lua = Lua::new_with_standard();
     match lua.run(source, &mut compiler) {
         Ok(v) => v,
-        Err(e) => ExVal::String(Box::new(e[0].to_string())),
+        Err(e) => ExVal::String(e[0].to_string()),
     }
     // let v = match compiler.try_compile(source) {
     //     Ok(obj) => match vm.run(obj) {
@@ -83,12 +83,14 @@ pub fn run(source: &str) -> String {
     }
 }
 
+#[allow(unused_macros)]
 macro_rules! valeq {
     ($source:literal, $val:expr) => {
         assert_eq!(simple($source), $val);
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! fails {
     ($source:literal, $val:expr) => {{
         match complex($source) {
@@ -98,9 +100,10 @@ macro_rules! fails {
     }};
 }
 
+#[allow(unused_macros)]
 macro_rules! vstr {
     ($source:literal) => {
-        ExVal::String(Box::new($source.to_string()))
+        ExVal::String($source.to_string())
     };
 }
 
@@ -112,13 +115,12 @@ mod tests {
         complex,
         error::SiltError,
         function::FunctionObject,
-        lua::{Lua, VM},
         prelude::ValueTypes,
         simple,
-        token::{Operator, Token},
+        token::Token,
         value::{ExVal, Value},
     };
-    use std::{mem::size_of, num::NonZeroUsize, println, rc::Rc};
+    use std::{mem::size_of, println};
 
     #[test]
     fn test_32bits() {
@@ -135,7 +137,7 @@ mod tests {
         println!("size of Box<str>: {}", size_of::<Box<str>>());
         println!("size of boxed<Strinv> {}", size_of::<Box<String>>());
         println!("size of Operator: {}", size_of::<crate::token::Operator>());
-        println!("size of Tester: {}", size_of::<crate::code::Tester>());
+        // println!("size of Tester: {}", size_of::<crate::code::Tester>());
         println!("size of Flag: {}", size_of::<crate::token::Flag>());
         println!("size of token: {}", size_of::<Token>());
         println!("size of yarn: {}", size_of::<byteyarn::Yarn>());
@@ -255,10 +257,10 @@ mod tests {
         c.write_code(OpCode::RETURN, (1, 3));
         c.print_chunk(None);
         println!("-----------------");
-        let blank = FunctionObject::new(None, false);
+        // let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
-        let mut lua = Lua::new();
+        // let lua = Lua::new();
         // lua.run_chunk
         // match vm.execute(Rc::new(tester)) {
         //     Ok(v) => {
@@ -269,6 +271,52 @@ mod tests {
         //     }
         // }
         panic!(" uh oh we can't eval this chunk!");
+    }
+
+    #[test]
+    fn compliance1() {
+        valeq!("return 1+2", ExVal::Integer(3));
+    }
+
+    #[test]
+    fn compliance2() {
+        valeq!("return '1'..'2'", vstr!("12"));
+    }
+
+    #[test]
+    fn compliance3() {
+        valeq!(
+            r#"
+            local a= 1+2
+            return a
+            "#,
+            ExVal::Integer(3)
+        );
+    }
+
+    #[test]
+    fn compliance4() {
+        valeq!(
+            r#"
+            local a= '1'..'2'
+            return a
+            "#,
+            vstr!("12")
+        );
+    }
+
+    #[test]
+    fn compliance5() {
+        valeq!(
+            r#"
+            local a= 'a'
+            a='b'
+            local b='c'
+            b=a..b
+            return b
+            "#,
+            vstr!("bc")
+        );
     }
 
     #[test]
@@ -420,5 +468,16 @@ mod tests {
             "#,
             ExVal::Integer(3)
         );
+    }
+    #[test]
+    fn call_string() {
+        let source_in = r#"
+        function call_string(s)
+            return s
+        end
+
+        return call_string "hello"
+        "#;
+        assert_eq!(simple(source_in), ExVal::String("hello".to_string()));
     }
 }

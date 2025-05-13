@@ -44,7 +44,7 @@ impl<'chnk> Chunk<'chnk> {
 
     // TODO lets change to a hashmap, cant see an advantage not to so far
     /** for global identifiers we attempt to resolve to an existing global variable if it exists and return that index */
-    pub fn write_identifier(&mut self, identifier: Box<String>) -> usize {
+    pub fn write_identifier(&mut self, identifier: String) -> usize {
         match self.constants.iter().enumerate().position(|(i, x)| {
             if let Value::String(s) = x {
                 s == &identifier

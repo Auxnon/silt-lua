@@ -156,7 +156,7 @@ impl<'c> Lexer<'c> {
         }
         self.eat();
         let mut is_float = prefix_dot;
-        let mut strip = false;
+        let strip = false;
         while self.current < self.end {
             match self.peek() {
                 Some(c) => match c {
@@ -409,7 +409,7 @@ impl<'c> Lexer<'c> {
                         "goto" => Token::Goto,
                         "class" => Token::Class,
                         "sprint" => Token::Print,
-                        _ => Token::Identifier(Box::new(cc.to_string())), //return self.look_ahead(Token::Identifier(Box::new(cc.to_string()))),
+                        _ => Token::Identifier(cc.to_string()), //return self.look_ahead(Token::Identifier(Box::new(cc.to_string()))),
                     })
                 }
                 '0'..='9' => self.number(false),

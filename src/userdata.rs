@@ -18,10 +18,10 @@ pub trait UserData: Sized + 'static {
     fn type_name() -> &'static str;
 
     /// Register methods for this UserData type
-    fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {}
+    fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(_: &mut M) {}
 
     /// Register fields for this UserData type
-    fn add_fields<'gc, F: UserDataFields<'gc, Self>>(fields: &mut F) {}
+    fn add_fields<'gc, F: UserDataFields<'gc, Self>>(_: &mut F) {}
 
     /// Get a unique identifier for this UserData instance
     fn get_id(&self) -> usize;
@@ -433,13 +433,13 @@ unsafe impl Collect for UserDataWrapper {
 }
 
 /// Example UserData implementation
-pub struct Ent {
+pub struct TestEnt {
     x: f64,
     y: f64,
     z: f64,
 }
 
-impl Ent {
+impl TestEnt {
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
@@ -449,7 +449,7 @@ impl Ent {
     }
 }
 
-impl UserData for Ent {
+impl UserData for TestEnt {
     fn type_name() -> &'static str {
         "ent"
     }
@@ -464,32 +464,26 @@ impl UserData for Ent {
 
     fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {
         methods.add_meta_method("__tostring", |_, this, _| {
-            Ok(Value::String(Box::new(format!(
-                "[entity {}]",
-                this.get_id()
-            ))))
+            Ok(Value::String(format!("[entity {}]", this.get_id())))
         });
 
         methods.add_meta_method("__concat", |_, this, _| {
-            Ok(Value::String(Box::new(format!(
-                "[entity {}]",
-                this.get_id()
-            ))))
+            Ok(Value::String(format!("[entity {}]", this.get_id())))
         });
 
         methods.add_method_mut("pos", |_, this, val| {
             // Example of parsing a table to set position
             if let Value::Table(t) = val {
                 let t_ref = t.borrow();
-                if let Some(Value::Number(x)) = t_ref.get(&Value::String(Box::new("x".to_string())))
+                if let Some(Value::Number(x)) = t_ref.get(&Value::String("x".to_string()))
                 {
                     this.x = *x;
                 }
-                if let Some(Value::Number(y)) = t_ref.get(&Value::String(Box::new("y".to_string())))
+                if let Some(Value::Number(y)) = t_ref.get(&Value::String("y".to_string()))
                 {
                     this.y = *y;
                 }
-                if let Some(Value::Number(z)) = t_ref.get(&Value::String(Box::new("z".to_string())))
+                if let Some(Value::Number(z)) = t_ref.get(&Value::String("z".to_string()))
                 {
                     this.z = *z;
                 }

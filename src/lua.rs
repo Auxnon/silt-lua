@@ -217,7 +217,7 @@ macro_rules! table_meta_op {
 }
 
 type LuaResult = Result<ExVal, Vec<ErrorTuple>>;
-type InnerUserData<'a> = Gc<'a,RefLock<UserDataWrapper>>;
+type InnerUserData<'a> = Gc<'a, RefLock<UserDataWrapper>>;
 pub struct Lua {
     arena: Arena<Rootable![VM<'_>]>,
 }
@@ -613,7 +613,7 @@ impl<'gc> VM<'gc> {
         ep: &mut Ephemeral<'_, 'gc>,
         mut frames: Vec<CallFrame<'gc>>,
     ) -> Result<ExVal, SiltError> {
-        let mut last = Value::Nil; // TODO temporary for testing
+        // let mut last = Value::Nil; // TODO temporary for testing
                                    // let stack_pointer = self.stack.as_mut_ptr();
                                    // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
         let mut frame = frames.last_mut().unwrap();
@@ -724,7 +724,7 @@ impl<'gc> VM<'gc> {
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
 
-                OpCode::DEFINE_LOCAL { constant } => todo!(),
+                OpCode::DEFINE_LOCAL { constant:_ } => todo!(),
                 OpCode::ADD => binary_op_push!(self, ep, frame, frames, frame_count, +, Add),
                 OpCode::SUB => binary_op_push!(self, ep, frame, frames, frame_count, -, Sub),
                 OpCode::MULTIPLY => binary_op_push!(self, ep, frame, frames, frame_count, *, Mul),
@@ -827,24 +827,24 @@ impl<'gc> VM<'gc> {
                     let l = self.pop(ep);
                     match (l, r) {
                         (Value::String(left), Value::String(right)) => {
-                            self.push(ep, Value::String(Box::new(*left + &right)))
+                            self.push(ep, Value::String(left + &right))
                         }
                         (Value::String(left), v2) => {
-                            self.push(ep, Value::String(Box::new(*left + &v2.to_string())))
+                            self.push(ep, Value::String(left + &v2.to_string()))
                         }
                         (v1, Value::String(right)) => {
-                            self.push(ep, Value::String(Box::new(v1.to_string() + &right)))
+                            self.push(ep, Value::String(v1.to_string() + &right))
                         }
-                        (v1, v2) => self.push(
-                            ep,
-                            Value::String(Box::new(v1.to_string() + &v2.to_string())),
-                        ),
+                        (v1, v2) => self.push(ep, Value::String(v1.to_string() + &v2.to_string())),
                     }
                 }
 
-                OpCode::LITERAL { dest, literal } => {}
+                OpCode::LITERAL {
+                    dest: _,
+                    literal: _,
+                } => {}
                 OpCode::POP => {
-                    last = self.pop(ep);
+                    self.pop(ep); //  last =
                 }
 
                 OpCode::POPS(n) => self.popn_drop(ep, *n), //TODO here's that 255 local limit again
@@ -1005,7 +1005,7 @@ impl<'gc> VM<'gc> {
                             frame_count += 1;
                             devout!("top of frame stack {}", unsafe { &*frame.local_stack });
                         }
-                        Value::Function(func) => {
+                        Value::Function(_func) => {
                             // let frame_top =
                             //     unsafe { ep.ip.sub((*param_count as usize) + 1) };
                             // let new_frame = CallFrame::new(
@@ -1075,7 +1075,7 @@ impl<'gc> VM<'gc> {
                             let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
                             let field_name = field.pure_string();
 
-                            let u=&mut * (*u).borrow_mut(ep.mc);
+                            let u = &mut *(*u).borrow_mut(ep.mc);
                             let reg = &self.userdata_registry;
                             match crate::userdata::vm_integration::set_field(
                                 self,
@@ -1115,7 +1115,7 @@ impl<'gc> VM<'gc> {
                         Value::UserData(ud) => {
                             let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
                             let field_name = field.pure_string();
-                            let mut mu =(*ud).borrow_mut(ep.mc);
+                            let mut mu = (*ud).borrow_mut(ep.mc);
                             let rud = mu.deref_mut();
 
                             match crate::userdata::vm_integration::get_field(
@@ -1135,7 +1135,7 @@ impl<'gc> VM<'gc> {
                         _ => return Err(SiltError::VmNonTableOperations(value.to_error())),
                     }
                 }
-                OpCode::TABLE_GET_FROM { index } => {
+                OpCode::TABLE_GET_FROM { index:_ } => {
                     // let key = self.pop();
 
                     // let table = frame.get_val_mut(*index);
@@ -1251,11 +1251,11 @@ impl<'gc> VM<'gc> {
 
     fn call(
         &'gc self,
-        ep: &mut Ephemeral<'_, 'gc>,
+        // ep: &mut Ephemeral<'_, 'gc>,
         function: &'gc Gc<Closure<'gc>>,
         param_count: u8,
-    ) -> CallFrame {
-        let frame_top = unsafe { ep.ip.sub((param_count as usize) + 1) };
+    ) -> CallFrame<'gc> {
+        // let frame_top = unsafe { ep.ip.sub((param_count as usize) + 1) };
         let new_frame = CallFrame::new(
             function.clone(),
             self.stack_count - (param_count as usize) - 1,
@@ -1481,17 +1481,17 @@ impl<'gc> VM<'gc> {
     pub(crate) fn handle_userdata_binary_op(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
-         userdata: InnerUserData<'gc>,
+        userdata: InnerUserData<'gc>,
         op: MetaMethod,
         right: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
-        let u= &mut *userdata.borrow_mut(ep.mc);
+        let u = &mut *userdata.borrow_mut(ep.mc);
         // let rud = u.deref_mut() ;
         // Try to call the metamethod
         crate::userdata::vm_integration::call_meta_method(
             self,
             &self.userdata_registry,
-           u,
+            u,
             op,
             right,
         )
@@ -1529,8 +1529,7 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "print", crate::standard::print);
         self.register_native_function(mc, "setmetatable", crate::standard::setmetatable);
         self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
-        self.register_native_function(mc, "teste", crate::standard::test);
-
+        self.register_native_function(mc, "test_ent", crate::standard::test_ent);
     }
 
     fn print_raw_stack(&self) {
