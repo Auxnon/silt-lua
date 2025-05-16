@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, collections::HashMap, mem::take, ops::DerefMut};
+use std::{borrow::BorrowMut, cell::RefCell, collections::HashMap, mem::take, ops::DerefMut};
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
@@ -9,7 +9,7 @@ use crate::{
     function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue, WrappedFn},
     prelude::UserData,
     table::Table,
-    userdata::{MetaMethod, UserDataRegistry, UserDataWrapper},
+    userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper},
     value::{ExVal, Value},
 };
 
@@ -309,7 +309,7 @@ pub struct VM<'gc> {
     // TODO GC gray_stack
     // gray_stack: Vec<Value>,
     // TODO temporary solution to a hash id
-    table_counter: usize,
+    table_counter: RefCell<usize>,
     // meta_lookup: HashMap<String, MetaMethod>,
     // string_meta: Option<Gc<Table>>,
     pub userdata_registry: UserDataRegistry<'gc>,
@@ -398,7 +398,7 @@ impl<'gc> VM<'gc> {
             // stack_top,
             globals: Gc::new(mc, RefLock::new(HashMap::new())), //Gc::new(mc, gtable),
             open_upvalues: vec![],
-            table_counter: 1,
+            table_counter: RefCell::new(1),
             userdata_registry: UserDataRegistry::new(),
         }
     }
@@ -614,8 +614,8 @@ impl<'gc> VM<'gc> {
         mut frames: Vec<CallFrame<'gc>>,
     ) -> Result<ExVal, SiltError> {
         // let mut last = Value::Nil; // TODO temporary for testing
-                                   // let stack_pointer = self.stack.as_mut_ptr();
-                                   // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
+        // let stack_pointer = self.stack.as_mut_ptr();
+        // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
         let mut frame = frames.last_mut().unwrap();
         let mut frame_count = 1;
         // body.chunk.print_chunk(None);
@@ -724,7 +724,7 @@ impl<'gc> VM<'gc> {
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
 
-                OpCode::DEFINE_LOCAL { constant:_ } => todo!(),
+                OpCode::DEFINE_LOCAL { constant: _ } => todo!(),
                 OpCode::ADD => binary_op_push!(self, ep, frame, frames, frame_count, +, Add),
                 OpCode::SUB => binary_op_push!(self, ep, frame, frames, frame_count, -, Sub),
                 OpCode::MULTIPLY => binary_op_push!(self, ep, frame, frames, frame_count, *, Mul),
@@ -1059,7 +1059,7 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::NEW_TABLE => {
                     self.push(ep, self.new_table(ep.mc));
-                    self.table_counter += 1;
+                    *self.table_counter.borrow_mut() += 1;
                 }
                 OpCode::TABLE_INSERT { offset } => {
                     self.insert_immediate_table(ep, *offset)?;
@@ -1080,6 +1080,7 @@ impl<'gc> VM<'gc> {
                             match crate::userdata::vm_integration::set_field(
                                 self,
                                 reg,
+                                &ep.mc,
                                 u,
                                 &field_name,
                                 value,
@@ -1121,6 +1122,7 @@ impl<'gc> VM<'gc> {
                             match crate::userdata::vm_integration::get_field(
                                 self,
                                 &self.userdata_registry,
+                                &ep.mc,
                                 rud,
                                 &field_name,
                             ) {
@@ -1135,7 +1137,7 @@ impl<'gc> VM<'gc> {
                         _ => return Err(SiltError::VmNonTableOperations(value.to_error())),
                     }
                 }
-                OpCode::TABLE_GET_FROM { index:_ } => {
+                OpCode::TABLE_GET_FROM { index: _ } => {
                     // let key = self.pop();
 
                     // let table = frame.get_val_mut(*index);
@@ -1192,6 +1194,7 @@ impl<'gc> VM<'gc> {
             _ => true,
         }
     }
+
     fn is_equal(l: &Value, r: &Value) -> bool {
         match (l, r) {
             (Value::Number(left), Value::Number(right)) => left == right,
@@ -1269,9 +1272,6 @@ impl<'gc> VM<'gc> {
         index: u8,
         frame: &CallFrame<'gc>,
     ) -> Gc<'gc, RefLock<UpValue<'gc>>> {
-        //, stack: *mut Value,
-        //stack
-        // self.print_stack();
         #[cfg(feature = "dev-out")]
         frame.print_local_stack();
         let value = unsafe { frame.local_stack.add(index as usize) };
@@ -1355,9 +1355,26 @@ impl<'gc> VM<'gc> {
     }
 
     fn new_table(&self, mc: &Mutation<'gc>) -> Value<'gc> {
-        let t = Table::new(self.table_counter);
+        let t = Table::new(*self.table_counter.borrow());
         Value::Table(Gc::new(mc, RefLock::new(t)))
     }
+
+    pub fn raw_table(&self) -> Table<'gc> {
+        let t = Table::new(*self.table_counter.borrow());
+        *self.table_counter.borrow_mut() += 1;
+        t
+    }
+
+    pub fn wrap_table(&self, mc: &Mutation<'gc>,t: Table<'gc>)-> Value<'gc>{
+        Value::Table(Gc::new(mc, RefLock::new(t)))
+    }
+
+    // pub fn wrap_table(&self, t: Table) -> InnerResult<'gc> {
+    //     if let Some(mc) = self.mutator_ref {
+    //         return Ok(Value::Table(Gc::new(mc, RefLock::new(t))));
+    //     }
+    //     Err(SiltError::Unknown)
+    // }
 
     fn build_table(&mut self, ep: &mut Ephemeral<'_, 'gc>, n: u8) -> Result<(), SiltError> {
         let offset = n as usize + 1;
@@ -1491,9 +1508,10 @@ impl<'gc> VM<'gc> {
         crate::userdata::vm_integration::call_meta_method(
             self,
             &self.userdata_registry,
+            &ep.mc,
             u,
             op,
-            right,
+            vec![right],
         )
     }
 
