@@ -412,7 +412,6 @@ impl UserDataWrapper {
     pub fn new<T: UserData>(data: T) -> Self {
         let type_name = T::type_name();
         let id = data.get_id();
-        let data = Box::new(data);
         Self {
             data: Box::new(data),
             id,
