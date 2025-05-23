@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     marker::PhantomData,
     ops::{Deref, DerefMut},
+    sync::{Arc, Mutex},
 };
 
 use gc_arena::{Collect, Gc, Mutation};
@@ -402,6 +403,8 @@ pub struct UserDataWrapper {
     data: Box<dyn Any>,
     id: usize,
     type_name: &'static str,
+    // Index in the VM's userdata_stack
+    stack_index: Option<usize>,
 }
 
 impl UserDataWrapper {
@@ -410,11 +413,11 @@ impl UserDataWrapper {
         let type_name = T::type_name();
         let id = data.get_id();
         let data = Box::new(data);
-        // unsafe { data. }
         Self {
             data: Box::new(data),
             id,
             type_name,
+            stack_index: None,
         }
     }
 
@@ -438,6 +441,16 @@ impl UserDataWrapper {
         self.data.as_mut()
     }
 
+    /// Set the stack index for this UserData
+    pub fn set_stack_index(&mut self, index: usize) {
+        self.stack_index = Some(index);
+    }
+
+    /// Get the stack index for this UserData
+    pub fn stack_index(&self) -> Option<usize> {
+        self.stack_index
+    }
+
     /// Convert to a string representation
     pub fn to_string(&self) -> String {
         format!("{} userdata (id: {})", self.type_name, self.id)
@@ -455,6 +468,18 @@ impl Deref for UserDataWrapper {
 impl DerefMut for UserDataWrapper {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data.as_mut()
+    }
+}
+
+impl Clone for UserDataWrapper {
+    fn clone(&self) -> Self {
+        // This is a shallow clone - we're just cloning the Box pointer, not the data inside
+        Self {
+            data: self.data.clone(),
+            id: self.id,
+            type_name: self.type_name,
+            stack_index: self.stack_index,
+        }
     }
 }
 
@@ -732,14 +757,17 @@ impl MetaMethod {
 /// Helper functions for VM integration
 pub mod vm_integration {
     use gc_arena::lock::RefLock;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::lua::VM;
 
     /// Create a new UserData value
     pub fn create_userdata<'gc, T: UserData>(
         reg: &mut UserDataRegistry<'gc>,
         mc: &Mutation<'gc>,
         data: T,
+        userdata_stack: &Arc<Mutex<Vec<Option<UserDataWrapper>>>>,
     ) -> Value<'gc> {
         // Register the type if it hasn't been registered yet
         let type_name = T::type_name();
@@ -747,13 +775,25 @@ pub mod vm_integration {
             reg.register::<T>();
         }
 
-        // Create the UserData wrapper and return it as a Value
-        let wrapper = UserDataWrapper::new(data);
-        let ud_gc = Gc::new(mc, RefLock::new(wrapper));
+        // Create the UserData wrapper
+        let mut wrapper = UserDataWrapper::new(data);
+        
+        // Add to the userdata_stack and get the index
+        let index = {
+            let mut stack = userdata_stack.lock().unwrap();
+            let index = stack.len();
+            wrapper.set_stack_index(index);
+            stack.push(Some(wrapper.clone()));
+            index
+        };
+        
+        // Create the GC-managed wrapper
+        let mut ud_gc = Gc::new(mc, RefLock::new(wrapper));
+        
+        // Set the stack index in the GC-managed wrapper
+        ud_gc.borrow_mut(mc).set_stack_index(index);
 
-        // Register the instance
-        // reg.register_instance(&ud_gc); // TODO
-
+        // Return as a Value
         Value::UserData(ud_gc)
     }
 

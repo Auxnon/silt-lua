@@ -1548,7 +1548,12 @@ impl<'gc> VM<'gc> {
 
     /// Create a UserData value
     pub fn create_userdata<T: UserData>(&mut self, mc: &Mutation<'gc>, data: T) -> Value<'gc> {
-        crate::userdata::vm_integration::create_userdata(&mut self.userdata_registry, mc, data)
+        crate::userdata::vm_integration::create_userdata(
+            &mut self.userdata_registry, 
+            mc, 
+            data, 
+            &self.userdata_stack
+        )
     }
 
     /** Load standard library functions */
@@ -1558,6 +1563,19 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "setmetatable", crate::standard::setmetatable);
         self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", crate::standard::test_ent);
+    }
+    
+    /// Clean up dropped UserData references from the userdata_stack
+    pub fn cleanup_userdata(&self) {
+        let mut stack = self.userdata_stack.lock().unwrap();
+        for i in 0..stack.len() {
+            if let Some(ud) = &stack[i] {
+                // Check if the UserData is still referenced in the VM
+                // If not, set it to None in the stack
+                // This would need to be implemented based on your GC strategy
+                // For now, this is a placeholder
+            }
+        }
     }
 
     fn print_raw_stack(&self) {
