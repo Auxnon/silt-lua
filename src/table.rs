@@ -90,21 +90,19 @@ impl<'v> Table<'v> {
 
     pub fn by_meta_method(&self, method: MetaMethod) -> Result<Value<'v>, SiltError> {
         println!("meta: {}", self.meta.clone().unwrap_or(Value::Nil));
-        if let Some(meta) = &self.meta {
-            if let Value::Table(t) = meta {
-                let s = method.to_table_key().to_string();
-                println!("looking for meta method: {}", s);
-                if let Some(func) = t
-                    .borrow()
-                    .get(&Value::String(method.to_table_key().to_string()))
-                {
-                    println!("found meta method: {}", func);
-                    return if let Value::Closure(_) = func {
-                        Ok(func.clone())
-                    } else {
-                        Err(SiltError::MetaMethodNotCallable(method))
-                    };
-                }
+        if let Some(Value::Table(t)) = &self.meta {
+            let s = method.as_table_key().to_string();
+            println!("looking for meta method: {}", s);
+            if let Some(func) = t
+                .borrow()
+                .get(&Value::String(method.as_table_key().to_string()))
+            {
+                println!("found meta method: {}", func);
+                return if let Value::Closure(_) = func {
+                    Ok(func.clone())
+                } else {
+                    Err(SiltError::MetaMethodNotCallable(method))
+                };
             }
         }
         return Err(SiltError::MetaMethodMissing(method));

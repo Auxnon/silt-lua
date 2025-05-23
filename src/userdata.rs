@@ -7,7 +7,7 @@ use std::{
 
 use gc_arena::{Collect, Gc, Mutation};
 
-use crate::{code::OpCode, error::SiltError, lua::VM, table::Table, value::Value};
+use crate::{code::OpCode, error::SiltError, lua::VM,  value::Value};
 
 /// Result type for Lua operations
 pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
@@ -409,6 +409,8 @@ impl UserDataWrapper {
     pub fn new<T: UserData>(data: T) -> Self {
         let type_name = T::type_name();
         let id = data.get_id();
+        let data = Box::new(data);
+        // unsafe { data. }
         Self {
             data: Box::new(data),
             id,
@@ -507,18 +509,16 @@ impl UserData for TestEnt {
 
         methods.add_method_mut("pos", |_, _, this, args| {
             // Example of parsing a table to set position
-            if let Some(val) = args.get(0) {
-                if let Value::Table(t) = val {
-                    let t_ref = t.borrow();
-                    if let Some(Value::Number(x)) = t_ref.get(&Value::String("x".to_string())) {
-                        this.x = *x;
-                    }
-                    if let Some(Value::Number(y)) = t_ref.get(&Value::String("y".to_string())) {
-                        this.y = *y;
-                    }
-                    if let Some(Value::Number(z)) = t_ref.get(&Value::String("z".to_string())) {
-                        this.z = *z;
-                    }
+            if let Some(Value::Table(t)) = args.first() {
+                let t_ref = t.borrow();
+                if let Some(Value::Number(x)) = t_ref.get(&Value::String("x".to_string())) {
+                    this.x = *x;
+                }
+                if let Some(Value::Number(y)) = t_ref.get(&Value::String("y".to_string())) {
+                    this.y = *y;
+                }
+                if let Some(Value::Number(z)) = t_ref.get(&Value::String("z".to_string())) {
+                    this.z = *z;
                 }
             }
             Ok(Value::Nil)
@@ -696,7 +696,7 @@ impl From<OpCode> for MetaMethod {
 }
 
 impl MetaMethod {
-    pub fn to_table_key(&self) -> &'static str {
+    pub fn as_table_key(&self) -> &'static str {
         match self {
             MetaMethod::Add => "__add",
             MetaMethod::Sub => "__sub",
@@ -786,7 +786,7 @@ pub mod vm_integration {
         args: Vec<Value<'gc>>,
     ) -> Result<Value<'gc>, SiltError> {
         let type_name = userdata.type_name();
-        let meta_key = meta_method.to_table_key();
+        let meta_key = meta_method.as_table_key();
 
         // Look up the metamethod in the registry
         if let Some(map) = reg.get_map(type_name) {

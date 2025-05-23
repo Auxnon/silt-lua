@@ -315,11 +315,6 @@ pub struct VM<'gc> {
     pub userdata_registry: UserDataRegistry<'gc>,
 }
 
-// #[derive(Copy, Clone, Collect)]
-// #[collect(no_drop)]
-// struct Object<'gc, T> {
-//     value: T,
-// }
 
 // type ObjectPtr<'gc, T> = Gc<'gc, RefLock<Object<'gc, T>>>;
 type ObjectPtr<'gc, T> = Gc<'gc, RefLock<T>>;
@@ -566,16 +561,16 @@ impl<'gc> VM<'gc> {
     ) -> Result<ExVal, Vec<ErrorTuple>> {
         // let object = self.compiler.compile(source.to_owned());
         // object.chunk.print_chunk(name)
-        let out = match self.execute(mc, object.into()) {
+        match self.execute(mc, object.into()) {
             Ok(v) => Ok(v),
             Err(e) => Err(vec![ErrorTuple {
                 code: e,
                 location: (0, 0),
             }]),
-        };
+        }
 
         // Ok(ExVal::Nil)
-        out
+        // out
     }
 
     pub fn execute(
@@ -1365,7 +1360,7 @@ impl<'gc> VM<'gc> {
         t
     }
 
-    pub fn wrap_table(&self, mc: &Mutation<'gc>,t: Table<'gc>)-> Value<'gc>{
+    pub fn wrap_table(&self, mc: &Mutation<'gc>, t: Table<'gc>) -> Value<'gc> {
         Value::Table(Gc::new(mc, RefLock::new(t)))
     }
 
