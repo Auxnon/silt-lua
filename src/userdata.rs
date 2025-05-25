@@ -403,12 +403,56 @@ pub struct UserDataWrapper {
     stack_index: Option<usize>,
 }
 
-pub struct WeakWrapper{
+pub struct WeakWrapper {
     data: Weak<RefCell<dyn Any>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
     stack_index: Option<usize>,
+}
+
+impl WeakWrapper {
+    /// Create a new WeakWrapper from a UserDataWrapper
+    pub fn from_wrapper(wrapper: &UserDataWrapper) -> Self {
+        Self {
+            data: Rc::downgrade(&wrapper.data),
+            id: wrapper.id,
+            type_name: wrapper.type_name,
+            stack_index: wrapper.stack_index,
+        }
+    }
+    
+    /// Get the unique ID of the wrapped UserData
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Get the type name of the wrapped UserData
+    pub fn type_name(&self) -> &'static str {
+        self.type_name
+    }
+    
+    /// Try to upgrade to a full UserDataWrapper
+    pub fn upgrade(&self) -> Option<UserDataWrapper> {
+        self.data.upgrade().map(|data| {
+            UserDataWrapper {
+                data,
+                id: self.id,
+                type_name: self.type_name,
+                stack_index: self.stack_index,
+            }
+        })
+    }
+    
+    /// Check if the original UserDataWrapper has been dropped
+    pub fn is_dropped(&self) -> bool {
+        self.data.upgrade().is_none()
+    }
+    
+    /// Convert to a string representation
+    pub fn to_string(&self) -> String {
+        format!("{} weak userdata (id: {})", self.type_name, self.id)
+    }
 }
 
 
@@ -771,7 +815,7 @@ pub mod vm_integration {
         reg: &mut UserDataRegistry<'gc>,
         mc: &Mutation<'gc>,
         data: T,
-        userdata_stack: &Arc<Mutex<Vec<Option<UserDataWrapper>>>>,
+        userdata_stack: &Arc<Mutex<Vec<Option<WeakWrapper>>>>,
     ) -> Value<'gc> {
         // Register the type if it hasn't been registered yet
         let type_name = T::type_name();
@@ -787,7 +831,10 @@ pub mod vm_integration {
             let mut stack = userdata_stack.lock().unwrap();
             let index = stack.len();
             wrapper.set_stack_index(index);
-            stack.push(Some(wrapper.clone()));
+            
+            // Create a weak wrapper and store it in the stack
+            let weak_wrapper = WeakWrapper::from_wrapper(&wrapper);
+            stack.push(Some(weak_wrapper));
             index
         };
         

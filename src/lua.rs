@@ -313,7 +313,7 @@ pub struct VM<'gc> {
     // meta_lookup: HashMap<String, MetaMethod>,
     // string_meta: Option<Gc<Table>>,
     pub userdata_registry: UserDataRegistry<'gc>,
-    pub userdata_stack: Vec<GcWeak<'gc, UserDataWrapper>>,
+    pub userdata_stack: Arc<Mutex<Vec<Option<WeakWrapper>>>>,
 }
 
 
@@ -378,19 +378,7 @@ impl<'gc> VM<'gc> {
         // });
 
         let stack = [(); 256].map(|_| Value::default());
-        let userdata_stack = vec![];
-        let d: &GcWeak<'gc, UserDataWrapper> = userdata_stack.first().unwrap();
-        // d.upgrade(mc)
-        let res: Result<UserDataWrapper>=d.try_into();
-        if let Err(e)=d.try_into(){
-
-        }
-        // d.upgrade(mc)
-        // d.is_dropped(cc)
-        //
-        // Gc::up
-        // Gc::downgrade(this)o
-       // let b= d.is_dropped(mc) ;
+        let userdata_stack = Arc::new(Mutex::new(Vec::new()));
         // let stack_top = Gc::new(mc,RefLock::new( stack.as_mut_ptr() as *mut Value) );
         // let stack = vec![];
         // let stack_top = stack.as_ptr() as *mut Value;
@@ -1569,13 +1557,25 @@ impl<'gc> VM<'gc> {
     pub fn cleanup_userdata(&self) {
         let mut stack = self.userdata_stack.lock().unwrap();
         for i in 0..stack.len() {
-            if let Some(ud) = &stack[i] {
+            if let Some(weak_wrapper) = &stack[i] {
                 // Check if the UserData is still referenced in the VM
-                // If not, set it to None in the stack
-                // This would need to be implemented based on your GC strategy
-                // For now, this is a placeholder
+                if weak_wrapper.is_dropped() {
+                    // If the original UserDataWrapper has been dropped, set to None in the stack
+                    stack[i] = None;
+                }
             }
         }
+    }
+    
+    /// Get a UserData from the userdata_stack by index
+    pub fn get_userdata_by_index(&self, index: usize) -> Option<UserDataWrapper> {
+        let stack = self.userdata_stack.lock().unwrap();
+        if index < stack.len() {
+            if let Some(weak_wrapper) = &stack[index] {
+                return weak_wrapper.upgrade();
+            }
+        }
+        None
     }
 
     fn print_raw_stack(&self) {
