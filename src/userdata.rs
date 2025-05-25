@@ -1,9 +1,5 @@
 use std::{
-    any::Any,
-    collections::HashMap,
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-    sync::{Arc, Mutex},
+    any::Any, cell::RefCell, collections::HashMap, marker::PhantomData, ops::{Deref, DerefMut}, rc::{Rc,Weak}, sync::{Arc, Mutex}
 };
 
 use gc_arena::{Collect, Gc, Mutation};
@@ -400,12 +396,21 @@ unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
 
 /// A wrapper for UserData objects
 pub struct UserDataWrapper {
-    data: Box<dyn Any>,
+    data: Rc<RefCell< dyn Any>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
     stack_index: Option<usize>,
 }
+
+pub struct WeakWrapper{
+    data: Weak<RefCell<dyn Any>>,
+    id: usize,
+    type_name: &'static str,
+    // Index in the VM's userdata_stack
+    stack_index: Option<usize>,
+}
+
 
 impl UserDataWrapper {
     /// Create a new UserData wrapper
@@ -413,7 +418,7 @@ impl UserDataWrapper {
         let type_name = T::type_name();
         let id = data.get_id();
         Self {
-            data: Box::new(data),
+            data: Rc::new(RefCell::new(data)),
             id,
             type_name,
             stack_index: None,
@@ -436,8 +441,8 @@ impl UserDataWrapper {
     }
 
     /// Get a mutable reference to the wrapped data as Any
-    pub fn as_any_mut(&mut self) -> &mut dyn Any {
-        self.data.as_mut()
+    pub fn as_any_mut<'a:'static>(& mut self) -> &'a mut dyn Any {
+        &mut self.data.borrow_mut()
     }
 
     /// Set the stack index for this UserData
