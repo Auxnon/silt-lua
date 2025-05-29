@@ -1,6 +1,13 @@
-use std::{borrow::BorrowMut, cell::RefCell, collections::HashMap, mem::take, ops::DerefMut};
+use std::{
+    borrow::BorrowMut,
+    cell::RefCell,
+    collections::HashMap,
+    mem::take,
+    ops::DerefMut,
+    sync::{Arc, Mutex},
+};
 
-use gc_arena::{lock::RefLock, Arena, Collect, Gc, GcWeak, Mutation, Rootable};
+use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
     code::OpCode,
@@ -9,7 +16,7 @@ use crate::{
     function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue, WrappedFn},
     prelude::UserData,
     table::Table,
-    userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper},
+    userdata::{MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
     value::{ExVal, Value},
 };
 
@@ -218,6 +225,17 @@ macro_rules! table_meta_op {
 
 type LuaResult = Result<ExVal, Vec<ErrorTuple>>;
 type InnerUserData<'a> = Gc<'a, RefLock<UserDataWrapper>>;
+pub struct UDVec(pub Vec<WeakWrapper>);
+
+unsafe impl<'gc> Collect for UDVec {
+    fn needs_trace() -> bool {
+        false
+    }
+
+    fn trace(&self, _cc: &gc_arena::Collection) {
+        // No GC references to trace
+    }
+}
 pub struct Lua {
     arena: Arena<Rootable![VM<'_>]>,
 }
@@ -313,9 +331,8 @@ pub struct VM<'gc> {
     // meta_lookup: HashMap<String, MetaMethod>,
     // string_meta: Option<Gc<Table>>,
     pub userdata_registry: UserDataRegistry<'gc>,
-    pub userdata_stack: Arc<Mutex<Vec<Option<WeakWrapper>>>>,
+    userdata_stack: Option<UDVec>,
 }
-
 
 // type ObjectPtr<'gc, T> = Gc<'gc, RefLock<Object<'gc, T>>>;
 type ObjectPtr<'gc, T> = Gc<'gc, RefLock<T>>;
@@ -378,7 +395,6 @@ impl<'gc> VM<'gc> {
         // });
 
         let stack = [(); 256].map(|_| Value::default());
-        let userdata_stack = Arc::new(Mutex::new(Vec::new()));
         // let stack_top = Gc::new(mc,RefLock::new( stack.as_mut_ptr() as *mut Value) );
         // let stack = vec![];
         // let stack_top = stack.as_ptr() as *mut Value;
@@ -397,7 +413,14 @@ impl<'gc> VM<'gc> {
             open_upvalues: vec![],
             table_counter: RefCell::new(1),
             userdata_registry: UserDataRegistry::new(),
-            userdata_stack,
+            userdata_stack: Some(UDVec(vec![])),
+        }
+    }
+
+    pub fn drain_userdata(&mut self) -> Vec<WeakWrapper> {
+        match &mut self.userdata_stack {
+            Some(u) => std::mem::take(&mut u.0),
+            None => vec![],
         }
     }
 
@@ -1537,10 +1560,10 @@ impl<'gc> VM<'gc> {
     /// Create a UserData value
     pub fn create_userdata<T: UserData>(&mut self, mc: &Mutation<'gc>, data: T) -> Value<'gc> {
         crate::userdata::vm_integration::create_userdata(
-            &mut self.userdata_registry, 
-            mc, 
-            data, 
-            &self.userdata_stack
+            &mut self.userdata_registry,
+            mc,
+            data,
+            &mut self.userdata_stack,
         )
     }
 
@@ -1552,32 +1575,33 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", crate::standard::test_ent);
     }
-    
-    /// Clean up dropped UserData references from the userdata_stack
-    pub fn cleanup_userdata(&self) {
-        let mut stack = self.userdata_stack.lock().unwrap();
-        for i in 0..stack.len() {
-            if let Some(weak_wrapper) = &stack[i] {
-                // Check if the UserData is still referenced in the VM
-                if weak_wrapper.is_dropped() {
-                    // If the original UserDataWrapper has been dropped, set to None in the stack
-                    stack[i] = None;
-                }
-            }
-        }
-    }
-    
-    /// Get a UserData from the userdata_stack by index
-    pub fn get_userdata_by_index(&self, index: usize) -> Option<UserDataWrapper> {
-        let stack = self.userdata_stack.lock().unwrap();
-        if index < stack.len() {
-            if let Some(weak_wrapper) = &stack[index] {
-                return weak_wrapper.upgrade();
-            }
-        }
-        None
-    }
 
+    /// Clean up dropped UserData references from the userdata_stack
+    // pub fn cleanup_userdata(&self) {
+    //     let mut stack = self.userdata_stack.unwrap();
+    //     for i in 0..stack.0.len() {
+    //         if let Some(weak_wrapper) = &stack.0[i] {
+    //             // Check if the UserData is still referenced in the VM
+    //             if weak_wrapper.is_dropped() {
+    //                 // If the original UserDataWrapper has been dropped, set to None in the stack
+    //                 stack.0[i] = None;
+    //             }
+    //         }
+    //     }
+    // }
+
+    /// Get a UserData from the userdata_stack by index
+    // pub fn get_userdata_by_index(&self, index: usize) -> Option<UserDataWrapper> {
+    //     let stack = self.userdata_stack.unwrap();
+    //     if index < stack.0.len() {
+    //         if let Some(weak_wrapper) = &stack.0[index] {
+    //             return weak_wrapper.upgrade();
+    //         }
+    //     }
+    //     None
+    // }
+    //
+    //
     fn print_raw_stack(&self) {
         println!("=== Stack ({}) ===", self.stack_count);
         // 0 to stack_top

@@ -1,10 +1,14 @@
 use std::{
-    any::Any, cell::RefCell, collections::HashMap, marker::PhantomData, ops::{Deref, DerefMut}, rc::{Rc,Weak}, sync::{Arc, Mutex}
+    any::Any,
+    borrow::Borrow,
+    collections::HashMap,
+    marker::PhantomData,
+    sync::{Arc, Mutex, Weak},
 };
 
 use gc_arena::{Collect, Gc, Mutation};
 
-use crate::{code::OpCode, error::SiltError, lua::VM,  value::Value};
+use crate::{code::OpCode, error::SiltError, lua::VM, value::Value};
 
 /// Result type for Lua operations
 pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
@@ -139,12 +143,14 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         name: &str,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
-        // println!("method list");
         if let Some(method) = self.methods.get(name) {
-            if let Some(data) = ud.data.downcast_mut::<T>() {
-                return method(vm, mc, data, args);
+            if let Ok(mut d) = ud.data.lock() {
+                return match d.downcast_mut() {
+                    Some(ud) => method(vm, mc, ud, args),
+                    None =>  Err(SiltError::UDBadCast),
+                };
             }
-        }
+        };
         Err(SiltError::UDNoMethodRef)
     }
 
@@ -157,8 +163,11 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
         if let Some(method) = self.meta_methods.get(name) {
-            if let Some(data) = ud.data.downcast_mut::<T>() {
-                return method(vm, mc, data, args);
+            if let Ok(mut d) = ud.data.lock() {
+                return match d.downcast_mut() {
+                    Some(ud) => method(vm, mc, ud, args),
+                    None =>  Err(SiltError::UDBadCast),
+                };
             }
         }
         Err(SiltError::UDNoMethodRef)
@@ -190,12 +199,15 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         // println!("eq {}",first==name);
         if let Some(getter) = self.getters.get(name) {
             // println!("yeah we exist {}", name);
-            if let Some(data) = ud.data.downcast_ref::<T>() {
-                return getter(vm, mc, data);
+            if let Ok(d) = ud.data.lock(){
+                return match d.downcast_ref() {
+                    Some(ud) => getter(vm, mc, ud),
+                    None => Err(SiltError::UDBadCast),
+                };
             }
         }
-        println!("we dont exist");
-        Err(SiltError::UDNoFieldRef)
+        // println!("we dont exist");
+        Err(SiltError::UDNoFieldGet)
     }
 
     fn set_field(
@@ -208,11 +220,14 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
     ) -> InnerResult<'gc> {
         // println!("field setters");
         if let Some(setter) = self.setters.get(name) {
-            if let Some(data) = ud.data.downcast_mut::<T>() {
-                return setter(vm, mc, data, value);
+            if let Ok(mut d) = ud.data.lock(){
+                return match d.downcast_mut() {
+                    Some(ud) => setter(vm, mc, ud, value),
+                    None =>  Err(SiltError::UDBadCast),
+                };
             }
         }
-        Err(SiltError::UDNoFieldRef)
+        Err(SiltError::UDNoFieldSet)
     }
 }
 
@@ -396,7 +411,7 @@ unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
 
 /// A wrapper for UserData objects
 pub struct UserDataWrapper {
-    data: Rc<RefCell< dyn Any>>,
+    data: Arc<Mutex<dyn Any>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -404,7 +419,7 @@ pub struct UserDataWrapper {
 }
 
 pub struct WeakWrapper {
-    data: Weak<RefCell<dyn Any>>,
+    data: Weak<Mutex<dyn Any>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -415,13 +430,13 @@ impl WeakWrapper {
     /// Create a new WeakWrapper from a UserDataWrapper
     pub fn from_wrapper(wrapper: &UserDataWrapper) -> Self {
         Self {
-            data: Rc::downgrade(&wrapper.data),
+            data: Arc::downgrade(&wrapper.data),
             id: wrapper.id,
             type_name: wrapper.type_name,
             stack_index: wrapper.stack_index,
         }
     }
-    
+
     /// Get the unique ID of the wrapped UserData
     pub fn id(&self) -> usize {
         self.id
@@ -431,30 +446,27 @@ impl WeakWrapper {
     pub fn type_name(&self) -> &'static str {
         self.type_name
     }
-    
+
     /// Try to upgrade to a full UserDataWrapper
     pub fn upgrade(&self) -> Option<UserDataWrapper> {
-        self.data.upgrade().map(|data| {
-            UserDataWrapper {
-                data,
-                id: self.id,
-                type_name: self.type_name,
-                stack_index: self.stack_index,
-            }
+        self.data.upgrade().map(|data| UserDataWrapper {
+            data,
+            id: self.id,
+            type_name: self.type_name,
+            stack_index: self.stack_index,
         })
     }
-    
+
     /// Check if the original UserDataWrapper has been dropped
     pub fn is_dropped(&self) -> bool {
         self.data.upgrade().is_none()
     }
-    
+
     /// Convert to a string representation
     pub fn to_string(&self) -> String {
         format!("{} weak userdata (id: {})", self.type_name, self.id)
     }
 }
-
 
 impl UserDataWrapper {
     /// Create a new UserData wrapper
@@ -462,7 +474,7 @@ impl UserDataWrapper {
         let type_name = T::type_name();
         let id = data.get_id();
         Self {
-            data: Rc::new(RefCell::new(data)),
+            data: Arc::new(Mutex::new(data)),
             id,
             type_name,
             stack_index: None,
@@ -480,14 +492,14 @@ impl UserDataWrapper {
     }
 
     /// Get a reference to the wrapped data as Any
-    pub fn as_any(&self) -> &dyn Any {
-        self.data.as_ref()
-    }
+    // pub fn as_any(&self) -> &dyn Any {
+    //     self.data.as_ref()
+    // }
 
     /// Get a mutable reference to the wrapped data as Any
-    pub fn as_any_mut<'a:'static>(& mut self) -> &'a mut dyn Any {
-        &mut self.data.borrow_mut()
-    }
+    // pub fn as_any_mut<'a: 'static>(&mut self) -> &'a mut dyn Any {
+    //     &mut self.data.borrow_mut()
+    // }
 
     /// Set the stack index for this UserData
     pub fn set_stack_index(&mut self, index: usize) {
@@ -503,21 +515,26 @@ impl UserDataWrapper {
     pub fn to_string(&self) -> String {
         format!("{} userdata (id: {})", self.type_name, self.id)
     }
+
+    // pub fn downcast_mut<'a, 'b: 'a, T>(&'b mut self) -> &'a mut T {
+    //     self.data.lock().unwrap().downcast_mut::<T>().unwrap()
+    //     //.downcast_mut::<T>()
+    // }
 }
 
-impl Deref for UserDataWrapper {
-    type Target = dyn Any;
+// impl Deref for UserDataWrapper {
+//     type Target = dyn Any;
+//
+//     fn deref(&self) -> &Self::Target {
+//         self.data.borrow()
+//     }
+// }
 
-    fn deref(&self) -> &Self::Target {
-        self.data.as_ref()
-    }
-}
-
-impl DerefMut for UserDataWrapper {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.data.as_mut()
-    }
-}
+// impl DerefMut for UserDataWrapper {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         let v=self.data.borrow_mut().lock().unwrap().downcast_mut().unwrap();
+//     }
+// }
 
 impl Clone for UserDataWrapper {
     fn clone(&self) -> Self {
@@ -583,7 +600,7 @@ impl UserData for TestEnt {
         methods.add_method_mut("pos", |_, _, this, args| {
             // Example of parsing a table to set position
             if let Some(Value::Table(t)) = args.first() {
-                let t_ref = t.borrow();
+                let t_ref = (*t).borrow();
                 if let Some(Value::Number(x)) = t_ref.get(&Value::String("x".to_string())) {
                     this.x = *x;
                 }
@@ -805,17 +822,16 @@ impl MetaMethod {
 /// Helper functions for VM integration
 pub mod vm_integration {
     use gc_arena::lock::RefLock;
-    use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::lua::VM;
+    use crate::lua::{UDVec, VM};
 
     /// Create a new UserData value
     pub fn create_userdata<'gc, T: UserData>(
         reg: &mut UserDataRegistry<'gc>,
         mc: &Mutation<'gc>,
         data: T,
-        userdata_stack: &Arc<Mutex<Vec<Option<WeakWrapper>>>>,
+        userdata_stack: &mut Option<UDVec>,
     ) -> Value<'gc> {
         // Register the type if it hasn't been registered yet
         let type_name = T::type_name();
@@ -825,24 +841,22 @@ pub mod vm_integration {
 
         // Create the UserData wrapper
         let mut wrapper = UserDataWrapper::new(data);
-        
+
         // Add to the userdata_stack and get the index
-        let index = {
-            let mut stack = userdata_stack.lock().unwrap();
-            let index = stack.len();
+        if let Some(stack) = userdata_stack {
+            let index = stack.0.len();
             wrapper.set_stack_index(index);
-            
+
             // Create a weak wrapper and store it in the stack
             let weak_wrapper = WeakWrapper::from_wrapper(&wrapper);
-            stack.push(Some(weak_wrapper));
-            index
+            stack.0.push(weak_wrapper);
         };
-        
+
         // Create the GC-managed wrapper
-        let mut ud_gc = Gc::new(mc, RefLock::new(wrapper));
-        
+        let ud_gc = Gc::new(mc, RefLock::new(wrapper));
+
         // Set the stack index in the GC-managed wrapper
-        ud_gc.borrow_mut(mc).set_stack_index(index);
+        // ud_gc.borrow_mut(mc).set_stack_index(index);
 
         // Return as a Value
         Value::UserData(ud_gc)

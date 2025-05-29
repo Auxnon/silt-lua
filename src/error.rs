@@ -56,8 +56,10 @@ pub enum SiltError {
     // Userdata errors
     UDNoInitField,
     UDNoInitMethod,
+    UDBadCast,
     UDNoMap,
-    UDNoFieldRef,
+    UDNoFieldGet,
+    UDNoFieldSet,
     UDNoMethodRef,
     UDTypeMismatch,
 
@@ -187,11 +189,13 @@ impl std::fmt::Display for SiltError {
             SiltError::UDNoInitField=> write!(f, "UserData field not setup"),
             SiltError::UDNoInitMethod=> write!(f, "UserData method not setup"),
             SiltError::UDNoMap=> write!(f, "UserData map not setup"),
-            SiltError::UDNoFieldRef=> write!(f, "UserData field does not exist"),
+            SiltError::UDNoFieldGet=> write!(f, "UserData field getter does not exist"),
+            SiltError::UDNoFieldSet=> write!(f, "UserData field setter does not exist"),
             SiltError::UDNoMethodRef=> write!(f, "UserData method does not exist"),
             SiltError::UDTypeMismatch => {
                 write!(f, "UserData type mismatch during method or field access")
-            }
+            },
+            SiltError::UDBadCast=>write!(f, "UserData bad downcast"),
         }
     }
 }
