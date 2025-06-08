@@ -285,6 +285,52 @@ impl<'gc> Lua {
         out
     }
 
+    pub fn compile(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
+        self.arena
+            .mutate_root(|mc, vm| match compiler.try_compile(mc, code) {
+                Ok(f) => {
+                    vm.borrow_mut().root = Gc::new(mc, f);
+                    Ok(ExVal::Nil)
+                }
+                Err(er) => Err(er),
+            })
+    }
+
+    pub fn cycle(&mut self) -> LuaResult {
+        self.arena.mutate_root(|mc, vm| vm.borrow_mut().cycle(mc))
+    }
+
+    pub fn enter<F>(&mut self, closure: F) -> LuaResult
+    where
+        F: Fn(&mut VM),
+    {
+        self.arena.mutate_root(|mc, vm| {
+            closure(vm);
+
+            vm.borrow_mut().cycle(mc)
+        })
+    }
+
+    /// Loads lua code into a callable function and returns a useable index to call it via
+    /// vm.call(ref)
+    pub fn load(&mut self, code: &str, compiler: &mut Compiler) -> Result<usize, Vec<ErrorTuple>> {
+        self.arena
+            .mutate_root(|mc, vm| match compiler.try_compile(mc, code) {
+                Ok(f) => {
+                    let fun = Gc::new(mc, f);
+                    Ok(vm.store_fn(fun))
+                }
+                Err(er) => Err(er),
+            })
+    }
+
+    /// call an internal function by index provided from the load function. Ideally call this after
+    /// entering the VM context otherwise calling here will open and close the arena
+    /// each time
+    pub fn call(&mut self, index: usize) {
+        self.arena.mutate_root(|mc, vm| vm.call_by_index(mc,index));
+    }
+
     // fn fun<'a>(chunk: FunctionObject<'a>) -> FunctionObject<'a> {
     //     chunk
     // }
@@ -302,6 +348,9 @@ impl<'gc> Lua {
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct VM<'gc> {
+    /// highest level frame or function object.
+    root: Gc<'gc, FunctionObject<'gc>>,
+    /// holds our current frame, our function object. At top level is a dupe of root
     body: Gc<'gc, FunctionObject<'gc>>,
     // compiler: Compiler<'lua>,
     // frames: Vec<CallFrame>,
@@ -332,6 +381,8 @@ pub struct VM<'gc> {
     // string_meta: Option<Gc<Table>>,
     pub userdata_registry: UserDataRegistry<'gc>,
     userdata_stack: Option<UDVec>,
+    /// Used to quickly run in-VM functions externally
+    external_functions: Vec<Gc<'gc, FunctionObject<'gc>>>,
 }
 
 // type ObjectPtr<'gc, T> = Gc<'gc, RefLock<Object<'gc, T>>>;
@@ -401,6 +452,7 @@ impl<'gc> VM<'gc> {
         // let gtable  =RefLock::new(HashMap::new() );
         Self {
             // compiler: Compiler::new(),
+            root: Gc::new(mc, FunctionObject::new(None, false)),
             body: Gc::new(mc, FunctionObject::new(None, false)),
             // dummy_frame: CallFrame::new(Rc::new(FunctionObject::new(None, false))),
             // frames: vec![],
@@ -414,6 +466,7 @@ impl<'gc> VM<'gc> {
             table_counter: RefCell::new(1),
             userdata_registry: UserDataRegistry::new(),
             userdata_stack: Some(UDVec(vec![])),
+            external_functions: vec![],
         }
     }
 
@@ -422,6 +475,12 @@ impl<'gc> VM<'gc> {
             Some(u) => std::mem::take(&mut u.0),
             None => vec![],
         }
+    }
+
+    pub fn store_fn(&mut self, o: Gc<'gc, FunctionObject<'gc>>) -> usize {
+        let u = self.external_functions.len();
+        self.external_functions.push(o);
+        u
     }
 
     pub(crate) fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
@@ -587,7 +646,7 @@ impl<'gc> VM<'gc> {
     ) -> Result<ExVal, Vec<ErrorTuple>> {
         // let object = self.compiler.compile(source.to_owned());
         // object.chunk.print_chunk(name)
-        match self.execute(mc, object.into()) {
+        match self.execute(mc, object) {
             Ok(v) => Ok(v),
             Err(e) => Err(vec![ErrorTuple {
                 code: e,
@@ -597,6 +656,16 @@ impl<'gc> VM<'gc> {
 
         // Ok(ExVal::Nil)
         // out
+    }
+
+    pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, Vec<ErrorTuple>> {
+        match self.execute(mc, self.root) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(vec![ErrorTuple {
+                code: e,
+                location: (0, 0),
+            }]),
+        }
     }
 
     pub fn execute(
@@ -1285,6 +1354,16 @@ impl<'gc> VM<'gc> {
             self.stack_count - (param_count as usize) - 1,
         );
         new_frame
+    }
+
+    pub fn call_by_index(&mut self, mc: &Mutation<'gc>, u: usize) -> LuaResult {
+        match self.external_functions.get(u) {
+            Some(f) => self.run(mc, *f),
+            None => Err(vec![ErrorTuple {
+                code: SiltError::Unknown,
+                location: (0, 0),
+            }]),
+        }
     }
 
     pub(crate) fn capture_upvalue(
