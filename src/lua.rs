@@ -363,7 +363,7 @@ pub struct VM<'gc> {
     stack_count: usize,
     /** Next empty location */
     // stack_top: *mut Value,
-    pub globals: Gc<'gc, RefLock<HashMap<String, Value<'gc>>>>, // TODO store strings as identifer usize and use that as key
+    pub globals: Gc<'gc, RefLock<Table<'gc>>>, // TODO store strings as identifer usize and use that as key
     // original CI code uses linked list, most recent closed upvalue is the first and links to previous closed values down the chain
     // allegedly performance of a linked list is heavier then an array and shifting values but is that true here or the opposite?
     // resizing a sequential array is faster then non sequential heap items, BUT since we'll USUALLY resolve the upvalue on the top of the list we're derefencing once to get our Upvalue vs an index lookup which is slightly slower.
@@ -461,7 +461,7 @@ impl<'gc> VM<'gc> {
             stack_count: 0,
             stack,
             // stack_top,
-            globals: Gc::new(mc, RefLock::new(HashMap::new())), //Gc::new(mc, gtable),
+            globals: Gc::new(mc, RefLock::new(Table::new(0))), //Gc::new(mc, gtable),
             open_upvalues: vec![],
             table_counter: RefCell::new(1),
             userdata_registry: UserDataRegistry::new(),
@@ -762,7 +762,7 @@ impl<'gc> VM<'gc> {
                         let v = unsafe { ep.ip.read() };
 
                         // let v = self.pop();
-                        self.globals.borrow_mut(ep.mc).insert(s.to_string(), v);
+                        self.globals.borrow_mut(ep.mc).insert(s.into(), v);
                     } else {
                         return Err(SiltError::VmCorruptConstant);
                     }
@@ -782,7 +782,7 @@ impl<'gc> VM<'gc> {
                         // } else {
                         //     self.globals.insert(s.to_string(), v);
                         // }
-                        self.globals.borrow_mut(ep.mc).insert(s.to_string(), v);
+                        self.globals.borrow_mut(ep.mc).insert(s.into(), v);
                     } else {
                         devout!("SET_GLOBAL: {}", value);
                         #[cfg(feature = "dev-out")]
@@ -793,7 +793,7 @@ impl<'gc> VM<'gc> {
                 OpCode::GET_GLOBAL { constant } => {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
                     if let Value::String(s) = value {
-                        if let Some(v) = self.globals.borrow_mut(ep.mc).get(&**s) {
+                        if let Some(v) = self.globals.borrow_mut(ep.mc).get(&s.into()) {
                             self.push(ep, v.clone());
                         } else {
                             self.push(ep, Value::Nil);
@@ -1628,7 +1628,7 @@ impl<'gc> VM<'gc> {
 
         self.globals
             .borrow_mut(mc)
-            .insert(name.to_string(), Value::NativeFunction(Gc::new(mc, f)));
+            .insert(name.into(), Value::NativeFunction(Gc::new(mc, f)));
     }
 
     // /// Register a UserData type with the VM

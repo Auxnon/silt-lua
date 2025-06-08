@@ -344,21 +344,15 @@ impl Hash for Value<'_> {
         core::mem::discriminant(self).hash(state);
     }
 }
+// impl Into<i64> for Value<'_> {
+//     fn into(self) -> i64 {
+//         match self {
+//             Value::Integer(i) => i,
+//             _ => 0,
+//         }
+//     }
+// }
 
-impl From<i64> for Value<'_> {
-    fn from(value: i64) -> Self {
-        Value::Integer(value)
-    }
-}
-
-impl Into<i64> for Value<'_> {
-    fn into(self) -> i64 {
-        match self {
-            Value::Integer(i) => i,
-            _ => 0,
-        }
-    }
-}
 
 impl Deref for Value<'_> {
     type Target = i64;
@@ -367,12 +361,6 @@ impl Deref for Value<'_> {
             Value::Integer(i) => &i,
             _ => &0,
         }
-    }
-}
-
-impl<'a> Into<Value<'a>> for f64 {
-    fn into(self) -> Value<'a> {
-        Value::Number(self)
     }
 }
 
@@ -386,15 +374,35 @@ impl<'a> Into<f64> for Value<'a> {
     }
 }
 
-impl<'a> Into<Value<'a>> for () {
-    fn into(self) -> Value<'a> {
-        Value::Nil
+impl From<i64> for Value<'_> {
+    fn from(value: i64) -> Self {
+        Value::Integer(value)
+    }
+}
+impl From<&str> for Value<'_> {
+    fn from(value: &str) -> Self {
+        Value::String(value.to_string())
+    }
+}
+impl From<&String> for Value<'_> {
+    fn from(value: &String) -> Self {
+        Value::String(value.to_string())
+    }
+}
+impl From<String> for Value<'_> {
+    fn from(value: String) -> Self {
+        Value::String(value)
     }
 }
 
-impl<'v> Into<Value<'v>> for String {
-    fn into(self) -> Value<'v> {
-        Value::String(self)
+impl From<()> for Value<'_> {
+    fn from(_: ()) -> Self {
+        Value::Nil
+    }
+}
+impl From<f64> for Value<'_> {
+    fn from(value: f64) -> Self {
+        Value::Number(value)
     }
 }
 
