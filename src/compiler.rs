@@ -654,7 +654,7 @@ impl Compiler {
         }
     }
 
-    fn compile<'c>(&mut self, mc: &'c Mutation<'c>, source: &str) -> FunctionObject<'c> {
+    fn compile<'c>(&mut self, mc: &Mutation<'c>, name: Option<String>, source: &str) -> FunctionObject<'c> {
         #[cfg(feature = "dev-out")]
         {
             let lexer = Lexer::new(source);
@@ -666,7 +666,7 @@ impl Compiler {
             });
         }
         let lexer = Lexer::new(source);
-        let mut body = FunctionObject::new(None, true);
+        let mut body = FunctionObject::new(name, true);
         let mut iter = lexer.peekable();
         // let mut e = Emphereal {
         //     body: &mut body,
@@ -695,10 +695,11 @@ impl Compiler {
 
     pub fn try_compile<'c>(
         &mut self,
-        mc: &'c Mutation<'c>,
+        mc: &Mutation<'c>,
+name: Option<String>,
         source: &str,
     ) -> Result<FunctionObject<'c>, Vec<ErrorTuple>> {
-        let obj = self.compile(mc, source);
+        let obj = self.compile(mc,name, source);
         if obj.chunk.is_valid() {
             Ok(obj)
         } else {

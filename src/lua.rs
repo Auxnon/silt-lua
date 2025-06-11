@@ -227,7 +227,7 @@ type LuaResult = Result<ExVal, Vec<ErrorTuple>>;
 type InnerUserData<'a> = Gc<'a, RefLock<UserDataWrapper>>;
 pub struct UDVec(pub Vec<WeakWrapper>);
 
-unsafe impl<'gc> Collect for UDVec {
+unsafe impl Collect for UDVec {
     fn needs_trace() -> bool {
         false
     }
@@ -265,7 +265,7 @@ impl<'gc> Lua {
 
     pub fn run(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
         let out = self.arena.mutate_root(|mc, root| {
-            match compiler.try_compile(mc, code) {
+            match compiler.try_compile(mc, None, code) {
                 Ok(f) => {
                     // let v: &VM=root.borrow();
                     let res: LuaResult = root.borrow_mut().run(mc, Gc::new(mc, f));
@@ -287,7 +287,7 @@ impl<'gc> Lua {
 
     pub fn compile(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
         self.arena
-            .mutate_root(|mc, vm| match compiler.try_compile(mc, code) {
+            .mutate_root(|mc, vm| match compiler.try_compile(mc, None, code) {
                 Ok(f) => {
                     vm.borrow_mut().root = Gc::new(mc, f);
                     Ok(ExVal::Nil)
@@ -302,10 +302,10 @@ impl<'gc> Lua {
 
     pub fn enter<F>(&mut self, closure: F) -> LuaResult
     where
-        F: Fn(&mut VM),
+        F: for<'a> Fn(&mut VM<'a>,  &Mutation<'a>),
     {
-        self.arena.mutate_root(|mc, vm| {
-            closure(vm);
+        self.arena.mutate_root( move |mc, vm| {
+            closure(vm, mc);
 
             vm.borrow_mut().cycle(mc)
         })
@@ -313,22 +313,21 @@ impl<'gc> Lua {
 
     /// Loads lua code into a callable function and returns a useable index to call it via
     /// vm.call(ref)
-    pub fn load(&mut self, code: &str, compiler: &mut Compiler) -> Result<usize, Vec<ErrorTuple>> {
+    pub fn load_fn(
+        &mut self,
+        name: Option<String>,
+        code: &str,
+        compiler: &mut Compiler,
+    ) -> Result<usize, Vec<ErrorTuple>> {
         self.arena
-            .mutate_root(|mc, vm| match compiler.try_compile(mc, code) {
-                Ok(f) => {
-                    let fun = Gc::new(mc, f);
-                    Ok(vm.store_fn(fun))
-                }
-                Err(er) => Err(er),
-            })
+            .mutate_root(|mc, vm| vm.load_fn(mc, name, code, compiler))
     }
 
     /// call an internal function by index provided from the load function. Ideally call this after
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
     pub fn call(&mut self, index: usize) {
-        self.arena.mutate_root(|mc, vm| vm.call_by_index(mc,index));
+        self.arena.mutate_root(|mc, vm| vm.call_by_index(mc, index));
     }
 
     // fn fun<'a>(chunk: FunctionObject<'a>) -> FunctionObject<'a> {
@@ -385,17 +384,15 @@ pub struct VM<'gc> {
     external_functions: Vec<Gc<'gc, FunctionObject<'gc>>>,
 }
 
-// type ObjectPtr<'gc, T> = Gc<'gc, RefLock<Object<'gc, T>>>;
 type ObjectPtr<'gc, T> = Gc<'gc, RefLock<T>>;
-type Body<'gc> = Gc<'gc, RefLock<FunctionObject<'gc>>>;
 
-pub(crate) struct Ephemeral<'a, 'T> {
-    pub(crate) ip: *mut Value<'T>,
-    pub(crate) mc: &'a Mutation<'T>,
+pub(crate) struct Ephemeral<'a, 'g> {
+    pub(crate) ip: *mut Value<'g>,
+    pub(crate) mc: &'a Mutation<'g>,
 }
 
-impl<'a, 'T> Ephemeral<'a, 'T> {
-    pub fn new(mc: &'a Mutation<'T>, ip: *mut Value<'T>) -> Self {
+impl<'a, 'g> Ephemeral<'a, 'g> {
+    pub fn new(mc: &'a Mutation<'g>, ip: *mut Value<'g>) -> Self {
         Ephemeral { mc, ip }
     }
 }
@@ -474,6 +471,22 @@ impl<'gc> VM<'gc> {
         match &mut self.userdata_stack {
             Some(u) => std::mem::take(&mut u.0),
             None => vec![],
+        }
+    }
+
+    pub fn load_fn<'a>(
+        &mut self,
+        mc: &'a Mutation<'gc>,
+        name: Option<String>,
+        code: &str,
+        compiler: &mut Compiler,
+    ) -> Result<usize, Vec<ErrorTuple>> {
+        match compiler.try_compile(mc, name, code) {
+            Ok(f) => {
+                let fun = Gc::new(mc, f);
+                Ok(self.store_fn(fun))
+            }
+            Err(er) => Err(er),
         }
     }
 
@@ -585,22 +598,15 @@ impl<'gc> VM<'gc> {
         // self.print_raw_stack();
         // core::ptr::read()
 
-        let v0 = take(&mut self.stack[self.stack_count - 1]);
+        take(&mut self.stack[self.stack_count - 1])
 
         // for i in self.stack.iter_mut().enumerate() {
         //     *i = Value::Nil;
         // }
-
-        v0
     }
 
     /** Dangerous!  */
     fn read_top(&self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
-        // match self.peek(0) {
-        //     Some(v) => v.clone(),
-        //     None => Value::Nil,
-        // }
-
         unsafe { ep.ip.sub(1).read() }
     }
 

@@ -147,7 +147,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
             if let Ok(mut d) = ud.data.lock() {
                 return match d.downcast_mut() {
                     Some(ud) => method(vm, mc, ud, args),
-                    None =>  Err(SiltError::UDBadCast),
+                    None => Err(SiltError::UDBadCast),
                 };
             }
         };
@@ -166,7 +166,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
             if let Ok(mut d) = ud.data.lock() {
                 return match d.downcast_mut() {
                     Some(ud) => method(vm, mc, ud, args),
-                    None =>  Err(SiltError::UDBadCast),
+                    None => Err(SiltError::UDBadCast),
                 };
             }
         }
@@ -199,7 +199,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         // println!("eq {}",first==name);
         if let Some(getter) = self.getters.get(name) {
             // println!("yeah we exist {}", name);
-            if let Ok(d) = ud.data.lock(){
+            if let Ok(d) = ud.data.lock() {
                 return match d.downcast_ref() {
                     Some(ud) => getter(vm, mc, ud),
                     None => Err(SiltError::UDBadCast),
@@ -220,10 +220,10 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
     ) -> InnerResult<'gc> {
         // println!("field setters");
         if let Some(setter) = self.setters.get(name) {
-            if let Ok(mut d) = ud.data.lock(){
+            if let Ok(mut d) = ud.data.lock() {
                 return match d.downcast_mut() {
                     Some(ud) => setter(vm, mc, ud, value),
-                    None =>  Err(SiltError::UDBadCast),
+                    None => Err(SiltError::UDBadCast),
                 };
             }
         }
@@ -569,10 +569,6 @@ impl TestEnt {
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
-
-    pub fn entity_id(&self) -> i64 {
-        0
-    }
 }
 
 impl UserData for TestEnt {
@@ -581,11 +577,7 @@ impl UserData for TestEnt {
     }
 
     fn get_id(&self) -> usize {
-        // Use a combination of memory address and values for uniqueness
-        let ptr = self as *const Self as usize;
-        ptr ^ ((self.x.to_bits() as usize) << 32)
-            ^ (self.y.to_bits() as usize)
-            ^ (self.z.to_bits() as usize)
+        0
     }
 
     fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {
