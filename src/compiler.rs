@@ -241,12 +241,6 @@ struct UpLocal {
 
 type FnRef<'a, 'c> = &'a mut FunctionObject<'c>;
 
-// struct Emphereal<'a, 'c: 'a> {
-//     // iterator: Peekable<Lexer<'c>>,
-//     body: &'a mut FunctionObject<'c>,
-//     mc: &'a Mutation<'c>,
-// }
-
 pub struct Compiler {
     // pub body: FunctionObject<'chnk>,
     pub current_index: usize,
@@ -548,6 +542,16 @@ impl Compiler {
         self.write_code(f, op, self.current_location);
     }
 
+    /** emit op code at current token location */
+    fn drop_last_if(&mut self, f: FnRef, op: &OpCode) {
+        let b = f.chunk.drop_last_if(op);
+        #[cfg(feature = "dev-out")]
+        {
+            println!("drop_last_if {}? {}!", op, b);
+            // self.chunk.print_chunk()
+        }
+    }
+
     /** emit op code at current token location and return op index */
     fn emit_index(&mut self, f: FnRef, op: OpCode) -> usize {
         #[cfg(feature = "dev-out")]
@@ -703,10 +707,7 @@ impl Compiler {
         let lexer = Lexer::new(source);
         let mut body = FunctionObject::new(name, true);
         let mut iter = lexer.peekable();
-        // let mut e = Emphereal {
-        //     body: &mut body,
-        //     mc,
-        // };
+
         while match iter.peek() {
             None => false,
             _ => true,
@@ -720,11 +721,14 @@ impl Compiler {
             }
         }
 
+        // we're just going to always return the last top level value, because why not? we can make
+        // it listen to flags via `if self.language_flags.implicit_returns`
+        self.drop_last_if(&mut body, &OpCode::POP);
+
         self.emit(&mut body, OpCode::RETURN, (0, 0));
         if !self.valid {
             body.chunk.invalidate();
         }
-        // take(&mut self.body)
         body
     }
 
@@ -1176,11 +1180,10 @@ fn define_function<'c>(
         add_local(this, it, ident)?;
         None
     } else {
-        let ident = Some((this.identifer_constant(f, ident), location));
-        ident
+        Some((this.identifer_constant(f, ident), location))
     };
 
-    build_function(this, mc, f, it, ident_clone, global_ident, false, false)?;
+    build_function(this, mc, f, it, ident_clone, global_ident, false)?;
 
     Ok(())
 }
@@ -1194,7 +1197,6 @@ fn build_function<'c>(
     ident: String,
     global_ident: Option<(u8, Location)>,
     is_script: bool,
-    implicit_return: bool,
 ) -> Catch {
     // TODO this function could be called called rercursivelly due to the recursive decent nature of the parser, we should add a check to make sure we don't overflow the stack
     devnote!(this it "build_function");
@@ -1225,15 +1227,14 @@ fn build_function<'c>(
 
     if let &OpCode::RETURN = fr2.chunk.code.last().unwrap() { //read_last_code
     } else {
+        this.drop_last_if(fr2, &OpCode::POP);
         // println!("impli {}",implicit_return);
         // TODO if last was semicolon we also push a nil
-        if !implicit_return {
-            // Check if implicit returns are enabled and last statement was an expression
-            if this.language_flags.implicit_returns && this.last_was_expression {
-                // Don't emit NIL, the last expression value is already on the stack
-            } else {
-                this.emit_at(fr2, OpCode::NIL);
-            }
+        // Check if implicit returns are enabled and last statement was an expression
+        if this.language_flags.implicit_returns && this.last_was_expression {
+            // Don't emit NIL, the last expression value is already on the stack
+        } else {
+            this.emit_at(fr2, OpCode::NIL);
         }
         this.emit_at(fr2, OpCode::RETURN);
     }
@@ -1295,10 +1296,10 @@ fn statement<'c>(
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     devnote!(this it "statement");
-    
+
     // Most statements are not expressions, so reset the flag
     this.last_was_expression = false;
-    
+
     match this.peek(it)? {
         Token::Print => print(this, f, it)?,
         Token::If => if_statement(this, mc, f, it)?,
@@ -1690,10 +1691,10 @@ fn next_expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> C
 fn expression_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
     devnote!(this it "expression_statement");
     expression(this, f, it, false)?;
-    
+
     // Mark that the last statement was an expression for implicit returns
     this.last_was_expression = true;
-    
+
     if this.override_pop {
         this.override_pop = false;
     } else {

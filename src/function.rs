@@ -222,6 +222,11 @@ impl<'chnk> FunctionObject<'chnk> {
         frame = frames.last_mut().unwrap();
         frame.local_stack = frame_top;
     }
+
+
+    pub fn print(&self){
+        self.chunk.print_chunk(&self.name);
+    }
 }
 
 impl Display for FunctionObject<'_> {

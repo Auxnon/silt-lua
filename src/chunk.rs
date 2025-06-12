@@ -31,6 +31,21 @@ impl<'chnk> Chunk<'chnk> {
         self.code.len() - 1
     }
 
+    pub fn drop_last(&mut self) {
+        self.code.pop();
+        self.locations.pop();
+    }
+
+    pub fn drop_last_if(&mut self, byte: &OpCode)-> bool {
+        if let Some(a) = self.code.last() {
+            if a == byte {
+                self.drop_last();
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn read_last_code(&self) -> &OpCode {
         self.code.last().unwrap()
     }
@@ -89,7 +104,7 @@ impl<'chnk> Chunk<'chnk> {
         println!("▐");
     }
 
-    pub fn print_chunk(&self, name: Option<String>) {
+    pub fn print_chunk(&self, name: &Option<String>) {
         match name {
             Some(n) => println!("=== Chunk ({}) ===", n),
             None => println!("=== Root Chunk ==="),
@@ -123,10 +138,12 @@ impl<'chnk> Chunk<'chnk> {
         self.print_constants();
         self.constants.iter().for_each(|c| {
             if let Value::Function(f) = c {
-                f.chunk.print_chunk(match &f.name {
-                    Some(n) => Some(n.clone()),
-                    None => Some("anon-fn".to_string()),
-                });
+                let fname = &f.name;
+                let next_name = match fname {
+                    Some(_) => fname,
+                    None => &Some("anon-fn".to_string()),
+                };
+                f.chunk.print_chunk(next_name);
             }
         });
     }

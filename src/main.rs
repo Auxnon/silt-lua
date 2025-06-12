@@ -304,8 +304,6 @@ fn main() {
     // return a+7
     // "#;
 
-
-
     // let source_in = r#"
     //         local a= 1+2
     //         return a
@@ -322,7 +320,11 @@ fn main() {
     //     local z=6
     //     return test(x,z)
     //     "#;
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_flags(silt_lua::compiler::LanguageFlags {
+        implicit_returns: true,
+        arrow_functions: false,
+        bang_operator: false,
+    });
     let mut lua = Lua::new_with_standard();
     match lua.run(source_in, &mut compiler) {
         Ok(o) => {

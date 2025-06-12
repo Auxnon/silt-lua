@@ -12,7 +12,7 @@ pub fn clock<'lua>(_: &mut VM, _: &Mutation<'lua>, _: Vec<Value>) -> Value<'lua>
 }
 
 pub fn print<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
-    println!("we caled print");
+    println!("we called print");
     let s = args
         .iter()
         .map(|v| v.to_string())

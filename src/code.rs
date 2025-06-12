@@ -214,3 +214,12 @@ impl Display for OpCode {
         }
     }
 }
+
+impl PartialEq for OpCode{
+    fn eq(&self, other: &Self) -> bool {
+        match (self,other){
+            (Self::POP, Self::POP) => true,
+                _=>false
+        }
+    }
+}

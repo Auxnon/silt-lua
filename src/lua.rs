@@ -1,5 +1,5 @@
 use std::{
-    borrow::BorrowMut,
+    borrow::{Borrow, BorrowMut},
     cell::RefCell,
     collections::HashMap,
     mem::take,
@@ -268,6 +268,7 @@ impl<'gc> Lua {
             match compiler.try_compile(mc, None, code) {
                 Ok(f) => {
                     // let v: &VM=root.borrow();
+                    // f.borrow().print();
                     let res: LuaResult = root.borrow_mut().run(mc, Gc::new(mc, f));
 
                     // let res=root..run(mc, Gc::new(mc,f));
@@ -685,7 +686,7 @@ impl<'gc> VM<'gc> {
         // frame.slots = self.stack ???
         // let rstack = self.stack.as_ptr();
         #[cfg(feature = "dev-out")]
-        object.chunk.print_chunk(None);
+        object.chunk.print_chunk(&None);
         let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr() as *mut Value);
         self.body = object;
         // *root = new_body(mc, object.clone());
