@@ -654,7 +654,12 @@ impl Compiler {
         }
     }
 
-    fn compile<'c>(&mut self, mc: &Mutation<'c>, name: Option<String>, source: &str) -> FunctionObject<'c> {
+    fn compile<'c>(
+        &mut self,
+        mc: &Mutation<'c>,
+        name: Option<String>,
+        source: &str,
+    ) -> FunctionObject<'c> {
         #[cfg(feature = "dev-out")]
         {
             let lexer = Lexer::new(source);
@@ -696,10 +701,10 @@ impl Compiler {
     pub fn try_compile<'c>(
         &mut self,
         mc: &Mutation<'c>,
-name: Option<String>,
+        name: Option<String>,
         source: &str,
     ) -> Result<FunctionObject<'c>, Vec<ErrorTuple>> {
-        let obj = self.compile(mc,name, source);
+        let obj = self.compile(mc, name, source);
         if obj.chunk.is_valid() {
             Ok(obj)
         } else {
@@ -1187,6 +1192,7 @@ fn build_function<'c>(
 
     if let &OpCode::RETURN = fr2.chunk.code.last().unwrap() { //read_last_code
     } else {
+        // println!("impli {}",implicit_return);
         // TODO if last was semicolon we also push a nil
         if !implicit_return {
             this.emit_at(fr2, OpCode::NIL);
