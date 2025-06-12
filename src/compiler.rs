@@ -159,6 +159,23 @@ type Ident = u8;
 
 type Catch = Result<(), ErrorTuple>;
 
+#[derive(Clone, Copy, Debug)]
+pub struct LanguageFlags {
+    pub implicit_returns: bool,
+    pub arrow_functions: bool,
+    pub bang_operator: bool,
+}
+
+impl Default for LanguageFlags {
+    fn default() -> Self {
+        Self {
+            implicit_returns: false,
+            arrow_functions: false,
+            bang_operator: false,
+        }
+    }
+}
+
 impl Precedence {
     fn next(self) -> Self {
         match self {
@@ -254,6 +271,10 @@ pub struct Compiler {
     extra: bool, // pub global: &'a mut Environment,
     /** hack to flip off a pop when an expression takes on statement properties, used only for := right now */
     override_pop: bool,
+    /** language flags for optional features */
+    language_flags: LanguageFlags,
+    /** tracks if the last statement was an expression for implicit returns */
+    last_was_expression: bool,
 }
 
 impl Compiler {
@@ -286,7 +307,16 @@ impl Compiler {
             // pre_previous: (Token::Nil, (0, 0)),
             extra: true,
             override_pop: false,
+            language_flags: LanguageFlags::default(),
+            last_was_expression: false,
         }
+    }
+
+    /** Create a new compiler instance with language flags */
+    pub fn new_with_flags(flags: LanguageFlags) -> Compiler {
+        let mut compiler = Self::new();
+        compiler.language_flags = flags;
+        compiler
     }
 
     /** Syntax error with code at location */
@@ -800,6 +830,9 @@ fn declaration<'a, 'c: 'a>(
     devout!("----------------------------");
     devnote!(this it "declaration");
 
+    // Reset expression tracking for each declaration
+    this.last_was_expression = false;
+
     let t = this.peek(it)?;
     match t {
         Token::Local => declaration_keyword(this, mc, f, it, true, false)?,
@@ -1195,7 +1228,12 @@ fn build_function<'c>(
         // println!("impli {}",implicit_return);
         // TODO if last was semicolon we also push a nil
         if !implicit_return {
-            this.emit_at(fr2, OpCode::NIL);
+            // Check if implicit returns are enabled and last statement was an expression
+            if this.language_flags.implicit_returns && this.last_was_expression {
+                // Don't emit NIL, the last expression value is already on the stack
+            } else {
+                this.emit_at(fr2, OpCode::NIL);
+            }
         }
         this.emit_at(fr2, OpCode::RETURN);
     }
@@ -1257,6 +1295,10 @@ fn statement<'c>(
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     devnote!(this it "statement");
+    
+    // Most statements are not expressions, so reset the flag
+    this.last_was_expression = false;
+    
     match this.peek(it)? {
         Token::Print => print(this, f, it)?,
         Token::If => if_statement(this, mc, f, it)?,
@@ -1280,7 +1322,7 @@ fn statement<'c>(
         //     // this.eat();
         //     // TODO ???
         // }
-        _ => expression_statement(this, f, it)?,
+        _ => expression_statement(this, f, it)?, // This will set last_was_expression = true
     }
     Ok(())
 }
@@ -1648,9 +1690,16 @@ fn next_expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> C
 fn expression_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
     devnote!(this it "expression_statement");
     expression(this, f, it, false)?;
+    
+    // Mark that the last statement was an expression for implicit returns
+    this.last_was_expression = true;
+    
     if this.override_pop {
         this.override_pop = false;
     } else {
+        // For implicit returns, we might want to keep the value on the stack
+        // if this is the last statement in a function, but we can't know that here
+        // The function compilation will handle this by checking last_was_expression
         this.emit_at(f, OpCode::POP);
     }
     devnote!(this it "expression_statement end");
