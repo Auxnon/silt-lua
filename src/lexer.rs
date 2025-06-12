@@ -156,7 +156,7 @@ impl<'c> Lexer<'c> {
         }
         self.eat();
         let mut is_float = prefix_dot;
-        let strip = false;
+        let mut strip = false;
         while self.current < self.end {
             match self.peek() {
                 Some(c) => match c {
