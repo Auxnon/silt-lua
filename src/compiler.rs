@@ -1196,6 +1196,9 @@ fn build_function<'c>(
         // TODO if last was semicolon we also push a nil
         if !implicit_return {
             this.emit_at(fr2, OpCode::NIL);
+        } else {
+            // For implicit returns, the last expression value should already be on the stack
+            // Don't emit NIL, just emit RETURN to return that value
         }
         this.emit_at(fr2, OpCode::RETURN);
     }
@@ -1280,7 +1283,19 @@ fn statement<'c>(
         //     // this.eat();
         //     // TODO ???
         // }
-        _ => expression_statement(this, f, it)?,
+        _ => {
+            // Check if this might be an arrow function assignment
+            if let Token::Identifier(_) = this.peek(it)? {
+                // Look ahead to see if we have an arrow function
+                if is_arrow_function_assignment(this, it)? {
+                    arrow_function_assignment(this, mc, f, it)?;
+                } else {
+                    expression_statement(this, f, it)?;
+                }
+            } else {
+                expression_statement(this, f, it)?;
+            }
+        }
     }
     Ok(())
 }
@@ -2145,6 +2160,178 @@ fn print(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
     this.eat(it);
     expression(this, f, it, false)?;
     this.emit_at(f, OpCode::PRINT);
+    Ok(())
+}
+
+fn is_arrow_function_assignment(
+    this: &mut Compiler,
+    it: &mut Peekable<Lexer>,
+) -> Result<bool, ErrorTuple> {
+    // Save current position
+    let saved_current = this.current_index;
+    
+    // Look for pattern: identifier = identifier -> expression
+    // or: identifier = (params) -> expression
+    if let Token::Identifier(_) = this.peek(it)? {
+        this.eat(it); // consume identifier
+        if let Token::Assign = this.peek(it)? {
+            this.eat(it); // consume =
+            // Check for arrow function patterns
+            match this.peek(it)? {
+                Token::Identifier(_) => {
+                    this.eat(it); // consume param
+                    if let Token::ArrowFunction = this.peek(it)? {
+                        // Reset position and return true
+                        while this.current_index > saved_current {
+                            this.current_index -= 1;
+                        }
+                        return Ok(true);
+                    }
+                }
+                Token::OpenParen => {
+                    // Could be (params) -> expression
+                    this.eat(it); // consume (
+                    // Skip to closing paren
+                    let mut paren_count = 1;
+                    while paren_count > 0 {
+                        match this.peek(it)? {
+                            Token::OpenParen => paren_count += 1,
+                            Token::CloseParen => paren_count -= 1,
+                            Token::EOF => break,
+                            _ => {}
+                        }
+                        this.eat(it);
+                    }
+                    if let Token::ArrowFunction = this.peek(it)? {
+                        // Reset position and return true
+                        while this.current_index > saved_current {
+                            this.current_index -= 1;
+                        }
+                        return Ok(true);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    // Reset position and return false
+    while this.current_index > saved_current {
+        this.current_index -= 1;
+    }
+    Ok(false)
+}
+
+fn arrow_function_assignment<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    devnote!(this it "arrow_function_assignment");
+    
+    // Parse: identifier = params -> expression
+    let (res, location) = this.pop(it);
+    let var_name = if let Token::Identifier(name) = res? {
+        name
+    } else {
+        return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
+    };
+    
+    expect_token!(this it Assign);
+    
+    // Determine if this is a local or global assignment
+    let global_ident = if this.scope_depth > 0 {
+        add_local(this, it, var_name.clone())?;
+        None
+    } else {
+        Some((this.identifer_constant(f, var_name.clone()), location))
+    };
+    
+    // Build the arrow function
+    build_arrow_function(this, mc, f, it, var_name, global_ident)?;
+    
+    Ok(())
+}
+
+fn build_arrow_function<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    ident: String,
+    global_ident: Option<(u8, Location)>,
+) -> Catch {
+    devnote!(this it "build_arrow_function");
+    
+    let mut f2 = FunctionObject::new(Some(ident), false);
+    let fr2 = &mut f2;
+    
+    begin_scope(this);
+    begin_functional_scope(this);
+    
+    let mut arity = 0;
+    
+    // Parse parameters
+    match this.peek(it)? {
+        Token::OpenParen => {
+            // Multiple parameters: (a, b, c) -> expression
+            this.eat(it); // consume (
+            if let Token::Identifier(_) = this.peek(it)? {
+                arity += 1;
+                build_param(this, it)?;
+                
+                while let Token::Comma = this.peek(it)? {
+                    this.eat(it);
+                    arity += 1;
+                    if arity > 255 {
+                        return Err(this.error_at(SiltError::TooManyParameters));
+                    }
+                    build_param(this, it)?;
+                }
+            }
+            expect_token!(this it CloseParen);
+        }
+        Token::Identifier(_) => {
+            // Single parameter: a -> expression
+            arity = 1;
+            build_param(this, it)?;
+        }
+        _ => {
+            // No parameters: -> expression (though this might be invalid syntax)
+        }
+    }
+    
+    expect_token!(this it ArrowFunction);
+    
+    // Parse the expression (implicit return)
+    expression(this, fr2, it, false)?;
+    
+    // Arrow functions always have implicit return
+    this.emit_at(fr2, OpCode::RETURN);
+    
+    end_scope(this, fr2, true);
+    let upvals = end_functional_scope(this);
+    
+    f2.upvalue_count = upvals.len() as u8;
+    let func_value = Value::Function(Gc::new(mc, f2));
+    
+    let constant = f.chunk.write_constant(func_value) as u8;
+    this.emit_at(f, OpCode::CLOSURE { constant });
+    
+    // emit upvalues
+    for val in upvals.iter() {
+        this.emit_at(
+            f,
+            OpCode::REGISTER_UPVALUE {
+                index: val.ident,
+                neighboring: val.neighboring,
+            },
+        );
+    }
+    
+    define_variable(this, it, f, global_ident)?;
+    
     Ok(())
 }
 
