@@ -269,6 +269,8 @@ pub struct Compiler {
     language_flags: LanguageFlags,
     /** tracks if the last statement was an expression for implicit returns */
     last_was_expression: bool,
+    /** tracks the number of values on the stack from comma-separated expressions */
+    expression_count: usize,
 }
 
 impl Compiler {
@@ -303,6 +305,7 @@ impl Compiler {
             override_pop: false,
             language_flags: LanguageFlags::default(),
             last_was_expression: false,
+            expression_count: 0,
         }
     }
 
@@ -310,6 +313,7 @@ impl Compiler {
     pub fn new_with_flags(flags: LanguageFlags) -> Compiler {
         let mut compiler = Self::new();
         compiler.language_flags = flags;
+        compiler.expression_count = 0;
         compiler
     }
 
@@ -721,9 +725,16 @@ impl Compiler {
             }
         }
 
-        // we're just going to always return the last top level value, because why not? we can make
-        // it listen to flags via `if self.language_flags.implicit_returns`
-        self.drop_last_if(&mut body, &OpCode::POP);
+        // Handle implicit returns for multiple expressions
+        if self.language_flags.implicit_returns && self.last_was_expression {
+            // If we have multiple expressions, keep them all on the stack
+            // Otherwise, drop the last POP to keep the single expression
+            if self.expression_count <= 1 {
+                self.drop_last_if(&mut body, &OpCode::POP);
+            }
+        } else {
+            self.drop_last_if(&mut body, &OpCode::POP);
+        }
 
         self.emit(&mut body, OpCode::RETURN, (0, 0));
         if !self.valid {
@@ -836,6 +847,7 @@ fn declaration<'a, 'c: 'a>(
 
     // Reset expression tracking for each declaration
     this.last_was_expression = false;
+    this.expression_count = 0;
 
     let t = this.peek(it)?;
     match t {
@@ -1232,7 +1244,8 @@ fn build_function<'c>(
         // TODO if last was semicolon we also push a nil
         // Check if implicit returns are enabled and last statement was an expression
         if this.language_flags.implicit_returns && this.last_was_expression {
-            // Don't emit NIL, the last expression value is already on the stack
+            // Don't emit NIL, the last expression value(s) are already on the stack
+            // If we have multiple expressions, they're all on the stack for multiple returns
         } else {
             this.emit_at(fr2, OpCode::NIL);
         }
@@ -1299,6 +1312,7 @@ fn statement<'c>(
 
     // Most statements are not expressions, so reset the flag
     this.last_was_expression = false;
+    this.expression_count = 0;
 
     match this.peek(it)? {
         Token::Print => print(this, f, it)?,
@@ -1538,9 +1552,14 @@ fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> 
         this.peek(it)?
     {
         this.emit_at(f, OpCode::NIL);
+        this.expression_count = 1;
     } else {
         expression(this, f, it, false)?;
+        // expression() will set this.expression_count to the number of comma-separated expressions
     }
+    
+    // For multiple return values, all expressions are already on the stack
+    // The VM will handle returning multiple values
     this.emit_at(f, OpCode::RETURN);
     Ok(())
 }
@@ -1677,7 +1696,16 @@ fn goto_scope_skip(this: &mut Compiler, f: FnRef) {
 
 fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step: bool) -> Catch {
     devnote!(this it "expression");
+    this.expression_count = 1; // Start with one expression
     this.parse_precedence(f, it, Precedence::Assignment, skip_step)?;
+    
+    // Check for comma-separated expressions
+    while let Token::Comma = this.peek(it)? {
+        this.eat(it); // consume comma
+        this.parse_precedence(f, it, Precedence::Assignment, false)?;
+        this.expression_count += 1;
+    }
+    
     Ok(())
 }
 
@@ -1698,10 +1726,18 @@ fn expression_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>)
     if this.override_pop {
         this.override_pop = false;
     } else {
-        // For implicit returns, we might want to keep the value on the stack
+        // For implicit returns, we might want to keep the value(s) on the stack
         // if this is the last statement in a function, but we can't know that here
         // The function compilation will handle this by checking last_was_expression
-        this.emit_at(f, OpCode::POP);
+        
+        // If we have multiple expressions and implicit returns are enabled,
+        // we might want to keep them all on the stack for the function to return
+        if this.language_flags.implicit_returns && this.expression_count > 1 {
+            // Don't pop - keep all values for potential multiple return
+        } else {
+            // Pop the single expression value as usual
+            this.emit_at(f, OpCode::POP);
+        }
     }
     devnote!(this it "expression_statement end");
     Ok(())
