@@ -20,6 +20,7 @@ pub struct CallFrame<'gc> {
     pub stack_snapshot: usize,
     pub local_stack: *mut Value<'gc>,
     pub ip: *const OpCode,
+    pub need: u8
 }
 
 impl<'frame> CallFrame<'frame> {
@@ -30,6 +31,7 @@ impl<'frame> CallFrame<'frame> {
             ip,
             local_stack: std::ptr::null_mut(),
             stack_snapshot,
+            need: 1
         }
     }
 
@@ -146,6 +148,7 @@ pub struct FunctionObject<'chnk> {
     pub name: Option<String>,
     pub chunk: Chunk<'chnk>,
     pub upvalue_count: u8,
+    pub need: u8,
     // pub arity: usize,
 }
 
@@ -156,6 +159,7 @@ impl<'chnk> FunctionObject<'chnk> {
             is_script,
             chunk: Chunk::new(),
             upvalue_count: 0,
+            need: 1
         }
     }
 

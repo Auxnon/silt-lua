@@ -303,9 +303,9 @@ impl<'gc> Lua {
 
     pub fn enter<F>(&mut self, closure: F) -> LuaResult
     where
-        F: for<'a> Fn(&mut VM<'a>,  &Mutation<'a>),
+        F: for<'a> Fn(&mut VM<'a>, &Mutation<'a>),
     {
-        self.arena.mutate_root( move |mc, vm| {
+        self.arena.mutate_root(move |mc, vm| {
             closure(vm, mc);
 
             vm.borrow_mut().cycle(mc)
@@ -504,6 +504,25 @@ impl<'gc> VM<'gc> {
         self.stack_count += 1;
     }
 
+    pub(crate) fn pushn(
+        &mut self,
+        ep: &mut Ephemeral<'_, 'gc>,
+        values: Vec<Value<'gc>>,
+        need: usize,
+    ) {
+        devout!(" | push_n: values x {}, need {}", values.len(),need);
+        let n = values.len();
+        let mut c = need;
+        for v in values.into_iter().take_while(|_| {
+            c -= 1;
+            c > 0
+        }) {
+            unsafe { ep.ip.write(v) };
+            ep.ip = unsafe { ep.ip.add(1) };
+        }
+        self.stack_count += n;
+    }
+
     fn reserve(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> *mut Value<'gc> {
         self.stack_count += 1;
         let old = ep.ip;
@@ -583,6 +602,7 @@ impl<'gc> VM<'gc> {
             let v = unsafe { ep.ip.replace(Value::Nil) };
             values.push(v);
         }
+        // TODO inefficient just make it this way
         values.reverse();
         values
     }
@@ -724,7 +744,8 @@ impl<'gc> VM<'gc> {
 
             // TODO how much faster would it be to order these ops in order of usage, does match hash? probably.
             match instruction {
-                OpCode::RETURN => {
+                OpCode::RETURN(c) => {
+                    let count = *c;
                     frame_count -= 1;
                     if frame_count <= 0 {
                         if self.stack_count <= 1 {
@@ -733,17 +754,42 @@ impl<'gc> VM<'gc> {
                         let out: ExVal = self.safe_pop().into();
                         return Ok(out);
                     }
-                    let res = self.pop(ep);
-                    ep.ip = frame.local_stack;
-                    self.close_upvalues_by_return(ep.ip);
-                    devout!("stack top {}", unsafe { &*ep.ip });
-                    self.stack_count = frame.stack_snapshot;
-                    frames.pop();
-                    frame = frames.last_mut().unwrap();
-                    devout!("next instruction {}", frame.current_instruction());
-                    #[cfg(feature = "dev-out")]
-                    self.print_stack();
-                    self.push(ep, res);
+                    if count > 1 {
+                        let vres = self.popn(ep, count);
+
+                        // TODO this paragraph is a dupe of the one below, i hate this whole logic
+                        // segment. Pushing stack values to a new vec, reversing it, then iterating
+                        // one by one back on to the stack but further down? Literally wasteful!
+                        // so we will rewrite eventually
+
+                        ep.ip = frame.local_stack;
+                        self.close_upvalues_by_return(ep.ip);
+                        devout!("stack top {}", unsafe { &*ep.ip });
+                        self.stack_count = frame.stack_snapshot;
+                        frames.pop();
+                        frame = frames.last_mut().unwrap();
+                        devout!("next instruction {}", frame.current_instruction());
+                        #[cfg(feature = "dev-out")]
+                        self.print_stack();
+
+                        self.pushn(ep, vres, frame.need.into());
+                    } else {
+                        let res = self.pop(ep);
+
+                        ep.ip = frame.local_stack;
+                        self.close_upvalues_by_return(ep.ip);
+                        devout!("stack top {}", unsafe { &*ep.ip });
+                        self.stack_count = frame.stack_snapshot;
+                        frames.pop();
+                        frame = frames.last_mut().unwrap();
+                        devout!("next instruction {}", frame.current_instruction());
+                        #[cfg(feature = "dev-out")]
+                        self.print_stack();
+
+                        self.push(ep, res);
+                    }
+
+                    frame.need = 1;
 
                     // println!("<< {}", self.pop());
                     // match self.pop() {
@@ -820,7 +866,7 @@ impl<'gc> VM<'gc> {
                     // TODO ew cloning, is our cloning optimized yet?
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
-
+                OpCode::NEED(n) => frame.need = *n,
                 OpCode::DEFINE_LOCAL { constant: _ } => todo!(),
                 OpCode::ADD => binary_op_push!(self, ep, frame, frames, frame_count, +, Add),
                 OpCode::SUB => binary_op_push!(self, ep, frame, frames, frame_count, -, Sub),

@@ -45,7 +45,7 @@ pub enum OpCode {
     FOR_NUMERIC(u16),
     FORWARD(u16),
     REWIND(u16),
-    RETURN,
+    RETURN(u8),
     POP,
     POPS(u8),
     CLOSE_UPVALUES(u8),
@@ -67,7 +67,10 @@ pub enum OpCode {
     GREATER_EQUAL,
     PRINT,
     META(u8),
+    /// Call function with n values on the stack for parameters
     CALL(u8),
+    /// tell the VM we expect n values for next assignment before resetting, otherwise 1
+    NEED(u8),
     REGISTER_UPVALUE {
         index: u8,
         neighboring: bool,
@@ -143,7 +146,8 @@ impl Display for OpCode {
             Self::DEFINE_LOCAL { constant } => {
                 write!(f, "OP_DEFINE_LOCAL {}", constant)
             }
-            Self::RETURN => write!(f, "OP_RETURN"),
+            Self::NEED(u) => write!(f, "OP_NEED {}",u),
+            Self::RETURN(u) => write!(f, "OP_RETURNx{}",u),
             Self::POP => write!(f, "OP_POP"),
             Self::POPS(n) => {
                 write!(f, "OP_POPx{}", n)

@@ -270,7 +270,7 @@ pub struct Compiler {
     /** tracks if the last statement was an expression for implicit returns */
     last_was_expression: bool,
     /** tracks the number of values on the stack from comma-separated expressions */
-    expression_count: usize,
+    expression_count: u8,
 }
 
 impl Compiler {
@@ -735,8 +735,8 @@ impl Compiler {
         } else {
             self.drop_last_if(&mut body, &OpCode::POP);
         }
-
-        self.emit(&mut body, OpCode::RETURN, (0, 0));
+        // self.expression_count we should convert to tuple right? piping to CLI ???
+        self.emit(&mut body, OpCode::RETURN(0), (0, 0));
         if !self.valid {
             body.chunk.invalidate();
         }
@@ -1237,7 +1237,7 @@ fn build_function<'c>(
 
     block(this, mc, fr2, it)?;
 
-    if let &OpCode::RETURN = fr2.chunk.code.last().unwrap() { //read_last_code
+    if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() { //read_last_code
     } else {
         this.drop_last_if(fr2, &OpCode::POP);
         // println!("impli {}",implicit_return);
@@ -1249,7 +1249,7 @@ fn build_function<'c>(
         } else {
             this.emit_at(fr2, OpCode::NIL);
         }
-        this.emit_at(fr2, OpCode::RETURN);
+        this.emit_at(fr2, OpCode::RETURN(0));
     }
 
     // TODO why do we need to eat again? This prevents an expression_statement of "End" being called but block should have eaten it?
@@ -1559,8 +1559,7 @@ fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> 
     }
     
     // For multiple return values, all expressions are already on the stack
-    // The VM will handle returning multiple values
-    this.emit_at(f, OpCode::RETURN);
+    this.emit_at(f, OpCode::RETURN(this.expression_count));
     Ok(())
 }
 
