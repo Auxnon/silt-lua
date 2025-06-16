@@ -512,15 +512,17 @@ impl<'gc> VM<'gc> {
     ) {
         devout!(" | push_n: values x {}, need {}", values.len(),need);
         let n = values.len();
-        let mut c = need;
-        for v in values.into_iter().take_while(|_| {
-            c -= 1;
-            c > 0
-        }) {
+        let c = need;
+        let mut vv = values.into_iter();
+        for _ in 0..c {
+            let v = match vv.next() {
+                Some(n) => n,
+                None => Value::Nil,
+            };
             unsafe { ep.ip.write(v) };
             ep.ip = unsafe { ep.ip.add(1) };
         }
-        self.stack_count += n;
+        self.stack_count += need;
     }
 
     fn reserve(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> *mut Value<'gc> {
@@ -798,7 +800,7 @@ impl<'gc> VM<'gc> {
                     // }
                 }
                 OpCode::CONSTANT { constant } => {
-                    let value = Self::get_chunk(&frame).get_constant(*constant);
+                    let value = Self::get_chunk(frame).get_constant(*constant);
                     self.push(ep, value.clone());
                     // match value {
                     //     Value::Number(f) => self.push(*f),
@@ -823,7 +825,7 @@ impl<'gc> VM<'gc> {
 
                 // TODO does this need to exist?
                 OpCode::SET_GLOBAL { constant } => {
-                    let value = self.body.chunk.get_constant(*constant);
+                    let value = Self::get_chunk(frame).get_constant(*constant);
                     if let Value::String(s) = value {
                         let v = self.duplicate(ep);
                         // TODO we could take, expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
@@ -844,7 +846,7 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::GET_GLOBAL { constant } => {
-                    let value = Self::get_chunk(&frame).get_constant(*constant);
+                    let value = Self::get_chunk(frame).get_constant(*constant);
                     if let Value::String(s) = value {
                         if let Some(v) = self.globals.borrow_mut(ep.mc).get(&s.into()) {
                             self.push(ep, v.clone());

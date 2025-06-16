@@ -1249,7 +1249,7 @@ fn build_function<'c>(
         } else {
             this.emit_at(fr2, OpCode::NIL);
         }
-        this.emit_at(fr2, OpCode::RETURN(0));
+        this.emit_at(fr2, OpCode::RETURN(this.expression_count));
     }
 
     // TODO why do we need to eat again? This prevents an expression_statement of "End" being called but block should have eaten it?
@@ -1701,8 +1701,8 @@ fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step
     // Check for comma-separated expressions
     while let Token::Comma = this.peek(it)? {
         this.eat(it); // consume comma
-        this.parse_precedence(f, it, Precedence::Assignment, false)?;
         this.expression_count += 1;
+        this.parse_precedence(f, it, Precedence::Assignment, false)?;
     }
     
     Ok(())
@@ -1844,6 +1844,9 @@ fn named_variable(
         Token::Assign => {
             if can_assign {
                 this.eat(it);
+                if this.expression_count > 1 {
+                    this.emit_at(f, OpCode::NEED(this.expression_count));
+                }
                 expression(this, f, it, false)?;
                 this.emit_at(f, setter);
             } else {

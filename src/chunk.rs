@@ -123,6 +123,7 @@ impl<'chnk> Chunk<'chnk> {
                 OpCode::CONSTANT { constant }
                 | OpCode::DEFINE_GLOBAL { constant }
                 | OpCode::GET_GLOBAL { constant }
+                | OpCode::SET_GLOBAL { constant }
                 | OpCode::DEFINE_LOCAL { constant } => {
                     format!("({})", &self.constants[*constant as usize])
                 }
