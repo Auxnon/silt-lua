@@ -1879,6 +1879,8 @@ fn named_variable(
         unreachable!()
     };
 
+    let mut assignment_possible=false;
+
     this.var_stack.clear();
     this.var_stack.push(ops);
 
