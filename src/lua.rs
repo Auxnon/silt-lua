@@ -510,7 +510,10 @@ impl<'gc> VM<'gc> {
         values: Vec<Value<'gc>>,
         need: usize,
     ) {
-        devout!(" | push_n: values x {}, need {}", values.len(),need);
+        devout!(" | push_n: values x {}, need {}", values.len(), need);
+        for v in values.iter() {
+            println!("we have {}", v);
+        }
         let n = values.len();
         let c = need;
         let mut vv = values.into_iter();
@@ -519,6 +522,7 @@ impl<'gc> VM<'gc> {
                 Some(n) => n,
                 None => Value::Nil,
             };
+            println!("pushn -> {}", v);
             unsafe { ep.ip.write(v) };
             ep.ip = unsafe { ep.ip.add(1) };
         }
@@ -756,6 +760,9 @@ impl<'gc> VM<'gc> {
                         let out: ExVal = self.safe_pop().into();
                         return Ok(out);
                     }
+
+                    devout!("========= we return {}", frame.need);
+                    // if  || frame.need>1 {
                     if count > 1 {
                         let vres = self.popn(ep, count);
 
@@ -789,6 +796,11 @@ impl<'gc> VM<'gc> {
                         self.print_stack();
 
                         self.push(ep, res);
+                        if frame.need > 1 {
+                            for _ in 1..frame.need {
+                                self.push(ep, Value::Nil);
+                            }
+                        }
                     }
 
                     frame.need = 1;
@@ -801,6 +813,7 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::CONSTANT { constant } => {
                     let value = Self::get_chunk(frame).get_constant(*constant);
+                    println!("got constant {}", value);
                     self.push(ep, value.clone());
                     // match value {
                     //     Value::Number(f) => self.push(*f),
@@ -811,6 +824,7 @@ impl<'gc> VM<'gc> {
                 OpCode::DEFINE_GLOBAL { constant } => {
                     let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
+                        devout!("\"{}\"", s);
                         // DEV inline pop due to self lifetime nonsense
                         self.stack_count -= 1;
                         unsafe { ep.ip = ep.ip.sub(1) };
@@ -826,7 +840,10 @@ impl<'gc> VM<'gc> {
                 // TODO does this need to exist?
                 OpCode::SET_GLOBAL { constant } => {
                     let value = Self::get_chunk(frame).get_constant(*constant);
+                    // let value = self.body.chunk.get_constant(*constant);
+                    // devout!("ident: {}", value);
                     if let Value::String(s) = value {
+                        devout!("\"{}\"", s);
                         let v = self.duplicate(ep);
                         // TODO we could take, expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
                         // alternatively we can peek the value, that might be better to prevent side effects
@@ -837,9 +854,10 @@ impl<'gc> VM<'gc> {
                         // } else {
                         //     self.globals.insert(s.to_string(), v);
                         // }
+                        // devout!("set original: {}", value);
                         self.globals.borrow_mut(ep.mc).insert(s.into(), v);
                     } else {
-                        devout!("SET_GLOBAL: {}", value);
+                        // devout!("0SET_GLOBAL: {}", value);
                         #[cfg(feature = "dev-out")]
                         self.body.chunk.print_constants();
                         return Err(SiltError::VmCorruptConstant);
@@ -847,7 +865,9 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::GET_GLOBAL { constant } => {
                     let value = Self::get_chunk(frame).get_constant(*constant);
+                    // devout!("ident: {}", value);
                     if let Value::String(s) = value {
+                        devout!("\"{}\"", s);
                         if let Some(v) = self.globals.borrow_mut(ep.mc).get(&s.into()) {
                             self.push(ep, v.clone());
                         } else {
