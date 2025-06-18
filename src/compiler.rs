@@ -1879,11 +1879,10 @@ fn named_variable(
         unreachable!()
     };
 
-    let mut assignment_possible=false;
-
     this.var_stack.clear();
     this.var_stack.push(ops);
 
+    // Check for additional variables in multi-variable context
     while let Token::Comma = this.peek(it)? {
         this.eat(it);
         if let Token::Identifier(_) = this.peek(it)? {
@@ -1896,9 +1895,33 @@ fn named_variable(
             };
             this.var_stack.push(ops);
         } else {
-            // TODO this might fail if we have A,5 for example which should fail for assignment but
-            // NOT fail for retrieval...
-            return Err(this.error_at(SiltError::Unknown));
+            // We encountered a non-identifier after comma
+            // This means we have a mixed expression like "a, 5" or "a, func()"
+            // For assignment, this is invalid. For retrieval, we need to handle it differently.
+            
+            if can_assign && matches!(this.peek(it)?, Token::Assign) {
+                // This would be invalid assignment like "a, 5 = ..."
+                return Err(this.error_at(SiltError::InvalidAssignment(this.peek(it)?.clone())));
+            }
+            
+            // For retrieval context, we need to drain the getters we've collected so far
+            // and then continue parsing as a regular expression
+            this.expression_count = this.var_stack.len() as u8;
+            this.drain_getters(f);
+            
+            // Now parse the remaining expression starting from current position
+            // We need to handle this as part of a larger comma-separated expression
+            this.expression_count += 1;
+            this.parse_precedence(f, it, Precedence::Assignment, false)?;
+            
+            // Continue collecting any additional comma-separated expressions
+            while let Token::Comma = this.peek(it)? {
+                this.eat(it);
+                this.expression_count += 1;
+                this.parse_precedence(f, it, Precedence::Assignment, false)?;
+            }
+            
+            return Ok(());
         }
     }
     print_var_stack(&this.var_stack);
