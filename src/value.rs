@@ -50,6 +50,7 @@ macro_rules! binary_self_op {
 /** Lua value enum representing different data types within a VM */
 #[derive(Collect, Default)]
 #[collect(no_drop)]
+#[repr(u8)]
 pub enum Value<'gc> {
     #[default]
     Nil,

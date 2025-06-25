@@ -1,4 +1,4 @@
-use std::{fmt::Display, ops::Deref };
+use std::{fmt::Display, ops::Deref};
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
@@ -20,18 +20,24 @@ pub struct CallFrame<'gc> {
     pub stack_snapshot: usize,
     pub local_stack: *mut Value<'gc>,
     pub ip: *const OpCode,
-    pub need: u8
+    // pub need: u8,
+    pub multi_return: u8,
+    // pub mark: usize
 }
 
 impl<'frame> CallFrame<'frame> {
-    pub fn new<'a>(function: Gc<'frame, Closure<'frame>>, stack_snapshot: usize) -> Self {
+    pub fn new<'a>(
+        function: Gc<'frame, Closure<'frame>>,
+        stack_snapshot: usize,
+        multi_return: u8,
+    ) -> Self {
         let ip = function.function.chunk.code.as_ptr();
         Self {
             function,
             ip,
             local_stack: std::ptr::null_mut(),
             stack_snapshot,
-            need: 1
+            multi_return,
         }
     }
 
@@ -159,7 +165,7 @@ impl<'chnk> FunctionObject<'chnk> {
             is_script,
             chunk: Chunk::new(),
             upvalue_count: 0,
-            need: 1
+            need: 1,
         }
     }
 
@@ -221,14 +227,13 @@ impl<'chnk> FunctionObject<'chnk> {
         ep: &mut Ephemeral<'_, 'a>,
     ) {
         let frame_top = unsafe { ep.ip.sub(arity + 1) };
-        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1);
+        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1,0);
         frames.push(new_frame);
         frame = frames.last_mut().unwrap();
         frame.local_stack = frame_top;
     }
 
-
-    pub fn print(&self){
+    pub fn print(&self) {
         self.chunk.print_chunk(&self.name);
     }
 }
@@ -263,7 +268,7 @@ pub struct WrappedFn<'gc> {
     pub f: NativeFunction<'gc>,
 }
 
-impl<'gc> Deref for WrappedFn<'gc>{
+impl<'gc> Deref for WrappedFn<'gc> {
     type Target = NativeFunction<'gc>;
     fn deref(&self) -> &Self::Target {
         &self.f
@@ -275,7 +280,6 @@ impl<'gc> Deref for WrappedFn<'gc>{
 //         self.f(vm,m,vals)
 //     }
 // }
-
 
 unsafe impl<'gc> Collect for WrappedFn<'gc> {
     fn needs_trace() -> bool

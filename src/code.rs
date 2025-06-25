@@ -57,6 +57,8 @@ pub enum OpCode {
     CONCAT,
     NOT,
     NIL,
+    // TODO is it dumb to want to not spam Nil OpCodes?
+    NILS(u8),
     TRUE,
     FALSE,
     EQUAL,
@@ -67,8 +69,9 @@ pub enum OpCode {
     GREATER_EQUAL,
     PRINT,
     META(u8),
-    /// Call function with n values on the stack for parameters
-    CALL(u8),
+    /// Call function with n values on the stack for parameters, and bool whether single return or
+    /// multi return allowed
+    CALL(u8,u8),
     /// tell the VM we expect n values for next assignment before resetting, otherwise 1
     NEED(u8),
     REGISTER_UPVALUE {
@@ -111,7 +114,7 @@ pub enum OpCode {
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CALL(i) => write!(f, "OP_CALL({})", i),
+            Self::CALL(i,m) => write!(f, "OP_CALL({},{})", i,m),
             Self::REGISTER_UPVALUE {
                 index: i,
                 neighboring: n,
@@ -179,6 +182,7 @@ impl Display for OpCode {
                 write!(f, "OP_LITERAL {} {}", dest, literal)
             }
             Self::NIL => write!(f, "OP_NIL"),
+            Self::NILS(n) => write!(f, "OP_NILS x{}",n),
             Self::TRUE => write!(f, "OP_TRUE"),
             Self::FALSE => write!(f, "OP_FALSE"),
             Self::NOT => write!(f, "OP_NOT"),

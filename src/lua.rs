@@ -203,11 +203,11 @@ macro_rules! table_meta_op {
                 // $lua.push($ep,$right);
                 let arity: u8 = 1;
                 let val = $lua.peekn($ep, arity);
-                println!(" we attempt to call {}", val);
+                // println!(" we attempt to call {}", val);
                 if let Value::Closure(c) = val {
                     const ARITY: usize = 2;
                     let frame_top = unsafe { $ep.ip.sub(ARITY) };
-                    let new_frame = CallFrame::new(c.clone(), $lua.stack_count - ARITY);
+                    let new_frame = CallFrame::new(c.clone(), $lua.stack_count - ARITY, 0); // TODO using this opcode method means metamethods cant multireturn
                     $frames.push(new_frame);
                     $frame = $frames.last_mut().unwrap();
                     $frame.local_stack = frame_top;
@@ -503,6 +503,19 @@ impl<'gc> VM<'gc> {
         ep.ip = unsafe { ep.ip.add(1) };
         self.stack_count += 1;
     }
+    pub(crate) fn push_nils(&mut self, ep: &mut Ephemeral<'_, 'gc>, amount: usize) {
+        devout!(" | push nils x{}", amount);
+        // const NIL: u8 = unsafe{ std::mem::transmute::<Value, u8>(Value::Nil)};
+        // ep.ip = unsafe {
+        //     ep.ip.write_bytes(NIL, amount);
+        //     ep.ip.add(amount)
+        // };
+        for _ in 0..amount {
+            unsafe { ep.ip.write(Value::Nil) };
+            ep.ip = unsafe { ep.ip.add(1) };
+        }
+        self.stack_count += amount;
+    }
 
     pub(crate) fn pushn(
         &mut self,
@@ -518,12 +531,16 @@ impl<'gc> VM<'gc> {
         let c = need;
         let mut vv = values.into_iter();
         for _ in 0..c {
-            let v = match vv.next() {
-                Some(n) => n,
-                None => Value::Nil,
+            // TODO pushing nil is stupid, right? popping always writes nils so we shouldnt leak?
+            // let v= match vv.next(){
+            //     Some(v)=>v,
+            //     None=>Value::Nil
+            // }
+
+            if let Some(v) = vv.next() {
+                println!("pushn -> {}", v);
+                unsafe { ep.ip.write(v) };
             };
-            println!("pushn -> {}", v);
-            unsafe { ep.ip.write(v) };
             ep.ip = unsafe { ep.ip.add(1) };
         }
         self.stack_count += need;
@@ -596,6 +613,16 @@ impl<'gc> VM<'gc> {
         // let v = unsafe { ep.ip.read() };
         devout!(" | pop: {}", v);
         v
+    }
+
+    fn pop_offset(&mut self, ep: &mut Ephemeral<'_, 'gc>, offset: usize) -> Value<'gc> {
+        self.stack_count -= offset;
+        for _ in 1..offset {
+            unsafe { ep.ip = ep.ip.sub(1) };
+            unsafe { ep.ip.replace(Value::Nil) };
+        }
+        unsafe { ep.ip = ep.ip.sub(1) };
+        unsafe { ep.ip.replace(Value::Nil) }
     }
 
     // TODO can we make this faster with slices? can we slice a pointer? 🤔
@@ -718,7 +745,7 @@ impl<'gc> VM<'gc> {
         // *root = new_body(mc, object.clone());
         let closure = Gc::new(mc, Closure::new(object, vec![]));
 
-        let mut frame = CallFrame::new(closure, 0);
+        let mut frame = CallFrame::new(closure, 0, 0);
         frame.ip = object.chunk.code.as_ptr();
         frame.local_stack = ep.ip;
         // frame.stack.resize(256, Value::Nil); // TODO
@@ -761,9 +788,14 @@ impl<'gc> VM<'gc> {
                         return Ok(out);
                     }
 
-                    devout!("========= we return {}", frame.need);
+                    devout!(
+                        "=========  ask for {} capable of {}",
+                        frame.multi_return,
+                        count
+                    );
+                    let multi_return = frame.multi_return;
                     // if  || frame.need>1 {
-                    if count > 1 {
+                    if multi_return > 1 && count > 1 {
                         let vres = self.popn(ep, count);
 
                         // TODO this paragraph is a dupe of the one below, i hate this whole logic
@@ -781,9 +813,13 @@ impl<'gc> VM<'gc> {
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
 
-                        self.pushn(ep, vres, frame.need.into());
+                        self.pushn(ep, vres, multi_return as usize);
                     } else {
-                        let res = self.pop(ep);
+                        let res = if count > 1 {
+                            self.pop_offset(ep, count as usize)
+                        } else {
+                            self.pop(ep)
+                        };
 
                         ep.ip = frame.local_stack;
                         self.close_upvalues_by_return(ep.ip);
@@ -796,14 +832,14 @@ impl<'gc> VM<'gc> {
                         self.print_stack();
 
                         self.push(ep, res);
-                        if frame.need > 1 {
-                            for _ in 1..frame.need {
-                                self.push(ep, Value::Nil);
-                            }
-                        }
+                        // if frame.need > 1 {
+                        //     for _ in 1..frame.need {
+                        //         self.push(ep, Value::Nil);
+                        //     }
+                        // }
                     }
 
-                    frame.need = 1;
+                    // frame.need = 1;
 
                     // println!("<< {}", self.pop());
                     // match self.pop() {
@@ -813,7 +849,6 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::CONSTANT { constant } => {
                     let value = Self::get_chunk(frame).get_constant(*constant);
-                    println!("got constant {}", value);
                     self.push(ep, value.clone());
                     // match value {
                     //     Value::Number(f) => self.push(*f),
@@ -888,7 +923,7 @@ impl<'gc> VM<'gc> {
                     // TODO ew cloning, is our cloning optimized yet?
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
-                OpCode::NEED(n) => frame.need = *n,
+                OpCode::NEED(_) => {}
                 OpCode::DEFINE_LOCAL { constant: _ } => todo!(),
                 OpCode::ADD => binary_op_push!(self, ep, frame, frames, frame_count, +, Add),
                 OpCode::SUB => binary_op_push!(self, ep, frame, frames, frame_count, -, Sub),
@@ -951,6 +986,7 @@ impl<'gc> VM<'gc> {
                     // TODO  test this vs below: unsafe { *ep.ip = -*ep.ip };
                 }
                 OpCode::NIL => self.push(ep, Value::Nil),
+                OpCode::NILS(u) => self.push_nils(ep, *u as usize),
                 OpCode::TRUE => self.push(ep, Value::Bool(true)),
                 OpCode::FALSE => self.push(ep, Value::Bool(false)),
                 OpCode::NOT => {
@@ -1138,7 +1174,7 @@ impl<'gc> VM<'gc> {
                     // unsafe { *upvalue.value = value };
                 }
 
-                OpCode::CALL(arity) => {
+                OpCode::CALL(arity, multi) => {
                     let value = self.peekn(ep, *arity);
                     devout!(" | -> {}", value);
                     match value {
@@ -1163,7 +1199,8 @@ impl<'gc> VM<'gc> {
                             let arity = *arity as usize;
 
                             let frame_top = unsafe { ep.ip.sub(arity + 1) };
-                            let new_frame = CallFrame::new(c.clone(), self.stack_count - arity - 1);
+                            let new_frame =
+                                CallFrame::new(c.clone(), self.stack_count - arity - 1, *multi);
                             frames.push(new_frame);
                             frame = frames.last_mut().unwrap();
                             frame.local_stack = frame_top;
@@ -1417,19 +1454,19 @@ impl<'gc> VM<'gc> {
     //     }
     // }
 
-    fn call(
-        &'gc self,
-        // ep: &mut Ephemeral<'_, 'gc>,
-        function: &'gc Gc<Closure<'gc>>,
-        param_count: u8,
-    ) -> CallFrame<'gc> {
-        // let frame_top = unsafe { ep.ip.sub((param_count as usize) + 1) };
-        let new_frame = CallFrame::new(
-            function.clone(),
-            self.stack_count - (param_count as usize) - 1,
-        );
-        new_frame
-    }
+    // fn call(
+    //     &'gc self,
+    //     // ep: &mut Ephemeral<'_, 'gc>,
+    //     function: &'gc Gc<Closure<'gc>>,
+    //     param_count: u8,
+    // ) -> CallFrame<'gc> {
+    //     // let frame_top = unsafe { ep.ip.sub((param_count as usize) + 1) };
+    //     let new_frame = CallFrame::new(
+    //         function.clone(),
+    //         self.stack_count - (param_count as usize) - 1,
+    //     );
+    //     new_frame
+    // }
 
     pub fn call_by_index(&mut self, mc: &Mutation<'gc>, u: usize) -> LuaResult {
         match self.external_functions.get(u) {

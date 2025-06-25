@@ -31,12 +31,19 @@ impl<'chnk> Chunk<'chnk> {
         self.code.len() - 1
     }
 
+    pub fn patch_last(&mut self, byte: OpCode) {
+        // self.code.insert(self.code.kle, element);
+        if let Some(last) = self.code.last_mut() {
+            *last = byte;
+        }
+    }
+
     pub fn drop_last(&mut self) {
         self.code.pop();
         self.locations.pop();
     }
 
-    pub fn drop_last_if(&mut self, byte: &OpCode)-> bool {
+    pub fn drop_last_if(&mut self, byte: &OpCode) -> bool {
         if let Some(a) = self.code.last() {
             if a == byte {
                 self.drop_last();
