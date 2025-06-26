@@ -1,5 +1,12 @@
 use silt_lua::{Compiler, ExVal, Lua};
 
+#[allow(unused_macros)]
+macro_rules! valeq {
+    ($source:literal, $val:expr) => {
+        assert_eq!(simple($source), $val);
+    };
+}
+
 fn simple(source: &str) -> ExVal {
     let mut compiler = Compiler::new();
     let mut lua = Lua::new_with_standard();
@@ -9,11 +16,9 @@ fn simple(source: &str) -> ExVal {
     }
 }
 
-
-
 #[test]
 fn mult() {
-        assert_eq!(1,2)
+    assert_eq!(1, 2)
 }
 
 #[test]
@@ -28,18 +33,9 @@ fn multiple_returns() {
         "#;
 
     if let ExVal::Table(t) = simple(source_in) {
-        assert_eq!(
-            t.get("a"),
-            Some(&ExVal::Integer(1))
-        );
-        assert_eq!(
-            t.get("b"),
-            Some(&ExVal::String("hello".to_string()))
-        );
-        assert_eq!(
-            t.get("c"),
-            Some(&ExVal::Bool(true))
-        );
+        assert_eq!(t.get("a"), Some(&ExVal::Integer(1)));
+        assert_eq!(t.get("b"), Some(&ExVal::String("hello".to_string())));
+        assert_eq!(t.get("c"), Some(&ExVal::Bool(true)));
     } else {
         panic!("Expected table result");
     }
@@ -57,14 +53,8 @@ fn multiple_returns_partial() {
         "#;
 
     if let ExVal::Table(t) = simple(source_in) {
-        assert_eq!(
-            t.get("x"),
-            Some(&ExVal::Integer(10))
-        );
-        assert_eq!(
-            t.get("y"),
-            Some(&ExVal::Integer(20))
-        );
+        assert_eq!(t.get("x"), Some(&ExVal::Integer(10)));
+        assert_eq!(t.get("y"), Some(&ExVal::Integer(20)));
     } else {
         panic!("Expected table result");
     }
@@ -82,13 +72,39 @@ fn multiple_returns_extra() {
         "#;
 
     if let ExVal::Table(t) = simple(source_in) {
-        assert_eq!(
-            t.get("a"),
-            Some(&ExVal::Integer(42))
-        );
+        assert_eq!(t.get("a"), Some(&ExVal::Integer(42)));
         assert_eq!(t.get("b"), Some(&ExVal::Nil));
         assert_eq!(t.get("c"), Some(&ExVal::Nil));
     } else {
         panic!("Expected table result");
     }
+}
+
+#[test]
+fn function_param() {
+    valeq!(
+        r#"
+            function test(a,b)
+                x=a
+                y=b
+                return x,y
+            end
+            u,v=test(3,8)
+            u
+            "#,
+        ExVal::Integer(3)
+    );
+
+    valeq!(
+        r#"
+            function test(a,b)
+                x=a
+                y=b
+                return x,y
+            end
+            u,v=test(3,8)
+            v
+            "#,
+        ExVal::Integer(8)
+    );
 }

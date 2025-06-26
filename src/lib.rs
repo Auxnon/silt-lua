@@ -3,7 +3,7 @@ use error::ErrorTuple;
 mod chunk;
 mod code;
 mod compiler;
-mod error;
+pub mod error;
 mod function;
 mod lexer;
 mod lsp;

@@ -1,6 +1,6 @@
 use std::vec;
 
-use crate::{code::OpCode, error::TokenCell, value::Value};
+use crate::{code::OpCode, error::{TokenCell, TokenTriple}, value::Value};
 use gc_arena::{Collect, Gc};
 
 // TODO benchmark/compare to using a manually resized array

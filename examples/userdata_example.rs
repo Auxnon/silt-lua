@@ -1,8 +1,13 @@
+use silt_lua::userdata::UserDataMethods;
 // use gc_arena::Mutation;
 use silt_lua::Compiler;
+use silt_lua::Lua;
 use silt_lua::LuaError;
-use silt_lua::userdata::{UserDataMethods};
 use silt_lua::gc_arena::Mutation;
+use silt_lua::Value;
+use silt_lua::error::ValueTypes;
+use silt_lua::VM;
+use silt_lua::userdata::{UserData,MetaMethod,UserDataFields};
 
 // Example UserData struct
 struct Counter {
@@ -34,40 +39,42 @@ impl Counter {
 }
 
 impl UserData for Counter {
-    fn get_type() -> &'static str {
+    fn type_name() -> &'static str {
         "Counter"
     }
-
+    fn get_id(&self) -> usize {
+        69
+    }
     fn add_methods<'v, M: UserDataMethods<'v, Self>>(methods: &mut M) {
-        methods.add_method("increment", |_vm, counter, _value| {
+        methods.add_method("increment", |_vm,m, counter, _value| {
             let value = counter.increment();
             Ok(Value::Integer(value))
         });
 
-        methods.add_method("decrement", |_vm, counter, _value| {
+        methods.add_method("decrement", |_vm,m, counter, _value| {
             let value = counter.decrement();
             Ok(Value::Integer(value))
         });
 
-        methods.add_method_mut("reset", |_vm, counter, _value| {
+        methods.add_method_mut("reset", |_vm,m, counter, _value| {
             counter.set_count(0);
             Ok(Value::Nil)
         });
 
-        methods.add_meta_method("__tostring", |_vm, counter, _value| {
+        methods.add_meta_method("__tostring", |_vm, m,counter, _value| {
             Ok(Value::String(Box::new(format!(
                 "Counter({})",
                 counter.get_count()
             ))))
         });
 
-        methods.add_meta_method("__add", |_vm, counter, value| {
+        methods.add_meta_method("__add", |_vm,m, counter, value| {
             if let Value::Integer(n) = value {
                 Ok(Value::Integer(counter.get_count() + n))
             } else {
                 Err(LuaError::ExpOpValueWithValue(
-                    crate::error::ValueTypes::UserData,
-                    crate::userdata::MetaMethod::Add,
+                    ValueTypes::UserData,
+                    MetaMethod::Add,
                     value.to_error(),
                 ))
             }
@@ -75,18 +82,18 @@ impl UserData for Counter {
     }
 
     fn add_fields<'v, F: UserDataFields<'v, Self>>(fields: &mut F) {
-        fields.add_field_method_get("count", |_vm, counter| {
+        fields.add_field_method_get("count", |_vm,mc, counter| {
             Ok(Value::Integer(counter.get_count()))
         });
 
-        fields.add_field_method_set("count", |_vm, counter, value| {
+        fields.add_field_method_set("count", |_vm,mc, counter, value| {
             if let Value::Integer(n) = value {
                 counter.set_count(n);
                 Ok(Value::Nil)
             } else {
                 Err(LuaError::ExpOpValueWithValue(
-                    crate::error::ValueTypes::UserData,
-                    crate::userdata::MetaMethod::NewIndex,
+                    ValueTypes::UserData,
+                    MetaMethod::NewIndex,
                     value.to_error(),
                 ))
             }
@@ -94,7 +101,16 @@ impl UserData for Counter {
     }
 }
 
-pub fn make_userdata<'lua>(_: &mut VM, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
+ fn main(){
+     // let comp = Compiler::new();
+     // let lua = Lua::new();
+     // lua.compile(code, compiler)
+     //     lua.regis
+    
+}
+
+pub fn make_userdata<'lua>(vm: &mut VM, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
+
     // Register the Counter type with the VM
     vm.register_userdata_type::<Counter>();
 
