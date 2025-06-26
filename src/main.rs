@@ -1,4 +1,4 @@
-use silt_lua::prelude::{Compiler, Lua};
+use silt_lua::{Compiler, Lua};
 
 const FALLBACK_FILE: &str = "scripts/test.lua";
 fn main() {
@@ -320,11 +320,7 @@ fn main() {
     //     local z=6
     //     return test(x,z)
     //     "#;
-    let mut compiler = Compiler::new_with_flags(silt_lua::compiler::LanguageFlags {
-        implicit_returns: true,
-        arrow_functions: false,
-        bang_operator: false,
-    });
+    let mut compiler = Compiler::new_with_flags(true,false,false);
     let mut lua = Lua::new_with_standard();
     match lua.run(source_in, &mut compiler) {
         Ok(o) => {

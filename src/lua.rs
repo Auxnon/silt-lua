@@ -699,13 +699,12 @@ impl<'gc> VM<'gc> {
     //     self.compiler.compile(source.to_owned())
     // }
 
+    /// set a built Function Object as root and run it
     pub fn run(
         &mut self,
         mc: &Mutation<'gc>,
         object: Gc<'gc, FunctionObject<'gc>>,
     ) -> Result<ExVal, Vec<ErrorTuple>> {
-        // let object = self.compiler.compile(source.to_owned());
-        // object.chunk.print_chunk(name)
         match self.execute(mc, object) {
             Ok(v) => Ok(v),
             Err(e) => Err(vec![ErrorTuple {
@@ -751,14 +750,11 @@ impl<'gc> VM<'gc> {
         // frame.stack.resize(256, Value::Nil); // TODO
         self.push(&mut ep, Value::Function(object)); // TODO this needs to store the function object itself somehow, RC?
         let frames = vec![frame];
-        // self.body = object;
-        let res = self.process(&mut ep, frames);
-        // self.body = Rc::new(FunctionObject::new(None, false));
+        self.process(&mut ep, frames)
 
-        res
     }
 
-    fn process<'frame>(
+    fn process(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
         mut frames: Vec<CallFrame<'gc>>,

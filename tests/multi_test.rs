@@ -1,4 +1,4 @@
-use silt_lua::{compiler::Compiler, value::ExVal, lua::Lua};
+use silt_lua::{Compiler, ExVal, Lua};
 
 fn simple(source: &str) -> ExVal {
     let mut compiler = Compiler::new();
@@ -8,6 +8,14 @@ fn simple(source: &str) -> ExVal {
         Err(e) => ExVal::String(e[0].to_string()),
     }
 }
+
+
+
+#[test]
+fn mult() {
+        assert_eq!(1,2)
+}
+
 #[test]
 fn multiple_returns() {
     let source_in = r#"

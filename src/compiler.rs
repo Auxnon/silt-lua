@@ -326,9 +326,17 @@ impl Compiler {
     }
 
     /** Create a new compiler instance with language flags */
-    pub fn new_with_flags(flags: LanguageFlags) -> Compiler {
+    pub fn new_with_flags(
+        implicit_returns: bool,
+        arrow_functions: bool,
+        bang_operator: bool,
+    ) -> Compiler {
         let mut compiler = Self::new();
-        compiler.language_flags = flags;
+        compiler.language_flags = LanguageFlags {
+            implicit_returns,
+            arrow_functions,
+            bang_operator,
+        };
         compiler
     }
 

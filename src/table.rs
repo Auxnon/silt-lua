@@ -134,6 +134,9 @@ impl ExTable {
     pub fn getn(&self, i: usize) -> Option<&ExVal> {
         self.data.get(&ExVal::Integer(i as i64))
     }
+    pub fn get(&self, field: &str) -> Option<&ExVal> {
+        self.data.get(&ExVal::String(field.to_owned() ))
+    }
 }
 
 impl PartialEq for ExTable {

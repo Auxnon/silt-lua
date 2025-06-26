@@ -1,11 +1,8 @@
-use compiler::Compiler;
 use error::ErrorTuple;
-use lua::Lua;
-use value::ExVal;
 
 mod chunk;
 mod code;
-pub mod compiler;
+mod compiler;
 mod error;
 mod function;
 mod lexer;
@@ -14,8 +11,11 @@ pub mod prelude;
 pub mod standard;
 pub mod table;
 mod token;
-mod userdata;
+pub mod userdata;
 pub mod value;
+pub extern crate gc_arena;
+
+pub use self::{compiler::Compiler, error::SiltError as LuaError, value::Value, value::ExVal, lua::Lua, lua::VM};
 
 #[cfg(feature = "vectors")]
 pub mod vec;
@@ -29,21 +29,6 @@ fn simple(source: &str) -> ExVal {
         Ok(v) => v,
         Err(e) => ExVal::String(e[0].to_string()),
     }
-    // let v = match compiler.try_compile(source) {
-    //     Ok(obj) => match vm.run(obj) {
-    //         Ok(v) => v,
-    //         Err(e) => ExVal::String(Box::new(e[0].to_string())), //runtime error
-    //     },
-    //     Err(e) => ExVal::String(Box::new(e[0].to_string())), //compile time error
-    // };
-    // drop(vm);
-    // v
-
-    // let e = compiler.get_errors();
-    // if e.len() > 0 {
-    //     return Value::String(Box::new(e[0].to_string()));
-    // }
-    // Value::String(Box::new("Unknown error".to_string()))
 }
 
 fn complex(source: &str) -> Result<ExVal, ErrorTuple> {
@@ -254,8 +239,8 @@ mod tests {
         c.write_value(Value::Number(9.2), (1, 4));
         c.write_code(OpCode::DIVIDE, (1, 5));
         c.write_code(OpCode::NEGATE, (1, 1));
-        c.write_code(OpCode::RETURN, (1, 3));
-        c.print_chunk(None);
+        c.write_code(OpCode::RETURN(0), (1, 3));
+        c.print_chunk(&None);
         println!("-----------------");
         // let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
@@ -360,7 +345,8 @@ mod tests {
             end
             test(3)
             "#,
-            ExVal::Integer(7));
+            ExVal::Integer(7)
+        );
     }
 
     #[test]
@@ -492,82 +478,5 @@ mod tests {
         return call_string "hello"
         "#;
         assert_eq!(simple(source_in), ExVal::String("hello".to_string()));
-    }
-
-    #[test]
-    fn multiple_returns() {
-        let source_in = r#"
-        function get_values()
-            return 1, "hello", true
-        end
-        
-        local a, b, c = get_values()
-        return {a=a, b=b, c=c}
-        "#;
-
-        if let ExVal::Table(t) = simple(source_in) {
-            assert_eq!(
-                t.get(&ExVal::String("a".to_string())),
-                Some(&ExVal::Integer(1))
-            );
-            assert_eq!(
-                t.get(&ExVal::String("b".to_string())),
-                Some(&ExVal::String("hello".to_string()))
-            );
-            assert_eq!(
-                t.get(&ExVal::String("c".to_string())),
-                Some(&ExVal::Bool(true))
-            );
-        } else {
-            panic!("Expected table result");
-        }
-    }
-
-    #[test]
-    fn multiple_returns_partial() {
-        let source_in = r#"
-        function get_values()
-            return 10, 20, 30
-        end
-        
-        local x, y = get_values()
-        return {x=x, y=y}
-        "#;
-
-        if let ExVal::Table(t) = simple(source_in) {
-            assert_eq!(
-                t.get(&ExVal::String("x".to_string())),
-                Some(&ExVal::Integer(10))
-            );
-            assert_eq!(
-                t.get(&ExVal::String("y".to_string())),
-                Some(&ExVal::Integer(20))
-            );
-        } else {
-            panic!("Expected table result");
-        }
-    }
-
-    #[test]
-    fn multiple_returns_extra() {
-        let source_in = r#"
-        function get_value()
-            return 42
-        end
-        
-        local a, b, c = get_value()
-        return {a=a, b=b, c=c}
-        "#;
-
-        if let ExVal::Table(t) = simple(source_in) {
-            assert_eq!(
-                t.get(&ExVal::String("a".to_string())),
-                Some(&ExVal::Integer(42))
-            );
-            assert_eq!(t.get(&ExVal::String("b".to_string())), Some(&ExVal::Nil));
-            assert_eq!(t.get(&ExVal::String("c".to_string())), Some(&ExVal::Nil));
-        } else {
-            panic!("Expected table result");
-        }
     }
 }
