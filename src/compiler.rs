@@ -919,7 +919,7 @@ fn declaration_keyword<'a, 'c: 'a>(
                 add_local(this, it, ident)?;
                 typing(this, f, it, None)?;
             } else {
-                let ident = this.identifer_constant(f, ident); //(self.global.to_register(&ident), 0);
+                let ident = this.identifer_constant(f, ident);
                 typing(this, f, it, Some((ident, location)))?;
             }
         }
