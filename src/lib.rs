@@ -6,6 +6,7 @@ mod compiler;
 mod error;
 mod function;
 mod lexer;
+mod lsp;
 pub mod lua;
 pub mod prelude;
 pub mod standard;
@@ -348,6 +349,8 @@ mod tests {
             ExVal::Integer(7)
         );
     }
+
+    
 
     #[test]
     fn string_infererence() {

@@ -1,8 +1,5 @@
 
-use crate::{
-    token::Token,
-    userdata::MetaMethod,
-};
+use crate::{token::Token, userdata::MetaMethod};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum SiltError {
@@ -93,7 +90,24 @@ pub enum ValueTypes {
     Vec2,
 }
 
-pub type Location = (usize, usize);
+pub type TokenTriple = (usize, usize, usize);
+pub type TokenCell = (usize, usize);
+
+// impl TripleLocation{
+//     pub fn into(&self)-> Location{
+//         (self.0,self.2)
+//     }
+// }
+
+// impl Into<Location> for TripleLocation {
+//     fn into(self) -> Location {
+//         (self.0,self.2)
+//     }
+// }
+// //     fn from(value: TripleLocation) -> Self {
+// //         (value.0, value.2)
+// //     }
+// // }
 
 impl std::fmt::Display for SiltError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -186,16 +200,16 @@ impl std::fmt::Display for SiltError {
                 write!(f, "Value for meta method '{}' is not callable", meta_method)
             }
 
-            SiltError::UDNoInitField=> write!(f, "UserData field not setup"),
-            SiltError::UDNoInitMethod=> write!(f, "UserData method not setup"),
-            SiltError::UDNoMap=> write!(f, "UserData map not setup"),
-            SiltError::UDNoFieldGet=> write!(f, "UserData field getter does not exist"),
-            SiltError::UDNoFieldSet=> write!(f, "UserData field setter does not exist"),
-            SiltError::UDNoMethodRef=> write!(f, "UserData method does not exist"),
+            SiltError::UDNoInitField => write!(f, "UserData field not setup"),
+            SiltError::UDNoInitMethod => write!(f, "UserData method not setup"),
+            SiltError::UDNoMap => write!(f, "UserData map not setup"),
+            SiltError::UDNoFieldGet => write!(f, "UserData field getter does not exist"),
+            SiltError::UDNoFieldSet => write!(f, "UserData field setter does not exist"),
+            SiltError::UDNoMethodRef => write!(f, "UserData method does not exist"),
             SiltError::UDTypeMismatch => {
                 write!(f, "UserData type mismatch during method or field access")
-            },
-            SiltError::UDBadCast=>write!(f, "UserData bad downcast"),
+            }
+            SiltError::UDBadCast => write!(f, "UserData bad downcast"),
         }
     }
 }
@@ -225,7 +239,7 @@ impl std::fmt::Display for ValueTypes {
 #[derive(Clone)]
 pub struct ErrorTuple {
     pub code: SiltError,
-    pub location: Location,
+    pub location: TokenCell,
 }
 
 impl std::fmt::Display for ErrorTuple {

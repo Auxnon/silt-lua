@@ -1,5 +1,5 @@
 use crate::{
-    error::{ErrorTuple, Location, SiltError},
+    error::{ErrorTuple, SiltError, TokenCell, TokenTriple },
     token::{Flag, Operator, Token},
 };
 
@@ -22,12 +22,14 @@ pub struct Lexer<'c> {
     // ahead_buffer: Vec<TokenOption>,
 }
 
-pub type TokenTuple = (Token, Location);
+pub type TokenTuple = (Token, TokenCell );
+pub type TokenTripleTuple = (Token, TokenTriple );
+pub type TokenTripleResult = Result<TokenTripleTuple, ErrorTuple>;
 pub type TokenResult = Result<TokenTuple, ErrorTuple>;
-pub type TokenOption = Option<TokenResult>;
+pub type TokenOption = Option<TokenTripleResult>;
 
 impl Iterator for Lexer<'_> {
-    type Item = TokenResult;
+    type Item = TokenTripleResult;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.current >= self.end {
@@ -95,7 +97,7 @@ impl<'c> Lexer<'c> {
         self.iterator.peek()
     }
 
-    fn _error(&mut self, code: SiltError) -> TokenResult {
+    fn _error(&mut self, code: SiltError) -> TokenTripleResult {
         Err(ErrorTuple {
             code,
             location: (self.line, self.start),
@@ -110,8 +112,8 @@ impl<'c> Lexer<'c> {
     //     self.error_list.drain(..).collect()
     // }
 
-    fn _send(&mut self, token: Token) -> TokenResult {
-        Ok((token, (self.line, self.column_start + 1)))
+    fn _send(&mut self, token: Token) -> TokenTripleResult {
+        Ok((token, (self.line, self.current-self.line, self.column_start + 1)))
     }
 
     fn send(&mut self, token: Token) -> TokenOption {

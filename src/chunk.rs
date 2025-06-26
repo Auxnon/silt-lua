@@ -1,6 +1,6 @@
 use std::vec;
 
-use crate::{code::OpCode, error::Location, value::Value};
+use crate::{code::OpCode, error::TokenCell, value::Value};
 use gc_arena::{Collect, Gc};
 
 // TODO benchmark/compare to using a manually resized array
@@ -24,7 +24,7 @@ impl<'chnk> Chunk<'chnk> {
     }
     // capacity < 8 ? 8: capacity*2
 
-    pub fn write_code(&mut self, byte: OpCode, location: Location) -> usize {
+    pub fn write_code(&mut self, byte: OpCode, location: TokenCell) -> usize {
         // TODO https://shnatsel.medium.com/how-to-avoid-bounds-checks-in-rust-without-unsafe-f65e618b4c1e
         self.code.push(byte);
         self.locations.push(location);
@@ -79,7 +79,7 @@ impl<'chnk> Chunk<'chnk> {
         }
     }
 
-    pub fn write_value(&mut self, value: Value<'chnk>, location: Location) {
+    pub fn write_value(&mut self, value: Value<'chnk>, location: TokenCell) {
         let u = self.write_constant(value);
         self.write_code(OpCode::CONSTANT { constant: u as u8 }, location);
     }

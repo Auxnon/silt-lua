@@ -1,9 +1,5 @@
 use std::{
-    cmp::Ordering,
-    fmt::{Display, Formatter},
-    iter::Peekable,
-    mem::{swap, take},
-    println, vec,
+    cmp::Ordering, fmt::{Display, Formatter}, iter::Peekable, mem::{swap, take}, panic::Location, println, vec
 };
 
 use gc_arena::{Gc, Mutation};
@@ -11,9 +7,9 @@ use hashbrown::HashMap;
 
 use crate::{
     code::OpCode,
-    error::{ErrorTuple, Location, SiltError},
+    error::{ErrorTuple, SiltError, TokenCell, TokenTriple},
     function::FunctionObject,
-    lexer::{Lexer, TokenResult},
+    lexer::{Lexer, TokenResult, TokenTripleResult},
     token::{Operator, Token},
     value::Value,
 };
@@ -258,7 +254,7 @@ pub struct Compiler {
     pub errors: Vec<ErrorTuple>,
     pub valid: bool,
     current: Result<Token, ErrorTuple>,
-    current_location: Location,
+    current_location: TokenCell,
     scope_depth: usize,
     functional_depth: usize,
     // TODO we need a fail catch if we exceed a local variable amount of up values as well
@@ -272,7 +268,7 @@ pub struct Compiler {
     // location: (usize, usize),
     // previous: TokenTuple,
     // pre_previous: TokenTuple,
-    pending_gotos: Vec<(String, usize, Location)>,
+    pending_gotos: Vec<(String, usize, TokenCell)>,
     /** hack to flip off a pop when an expression takes on statement properties, used only for := right now */
     override_pop: bool,
     /** language flags for optional features */
@@ -341,7 +337,7 @@ impl Compiler {
     }
 
     /** Syntax error with code at location */
-    fn error_syntax(&mut self, code: SiltError, location: Location) -> ErrorTuple {
+    fn error_syntax(&mut self, code: SiltError, location: TokenCell) -> ErrorTuple {
         self.valid = false;
         ErrorTuple { code, location }
     }
@@ -395,7 +391,7 @@ impl Compiler {
         f.chunk.code.len()
     }
 
-    fn write_code(&self, f: FnRef, byte: OpCode, location: Location) -> usize {
+    fn write_code(&self, f: FnRef, byte: OpCode, location: TokenCell) -> usize {
         f.chunk.write_code(byte, location)
     }
 
@@ -416,12 +412,12 @@ impl Compiler {
     }
 
     /** Tokens, not stack. Pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
-    fn pop(&mut self, iter: &mut Peekable<Lexer>) -> (Result<Token, ErrorTuple>, Location) {
+    fn pop(&mut self, iter: &mut Peekable<Lexer>) -> (Result<Token, ErrorTuple>,  TokenCell) {
         self.current_index += 1;
         match iter.next() {
             Some(Ok(t)) => {
                 // devout!("popped {}", t.0);
-                (Ok(t.0), t.1)
+                (Ok(t.0), (t.1.0,t.1.2))
             }
             Some(Err(e)) => {
                 let l = e.location;
@@ -455,7 +451,7 @@ impl Compiler {
     fn store(&mut self, iter: &mut Peekable<Lexer>) {
         self.current_index += 1;
         (self.current, self.current_location) = match iter.next() {
-            Some(Ok(t)) => (Ok(t.0), t.1),
+            Some(Ok(t)) => (Ok(t.0), (t.1.0,t.1.2)),
             Some(Err(er)) => {
                 // self.error_syntax(e.code, e.location);
                 let l = er.location;
@@ -475,7 +471,7 @@ impl Compiler {
     fn store_and_return(&mut self, iter: &mut Peekable<Lexer>) -> Result<Token, ErrorTuple> {
         self.current_index += 1;
         let (r, l) = match iter.next() {
-            Some(Ok(t)) => (Ok(t.0), t.1),
+            Some(Ok(t)) => (Ok(t.0), (t.1.0,t.1.2)),
             Some(Err(e)) => {
                 // self.error_syntax(e.code, e.location);
                 let l = e.location;
@@ -546,7 +542,7 @@ impl Compiler {
     }
 
     /** return the peeked token tuple (token+location) result */
-    fn peek_result<'c>(&mut self, iter: &'c mut Peekable<Lexer>) -> &'c TokenResult {
+    fn peek_result<'c>(&mut self, iter: &'c mut Peekable<Lexer>) -> &'c TokenTripleResult {
         #[cfg(feature = "dev-out")]
         match iter.peek() {
             Some(r) => {
@@ -560,17 +556,17 @@ impl Compiler {
                 }
                 r
             }
-            None => &Ok((Token::EOF, (0, 0))),
+            None => &Ok((Token::EOF, (0,0, 0))),
         }
         #[cfg(not(feature = "dev-out"))]
         match iter.peek() {
             Some(r) => r,
-            None => &Ok((Token::EOF, (0, 0))),
+            None => &Ok((Token::EOF, (0, 0,0))),
         }
     }
 
     /** emit op code at token location */
-    fn emit<'a, 'c: 'a>(&mut self, f: FnRef, op: OpCode, location: Location) {
+    fn emit<'a, 'c: 'a>(&mut self, f: FnRef, op: OpCode, location: TokenCell) {
         #[cfg(feature = "dev-out")]
         {
             println!("emit ... {}", op);
@@ -661,7 +657,7 @@ impl Compiler {
     }
 
     /** write to constant table and emit the op code at location */
-    fn constant<'a, 'c: 'a>(&mut self, f: FnRef<'_, 'c>, value: Value<'c>, location: Location) {
+    fn constant<'a, 'c: 'a>(&mut self, f: FnRef<'_, 'c>, value: Value<'c>, location: TokenCell) {
         let constant = self.write_constant(f, value);
         self.emit(f, OpCode::CONSTANT { constant }, location);
     }
@@ -946,7 +942,7 @@ fn declaration_scope<'a, 'c: 'a>(
     it: &mut Peekable<Lexer>,
     ident: String,
     local: bool,
-    location: Location,
+    location: TokenCell,
 ) -> Catch {
     if this.scope_depth > 0 && local {
         //local
@@ -1129,7 +1125,7 @@ fn typing<'a, 'c: 'a>(
     this: &mut Compiler,
     f: FnRef,
     it: &mut Peekable<Lexer>,
-    ident_tuple: Option<(Ident, Location)>,
+    ident_tuple: Option<(Ident, TokenCell)>,
 ) -> Catch {
     devnote!(this it "typing");
     if let Token::Colon = this.peek(it)? {
@@ -1164,7 +1160,7 @@ fn define_declaration<'a, 'c: 'a>(
     this: &mut Compiler,
     f: FnRef,
     it: &mut Peekable<Lexer>,
-    ident_tuple: Option<(Ident, Location)>,
+    ident_tuple: Option<(Ident, TokenCell)>,
 ) -> Catch {
     devnote!(this it "define_declaration");
     this.store(it);
@@ -1194,7 +1190,7 @@ fn define_variable<'a, 'c: 'a>(
     this: &mut Compiler,
     it: &mut Peekable<Lexer>,
     f: FnRef,
-    ident: Option<(Ident, Location)>,
+    ident: Option<(Ident, TokenCell)>,
 ) -> Catch {
     devnote!(this it "define_variable");
 
@@ -1245,7 +1241,7 @@ fn build_function<'c>(
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     ident: String,
-    global_ident: Option<(u8, Location)>,
+    global_ident: Option<(u8, TokenCell)>,
     is_script: bool,
 ) -> Catch {
     // TODO this function could be called called rercursivelly due to the recursive decent nature of the parser, we should add a check to make sure we don't overflow the stack
@@ -1673,7 +1669,7 @@ fn resolve_goto(
     f: FnRef,
     ident: &str,
     op_count: usize,
-    replace: Option<(usize, Location)>,
+    replace: Option<(usize, TokenCell)>,
 ) -> Catch {
     match this.labels.get(ident) {
         Some(i) => {
@@ -1738,13 +1734,15 @@ fn goto_scope_skip(this: &mut Compiler, f: FnRef) {
     this.emit_at(f, OpCode::POPS(i));
 }
 
-fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step: bool) -> Catch {
+fn expression(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    skip_step: bool,
+) -> Catch {
     devnote!(this it "expression");
-
-    // this.return_count = 1; // Start with one expression
     this.parse_precedence(f, it, Precedence::Assignment, skip_step)?;
 
-    // Check for comma-separated expressions
     while let Token::Comma = this.peek(it)? {
         add!(this);
         println!("COMMAS");
@@ -1755,6 +1753,8 @@ fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step
 
     Ok(())
 }
+
+
 
 fn next_expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
     devnote!(this it "next_expression");
@@ -2342,7 +2342,10 @@ fn call(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bo
     //     this.emit(OpCode::CALL { arg_count }, l);
     // }
     let start = this.current_location;
+
+    println!("{} ", "TimEE to COUNT".on_cyan());
     let arg_count = arguments(this, f, it, start)?;
+    println!("{} {}", "ARG COUNT".on_cyan(), arg_count);
     this.emit(f, OpCode::CALL(arg_count, 0), start);
     Ok(())
 }
@@ -2366,13 +2369,13 @@ fn arguments(
     this: &mut Compiler,
     f: FnRef,
     it: &mut Peekable<Lexer>,
-    start: Location,
+    start: TokenCell,
 ) -> Result<u8, ErrorTuple> {
     devnote!(this it "arguments");
     let mut args = 0;
     if !matches!(this.peek(it)?, &Token::CloseParen) {
         while {
-            expression(this, f, it, false)?;
+            expression_single(this, f, it, false)?;
             args += 1;
             if let &Token::Comma = this.peek(it)? {
                 this.eat(it);
@@ -2396,6 +2399,13 @@ fn arguments(
     devout!("arguments count: {}", args);
 
     Ok(args)
+}
+
+/// Walk through expression precedence but stop at commas, used by arguments
+fn expression_single(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step: bool) -> Catch {
+    devnote!(this it "expression_single");
+    this.parse_precedence(f, it, Precedence::Assignment, skip_step)?;
+    Ok(())
 }
 
 fn print(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
