@@ -181,39 +181,36 @@ impl<'chnk> FunctionObject<'chnk> {
     ) -> Result<(), SiltError> {
         // f.upvalue_count
         let mut closure = Closure::new(func, Vec::with_capacity(func.upvalue_count as usize));
-        // let reserved_value = self.reserve();
-        if func.upvalue_count >= 0 {
-            let next_instruction = frame.get_next_n_codes(func.upvalue_count as usize);
-            for i in 0..func.upvalue_count {
-                // devout!(" | {}", next_instruction[i as usize]);
-                if let OpCode::REGISTER_UPVALUE { index, neighboring } =
-                    next_instruction[i as usize]
-                {
-                    closure.upvalues.push(if neighboring {
-                        // insert at i
-                        vm.capture_upvalue(ep, index, frame)
-                        // closure.upvalues.insert(
-                        //     i as usize,
-                        //     frame.function.upvalues[index as usize].clone(),
-                        // );
-                        // *slots.add(index) ?
-                    } else {
-                        frame.function.upvalues[index as usize].clone()
-                    });
+        // if func.upvalue_count > 0 {
+        let next_instruction = frame.get_next_n_codes(func.upvalue_count as usize);
+        for i in 0..func.upvalue_count {
+            // devout!(" | {}", next_instruction[i as usize]);
+            if let OpCode::REGISTER_UPVALUE { index, neighboring } = next_instruction[i as usize] {
+                closure.upvalues.push(if neighboring {
+                    // insert at i
+                    vm.capture_upvalue(ep, index, frame)
+                    // closure.upvalues.insert(
+                    //     i as usize,
+                    //     frame.function.upvalues[index as usize].clone(),
+                    // );
+                    // *slots.add(index) ?
                 } else {
-                    println!(
-                        "next instruction is not CLOSE_UPVALUE {}",
-                        next_instruction[i as usize]
-                    );
-                    unreachable!()
-                }
+                    frame.function.upvalues[index as usize].clone()
+                });
+            } else {
+                println!(
+                    "next instruction is not CLOSE_UPVALUE {}",
+                    next_instruction[i as usize]
+                );
+                unreachable!()
             }
-
-            vm.push(ep, Value::Closure(Gc::new(ep.mc, closure)));
-        } else {
-            // devout!("closure is of type {}", closure.function.function.name);
-            return Err(SiltError::VmRuntimeError);
         }
+
+        vm.push(ep, Value::Closure(Gc::new(ep.mc, closure)));
+        // }
+        // else {
+        //     return Err(SiltError::VmRuntimeError);
+        // }
         frame.shift(func.upvalue_count as usize);
         Ok(())
     }
@@ -227,7 +224,7 @@ impl<'chnk> FunctionObject<'chnk> {
         ep: &mut Ephemeral<'_, 'a>,
     ) {
         let frame_top = unsafe { ep.ip.sub(arity + 1) };
-        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1,0);
+        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1, 0);
         frames.push(new_frame);
         frame = frames.last_mut().unwrap();
         frame.local_stack = frame_top;
@@ -262,11 +259,19 @@ impl Display for FunctionObject<'_> {
 //     pub function: NativeFunction<'static>,
 // }
 
-pub type NativeFunction<'lua> = fn(&mut VM<'lua>, &Mutation<'lua>, Vec<Value<'lua>>) -> Value<'lua>;
+pub type NativeFunction<'a> = fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
 
 pub struct WrappedFn<'gc> {
     pub f: NativeFunction<'gc>,
 }
+
+// pub struct WrappedFn<N>
+//
+//         where
+//             N: for<'a> Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>)-> Value<'a>,
+//
+// {
+//     pub f: N}
 
 impl<'gc> Deref for WrappedFn<'gc> {
     type Target = NativeFunction<'gc>;
