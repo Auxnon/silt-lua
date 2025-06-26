@@ -327,9 +327,22 @@ impl<'gc> Lua {
     /// call an internal function by index provided from the load function. Ideally call this after
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
-    pub fn call(&mut self, index: usize) {
-        self.arena.mutate_root(|mc, vm| vm.call_by_index(mc, index));
+    pub fn call(&mut self, index: usize)-> LuaResult {
+        self.arena.mutate_root(|mc, vm| vm.call_by_index(mc, index))
     }
+
+//     pub fn register<N>(&mut self, name: &str, function: N) 
+//         where 
+//             N: for<'a> Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>)-> Value<'a>,
+//     {
+//
+// // fn(&mut VM<'lua>, &Mutation<'lua>, Vec<Value<'lua>>) -> Value<'lua>
+//         self.arena
+//             .mutate_root( |mc, vm| {
+//                 // vm.register_native_function(mc, name, function);
+//                 vm.testy(mc, name);
+//             });
+//     }
 
     // fn fun<'a>(chunk: FunctionObject<'a>) -> FunctionObject<'a> {
     //     chunk
@@ -468,6 +481,62 @@ impl<'gc> VM<'gc> {
         }
     }
 
+    /// set a built Function Object as root and run it
+    pub fn run(
+        &mut self,
+        mc: &Mutation<'gc>,
+        object: Gc<'gc, FunctionObject<'gc>>,
+    ) -> Result<ExVal, Vec<ErrorTuple>> {
+        match self.execute(mc, object) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(vec![ErrorTuple {
+                code: e,
+                location: (0, 0),
+            }]),
+        }
+
+        // Ok(ExVal::Nil)
+        // out
+    }
+
+    pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, Vec<ErrorTuple>> {
+        match self.execute(mc, self.root) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(vec![ErrorTuple {
+                code: e,
+                location: (0, 0),
+            }]),
+        }
+    }
+
+    pub fn execute(
+        &mut self,
+        mc: &Mutation<'gc>,
+        object: Gc<'gc, FunctionObject<'gc>>,
+    ) -> Result<ExVal, SiltError> {
+        // TODO param is a reference of &'a
+        // self.ip = object.chunk.code.as_ptr();
+        // frame.ip = object.chunk.code.as_ptr();
+        // frame.slots = self.stack ???
+        // let rstack = self.stack.as_ptr();
+        #[cfg(feature = "dev-out")]
+        object.chunk.print_chunk(&None);
+        let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr() as *mut Value);
+        self.body = object;
+        // *root = new_body(mc, object.clone());
+        let closure = Gc::new(mc, Closure::new(object, vec![]));
+
+        let mut frame = CallFrame::new(closure, 0, 0);
+        frame.ip = object.chunk.code.as_ptr();
+        frame.local_stack = ep.ip;
+        // frame.stack.resize(256, Value::Nil); // TODO
+        self.push(&mut ep, Value::Function(object)); // TODO this needs to store the function object itself somehow, RC?
+        let frames = vec![frame];
+        self.process(&mut ep, frames)
+    }
+
+    /// dump all newest userdata as weak references but keep atomic srong references within the lua
+    /// vm. Ideally garbage collected
     pub fn drain_userdata(&mut self) -> Vec<WeakWrapper> {
         match &mut self.userdata_stack {
             Some(u) => std::mem::take(&mut u.0),
@@ -475,6 +544,7 @@ impl<'gc> VM<'gc> {
         }
     }
 
+    /// compile lua code and store as function, return callable index
     pub fn load_fn<'a>(
         &mut self,
         mc: &'a Mutation<'gc>,
@@ -491,6 +561,7 @@ impl<'gc> VM<'gc> {
         }
     }
 
+    /// insert a function object and return the callable index
     pub fn store_fn(&mut self, o: Gc<'gc, FunctionObject<'gc>>) -> usize {
         let u = self.external_functions.len();
         self.external_functions.push(o);
@@ -698,61 +769,6 @@ impl<'gc> VM<'gc> {
     // pub fn evaluate(&mut self, source: &str) -> FunctionObject<'lua> {
     //     self.compiler.compile(source.to_owned())
     // }
-
-    /// set a built Function Object as root and run it
-    pub fn run(
-        &mut self,
-        mc: &Mutation<'gc>,
-        object: Gc<'gc, FunctionObject<'gc>>,
-    ) -> Result<ExVal, Vec<ErrorTuple>> {
-        match self.execute(mc, object) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(vec![ErrorTuple {
-                code: e,
-                location: (0, 0),
-            }]),
-        }
-
-        // Ok(ExVal::Nil)
-        // out
-    }
-
-    pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, Vec<ErrorTuple>> {
-        match self.execute(mc, self.root) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(vec![ErrorTuple {
-                code: e,
-                location: (0, 0),
-            }]),
-        }
-    }
-
-    pub fn execute(
-        &mut self,
-        mc: &Mutation<'gc>,
-        object: Gc<'gc, FunctionObject<'gc>>,
-    ) -> Result<ExVal, SiltError> {
-        // TODO param is a reference of &'a
-        // self.ip = object.chunk.code.as_ptr();
-        // frame.ip = object.chunk.code.as_ptr();
-        // frame.slots = self.stack ???
-        // let rstack = self.stack.as_ptr();
-        #[cfg(feature = "dev-out")]
-        object.chunk.print_chunk(&None);
-        let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr() as *mut Value);
-        self.body = object;
-        // *root = new_body(mc, object.clone());
-        let closure = Gc::new(mc, Closure::new(object, vec![]));
-
-        let mut frame = CallFrame::new(closure, 0, 0);
-        frame.ip = object.chunk.code.as_ptr();
-        frame.local_stack = ep.ip;
-        // frame.stack.resize(256, Value::Nil); // TODO
-        self.push(&mut ep, Value::Function(object)); // TODO this needs to store the function object itself somehow, RC?
-        let frames = vec![frame];
-        self.process(&mut ep, frames)
-
-    }
 
     fn process(
         &mut self,
@@ -1722,14 +1738,22 @@ impl<'gc> VM<'gc> {
             vec![right],
         )
     }
+ pub fn testy<'a>(
+        &mut self,
+        mc: &'a Mutation<'gc>,
+        name: &str){
+ }
 
     /** Register a native function on the global table  */
-    pub fn register_native_function(
+    pub fn register_native_function<'a>(
         &mut self,
-        mc: &Mutation<'gc>,
+        mc: &'a Mutation<'gc>,
         name: &str,
         function: NativeFunction<'gc>,
-    ) {
+    ) 
+    // where 
+    //         N: for <'a, 'b> Fn(&'a mut VM<'gc>, &'b Mutation<'gc>, Vec<Value<'gc>>)-> Value<'gc>,
+    {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
         let f = WrappedFn { f: function };
