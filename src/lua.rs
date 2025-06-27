@@ -301,14 +301,16 @@ impl<'gc> Lua {
         self.arena.mutate_root(|mc, vm| vm.borrow_mut().cycle(mc))
     }
 
+    /// enter into the VM state to modify the VM directly
     pub fn enter<F>(&mut self, closure: F) -> LuaResult
     where
         F: for<'a> Fn(&mut VM<'a>, &Mutation<'a>),
     {
         self.arena.mutate_root(move |mc, vm| {
             closure(vm, mc);
+            Ok(ExVal::Nil)
 
-            vm.borrow_mut().cycle(mc)
+            // vm.borrow_mut().cycle(mc)
         })
     }
 
@@ -356,6 +358,12 @@ impl<'gc> Lua {
     //     });
     //     Ok(ExVal::Nil)
     // }
+// pub fn register(&mut self, name: &str, function: fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>) 
+// {
+//         self.arena
+//             .mutate_root(|mc, vm| vm.register_native_function(mc, name, function))
+//
+// }
 }
 
 #[derive(Collect)]

@@ -58,6 +58,7 @@ pub enum OpCode {
     NOT,
     NIL,
     // TODO is it dumb to want to not spam Nil OpCodes?
+    /// Push N number of Nils to the stack
     NILS(u8),
     TRUE,
     FALSE,
@@ -69,9 +70,8 @@ pub enum OpCode {
     GREATER_EQUAL,
     PRINT,
     META(u8),
-    /// Call function with n values on the stack for parameters, and bool whether single return or
-    /// multi return allowed
-    CALL(u8,u8),
+    /// Call function with n parameters, and r count of assignments desired
+     CALL(u8,u8),
     /// tell the VM we expect n values for next assignment before resetting, otherwise 1
     NEED(u8),
     REGISTER_UPVALUE {

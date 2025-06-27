@@ -194,10 +194,10 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         // ar.next();
         // let first= ar.next().unwrap_or(&temp);
         // println!("first {}",first);
-        // println!("name {}",name);
+        println!("name {}",name);
         // println!("eq {}",first==name);
         if let Some(getter) = self.getters.get(name) {
-            // println!("yeah we exist {}", name);
+            println!("yeah we exist {}", name);
             if let Ok(d) = ud.data.lock() {
                 return match d.downcast_ref() {
                     Some(ud) => getter(vm, mc, ud),
@@ -815,7 +815,7 @@ pub mod vm_integration {
     use gc_arena::lock::RefLock;
 
     use super::*;
-    use crate::lua::{UDVec, VM};
+    use crate::{lua::{UDVec, VM}, standard::print};
 
     /// Create a new UserData value
     pub fn create_userdata<'gc, T: UserData>(
@@ -827,6 +827,7 @@ pub mod vm_integration {
         // Register the type if it hasn't been registered yet
         let type_name = T::type_name();
         if !reg.maps.contains_key(type_name) {
+            println!(" register userdata");
             reg.register::<T>();
         }
 
