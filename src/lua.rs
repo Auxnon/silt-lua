@@ -329,22 +329,22 @@ impl<'gc> Lua {
     /// call an internal function by index provided from the load function. Ideally call this after
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
-    pub fn call(&mut self, index: usize)-> LuaResult {
+    pub fn call(&mut self, index: usize) -> LuaResult {
         self.arena.mutate_root(|mc, vm| vm.call_by_index(mc, index))
     }
 
-//     pub fn register<N>(&mut self, name: &str, function: N) 
-//         where 
-//             N: for<'a> Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>)-> Value<'a>,
-//     {
-//
-// // fn(&mut VM<'lua>, &Mutation<'lua>, Vec<Value<'lua>>) -> Value<'lua>
-//         self.arena
-//             .mutate_root( |mc, vm| {
-//                 // vm.register_native_function(mc, name, function);
-//                 vm.testy(mc, name);
-//             });
-//     }
+    //     pub fn register<N>(&mut self, name: &str, function: N)
+    //         where
+    //             N: for<'a> Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>)-> Value<'a>,
+    //     {
+    //
+    // // fn(&mut VM<'lua>, &Mutation<'lua>, Vec<Value<'lua>>) -> Value<'lua>
+    //         self.arena
+    //             .mutate_root( |mc, vm| {
+    //                 // vm.register_native_function(mc, name, function);
+    //                 vm.testy(mc, name);
+    //             });
+    //     }
 
     // fn fun<'a>(chunk: FunctionObject<'a>) -> FunctionObject<'a> {
     //     chunk
@@ -358,12 +358,12 @@ impl<'gc> Lua {
     //     });
     //     Ok(ExVal::Nil)
     // }
-// pub fn register(&mut self, name: &str, function: fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>) 
-// {
-//         self.arena
-//             .mutate_root(|mc, vm| vm.register_native_function(mc, name, function))
-//
-// }
+    // pub fn register(&mut self, name: &str, function: fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>)
+    // {
+    //         self.arena
+    //             .mutate_root(|mc, vm| vm.register_native_function(mc, name, function))
+    //
+    // }
 }
 
 #[derive(Collect)]
@@ -398,6 +398,8 @@ pub struct VM<'gc> {
     // gray_stack: Vec<Value>,
     // TODO temporary solution to a hash id
     table_counter: RefCell<usize>,
+    // a useful index to reference the current root table on a stack, used for userdata
+    // table_op_index: usize,
     // meta_lookup: HashMap<String, MetaMethod>,
     // string_meta: Option<Gc<Table>>,
     pub userdata_registry: UserDataRegistry<'gc>,
@@ -574,6 +576,11 @@ impl<'gc> VM<'gc> {
         let u = self.external_functions.len();
         self.external_functions.push(o);
         u
+    }
+
+    pub(crate) fn yank(&mut self, offset: usize)->Value<'gc>{
+        let i=self.stack_count-offset;
+        self.stack[i].clone()
     }
 
     pub(crate) fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
@@ -1328,6 +1335,7 @@ impl<'gc> VM<'gc> {
                 OpCode::TABLE_GET { depth } => {
                     let u = *depth as usize + 1;
                     let table_point = unsafe { ep.ip.sub(u) };
+                    // self.table_op_index=self.stack_count-u;
                     let value = unsafe { &*table_point };
 
                     match value {
@@ -1344,7 +1352,7 @@ impl<'gc> VM<'gc> {
                             match crate::userdata::vm_integration::get_field(
                                 self,
                                 &self.userdata_registry,
-                                &ep.mc,
+                                ep.mc,
                                 rud,
                                 &field_name,
                             ) {
@@ -1746,11 +1754,7 @@ impl<'gc> VM<'gc> {
             vec![right],
         )
     }
- pub fn testy<'a>(
-        &mut self,
-        mc: &'a Mutation<'gc>,
-        name: &str){
- }
+    pub fn testy<'a>(&mut self, mc: &'a Mutation<'gc>, name: &str) {}
 
     /** Register a native function on the global table  */
     pub fn register_native_function<'a>(
@@ -1758,13 +1762,13 @@ impl<'gc> VM<'gc> {
         mc: &'a Mutation<'gc>,
         name: &str,
         function: NativeFunction<'gc>,
-    ) 
-    // where 
+    )
+    // where
     //         N: for <'a, 'b> Fn(&'a mut VM<'gc>, &'b Mutation<'gc>, Vec<Value<'gc>>)-> Value<'gc>,
     {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
-        let f = WrappedFn { f: function };
+        let f = WrappedFn { f: function, meta:0};
 
         self.globals
             .borrow_mut(mc)

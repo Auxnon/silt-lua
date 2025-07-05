@@ -2,12 +2,13 @@ use std::{
     any::Any,
     collections::HashMap,
     marker::PhantomData,
-    sync::{Arc, Mutex, Weak},
+    ops::DerefMut,
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 use gc_arena::{Collect, Gc, Mutation};
 
-use crate::{code::OpCode, error::SiltError, lua::VM, value::Value};
+use crate::{code::OpCode, error::SiltError, function::NativeFunction, lua::VM, value::Value};
 
 /// Result type for Lua operations
 pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
@@ -194,7 +195,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         // ar.next();
         // let first= ar.next().unwrap_or(&temp);
         // println!("first {}",first);
-        println!("name {}",name);
+        println!("name {}", name);
         // println!("eq {}",first==name);
         if let Some(getter) = self.getters.get(name) {
             println!("yeah we exist {}", name);
@@ -298,14 +299,45 @@ impl<'gc> UserDataMap<'gc> {
 // }
 //
 
+fn userdata_trap<'a>(vm: &mut VM<'a>, mc: &Mutation<'a>, args: Vec<Value<'a>>) -> Value<'a> {
+    if let Some(Value::UserData(ud)) = args.get(0) {
+        let mut mu = (*ud).borrow_mut(mc);
+        let rud = mu.deref_mut();
+        let type_name = rud.type_name();
+        if let Some(map) = vm.userdata_registry.get_map(type_name) {
+            return map.call_method(vm, mc, rud, method_name, args);
+        }
+    }
+    Value::Nil
+}
+
 impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
     {
+        // let func: UserDataMethodFn<'gc, T> =
+        //     Box::new(move |vm, mc, ud, vals| {
+        //
+        //         closure(vm, mc, ud, vals)
+        //     });
+        //
+        let trap = OnceLock
         let func: UserDataMethodFn<'gc, T> =
             Box::new(move |vm, mc, ud, vals| closure(vm, mc, ud, vals));
+        let fun: NativeFunction = |vm, mc, args| {
+            if let Some(Value::UserData(ud)) = args.get(0) {
+                return match closure(vm, mc, ud, args) {
+                    Ok(v) => v,
+                    Err(_) => Value::Nil,
+                };
+            }
+            Value::Nil
+        };
+
+        // we want to make a NativeFunction, store it in our getter by name
         self.meta_methods.insert(name.to_string(), func);
+        // self.getters.insert(name.to_string(), )
     }
 
     fn add_method_mut<F>(&mut self, name: &str, closure: F)
@@ -641,6 +673,8 @@ impl UserData for TestEnt {
     fn add_fields<'gc, F: UserDataFields<'gc, Self>>(fields: &mut F) {
         fields.add_field_method_get("x", |_, _, this| Ok(Value::Number(this.x)));
 
+        // fields.add_field_method_get("t", |vm,mc,this,_|{Ok(Value::Nil)});
+
         fields.add_field_method_set("x", |_, _, this, val| {
             if let Value::Number(x) = val {
                 this.x = x;
@@ -815,7 +849,10 @@ pub mod vm_integration {
     use gc_arena::lock::RefLock;
 
     use super::*;
-    use crate::{lua::{UDVec, VM}, standard::print};
+    use crate::{
+        lua::{UDVec, VM},
+        standard::print,
+    };
 
     /// Create a new UserData value
     pub fn create_userdata<'gc, T: UserData>(

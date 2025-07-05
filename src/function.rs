@@ -259,10 +259,20 @@ impl Display for FunctionObject<'_> {
 //     pub function: NativeFunction<'static>,
 // }
 
-pub type NativeFunction<'a> = fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
+// pub type NativeFunction<'a> = fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
+pub trait NativeFunction<'a,F> = F where F: Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
+
+// native        (vm, mc, val[])-> res
+// meth          (vm, mc, &ud, val[])-> res
+// meth_meta     (vm, mc, &ud, val[])-> res
+// meth_mut      (vm, mc, &mut ud, val[])-> res
+
 
 pub struct WrappedFn<'gc> {
-    pub f: NativeFunction<'gc>,
+    pub f: impl NativeFunction<'gc>,
+    /// used exclusively by userdata, a bit of a hack
+    pub meta: u8
+
 }
 
 // pub struct WrappedFn<N>
