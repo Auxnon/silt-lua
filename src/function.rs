@@ -7,6 +7,7 @@ use crate::{
     code::OpCode,
     error::SiltError,
     lua::{Ephemeral, VM},
+    userdata::InnerResult,
     value::Value,
 };
 
@@ -259,20 +260,35 @@ impl Display for FunctionObject<'_> {
 //     pub function: NativeFunction<'static>,
 // }
 
-// pub type NativeFunction<'a> = fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
-pub trait NativeFunction<'a,F> = F where F: Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
+type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a>;
+pub type NativeFunctionRef<'a> = &'a NativeFunctionRaw<'a>;
+pub type NativeFunctionBox<'a> = Box<NativeFunctionRaw<'a>>;
+// pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
 
 // native        (vm, mc, val[])-> res
 // meth          (vm, mc, &ud, val[])-> res
 // meth_meta     (vm, mc, &ud, val[])-> res
 // meth_mut      (vm, mc, &mut ud, val[])-> res
 
-
 pub struct WrappedFn<'gc> {
-    pub f: impl NativeFunction<'gc>,
-    /// used exclusively by userdata, a bit of a hack
-    pub meta: u8
+    pub f: Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc>>, // used exclusively by userdata, a bit of a hack
+                                   // pub meta: u8
+}
 
+impl<'gc> WrappedFn<'gc> {
+
+    pub fn new(callback: Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc>>) -> Self {
+        Self { f: callback }
+    }
+
+    pub fn call(
+        &self,
+        vm: &mut VM<'gc>,
+        mc: &Mutation<'gc>,
+        args: Vec<Value<'gc>>,
+    ) -> InnerResult<'gc> {
+        (self.f)(vm, mc, args)
+    }
 }
 
 // pub struct WrappedFn<N>
@@ -283,12 +299,12 @@ pub struct WrappedFn<'gc> {
 // {
 //     pub f: N}
 
-impl<'gc> Deref for WrappedFn<'gc> {
-    type Target = NativeFunction<'gc>;
-    fn deref(&self) -> &Self::Target {
-        &self.f
-    }
-}
+// impl<'gc> Deref for WrappedFn<'gc> {
+//     type Target = dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> Value<'gc>;
+//         fn deref(&self) -> &Self::Target {
+//         &self.f
+//     }
+// }
 
 // impl WrappedFn{
 //     pub fn call(&self, vm: &mut VM<'lua>, m: &Mutation<'lua>, vals: Vec<Value<'lua>>)-> Value{

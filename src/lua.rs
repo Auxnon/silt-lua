@@ -13,7 +13,7 @@ use crate::{
     code::OpCode,
     compiler::Compiler,
     error::{ErrorTuple, SiltError, ValueTypes},
-    function::{CallFrame, Closure, FunctionObject, NativeFunction, UpValue, WrappedFn},
+    function::{CallFrame, Closure, FunctionObject, NativeFunctionRef, UpValue, WrappedFn},
     prelude::UserData,
     table::Table,
     userdata::{MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
@@ -1259,7 +1259,7 @@ impl<'gc> VM<'gc> {
                             if let Value::NativeFunction(f) = args.remove(0) {
                                 let res = (f.f)(self, ep.mc, args);
                                 // self.popn_drop(*param_count);
-                                self.push(ep, res);
+                                self.push(ep, res?);
                             } else {
                                 unreachable!();
                             }
@@ -1761,14 +1761,14 @@ impl<'gc> VM<'gc> {
         &mut self,
         mc: &'a Mutation<'gc>,
         name: &str,
-        function: NativeFunction<'gc>,
+        function: NativeFunctionRef<'gc>,
     )
     // where
     //         N: for <'a, 'b> Fn(&'a mut VM<'gc>, &'b Mutation<'gc>, Vec<Value<'gc>>)-> Value<'gc>,
     {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
-        let f = WrappedFn { f: function, meta:0};
+        let f = WrappedFn { f: function};
 
         self.globals
             .borrow_mut(mc)
@@ -1792,11 +1792,11 @@ impl<'gc> VM<'gc> {
 
     /** Load standard library functions */
     pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
-        self.register_native_function(mc, "clock", crate::standard::clock);
-        self.register_native_function(mc, "print", crate::standard::print);
-        self.register_native_function(mc, "setmetatable", crate::standard::setmetatable);
-        self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
-        self.register_native_function(mc, "test_ent", crate::standard::test_ent);
+        self.register_native_function(mc, "clock", &crate::standard::clock);
+        self.register_native_function(mc, "print", &crate::standard::print);
+        self.register_native_function(mc, "setmetatable", &crate::standard::setmetatable);
+        self.register_native_function(mc, "getmetatable", &crate::standard::getmetatable);
+        self.register_native_function(mc, "test_ent", &crate::standard::test_ent);
     }
 
     /// Clean up dropped UserData references from the userdata_stack
