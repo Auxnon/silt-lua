@@ -1,4 +1,4 @@
-use std::{fmt::Display, ops::Deref};
+use std::{fmt::Display, ops::Deref, rc::Rc};
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
@@ -260,9 +260,9 @@ impl Display for FunctionObject<'_> {
 //     pub function: NativeFunction<'static>,
 // }
 
-type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a>;
+pub type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a> + 'a;
 pub type NativeFunctionRef<'a> = &'a NativeFunctionRaw<'a>;
-pub type NativeFunctionBox<'a> = Box<NativeFunctionRaw<'a>>;
+pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
 // pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
 
 // native        (vm, mc, val[])-> res
@@ -271,13 +271,14 @@ pub type NativeFunctionBox<'a> = Box<NativeFunctionRaw<'a>>;
 // meth_mut      (vm, mc, &mut ud, val[])-> res
 
 pub struct WrappedFn<'gc> {
-    pub f: Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc>>, // used exclusively by userdata, a bit of a hack
+    // pub f: Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc>>, // used exclusively by userdata, a bit of a hack
+    pub f: NativeFunctionRc<'gc>,
                                    // pub meta: u8
 }
 
 impl<'gc> WrappedFn<'gc> {
 
-    pub fn new(callback: Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc>>) -> Self {
+    pub fn new(callback: Rc< dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc> +'gc>) -> Self {
         Self { f: callback }
     }
 

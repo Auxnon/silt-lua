@@ -1,10 +1,5 @@
 use std::{
-    borrow::{Borrow, BorrowMut},
-    cell::RefCell,
-    collections::HashMap,
-    mem::take,
-    ops::DerefMut,
-    sync::{Arc, Mutex},
+    borrow::{Borrow, BorrowMut}, cell::RefCell, collections::HashMap, mem::take, ops::DerefMut, rc::Rc, sync::{Arc, Mutex}
 };
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
@@ -1768,7 +1763,7 @@ impl<'gc> VM<'gc> {
     {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
-        let f = WrappedFn { f: function};
+        let f = WrappedFn { f: Rc::new(function)};
 
         self.globals
             .borrow_mut(mc)

@@ -2,8 +2,8 @@ use std::{
     any::Any,
     collections::HashMap,
     marker::PhantomData,
-    ops::DerefMut,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    rc::Rc,
+    sync::{Arc, Mutex, Weak},
 };
 
 use gc_arena::{Collect, Gc, Mutation};
@@ -11,7 +11,7 @@ use gc_arena::{Collect, Gc, Mutation};
 use crate::{
     code::OpCode,
     error::SiltError,
-    function::{NativeFunctionBox, NativeFunctionRef, WrappedFn},
+    function::{NativeFunctionRaw, NativeFunctionRc, NativeFunctionRef, WrappedFn},
     lua::VM,
     value::Value,
 };
@@ -66,13 +66,14 @@ pub trait UserDataFields<'gc, T: UserData> {
 }
 
 /// Function pointer for calling a method on a UserData instance
-pub type UserDataMethodFn<T> = fn(&VM, &Mutation, &mut T, Vec<Value>) -> InnerResult;
+pub type UserDataMethodFn<'gc, T> =
+    fn(&VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc>;
 
 /// Function pointer for getting a field from a UserData instance  
-pub type UserDataGetterFn<T> = fn(&VM, &Mutation, &T) -> InnerResult;
+pub type UserDataGetterFn<'gc, T> = dyn Fn(&VM<'gc>, &Mutation<'gc>, &T) -> InnerResult<'gc> + 'gc;
 
 /// Function pointer for setting a field on a UserData instance
-pub type UserDataSetterFn<T> = fn(&VM, &Mutation, &mut T, Value) -> InnerResult;
+pub type UserDataSetterFn<'gc, T> = fn(&VM, &Mutation, &mut T, Value) -> InnerResult<'gc>;
 
 /// Trait object for type-erased UserData methods
 pub trait UserDataMapTraitObj<'gc>: 'gc {
@@ -110,19 +111,21 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 }
 
 /// Stores methods and fields for a specific UserData type T
-pub struct UserDataTypedMap<T: UserData + 'static> {
-    methods: HashMap<String, UserDataMethodFn<T>>,
-    meta_methods: HashMap<String, UserDataMethodFn<T>>,
-    getters: HashMap<String, UserDataGetterFn<T>>,
-    setters: HashMap<String, UserDataSetterFn<T>>,
+pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
+    methods: HashMap<String, UserDataMethodFn<'gc, T>>,
+    method_cache: Vec<NativeFunctionRc<'gc>>,
+    meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
+    getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
+    setters: HashMap<String, UserDataSetterFn<'gc, T>>,
     type_id: std::any::TypeId,
     _phantom: PhantomData<T>,
 }
 
-impl<T: UserData + 'static> UserDataTypedMap<T> {
+impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
+            method_cache: Vec::new(),
             meta_methods: HashMap::new(),
             getters: HashMap::new(),
             setters: HashMap::new(),
@@ -140,34 +143,69 @@ impl<T: UserData + 'static> UserDataTypedMap<T> {
     }
 
     /// Create a NativeFunction that calls a UserData method
-    pub fn create_method_function<'gc>(&self, mc: &Mutation<'gc>, method_name: &str) -> Option<Value<'gc>> {
-        if let Some(&method_fn) = self.methods.get(method_name) {
-            let type_id = self.type_id;
-            let method_name = method_name.to_string();
-            
-            let native_fn = move |vm: &VM, mc: &Mutation, args: Vec<Value>| -> InnerResult {
+    // pub fn create_method_function<'a>(&mut self, mc: &Mutation<'gc>) {
+    //     if let Some(&method_fn) = self.methods.get("t") {
+    //
+    //         let native_fn = move |vm: &mut VM<'gc>,
+    //                               mc: &Mutation<'gc>,
+    //                               args: Vec<Value<'gc>>|
+    //               -> InnerResult<'gc> {
+    //             let method_args = args[1..].to_vec();
+    //             if let Value::UserData(ud_ref) = args[0] {
+    //                 let ud_borrow = ud_ref.borrow();
+    //                 if let Ok(mut data_lock) = ud_borrow.data.lock() {
+    //                     if let Some(typed_data) = data_lock.downcast_mut::<T>() {
+    //                         return method_fn(vm, mc, typed_data, method_args);
+    //                     }
+    //                 };
+    //             }
+    //             Err(SiltError::UDBadCast)
+    //         };
+    //         let r = Rc::new(native_fn);
+    //         self.method_cache.push(r.clone());
+    //         // Some(Value::NativeFunction(Gc::new(mc, WrappedFn::new(r))))
+    //     }
+    // }
+
+    // pub fn get_static_item(&self) -> NativeFunctionRef<'gc> {
+    //     // let n = Box::new(42);
+    //     let b=self.method_cache.last().unwrap();
+    //     let rr=Box::leak(b);
+    // }
+    
+    /// Create a NativeFunction that calls a UserData method
+    pub fn create_method_function<'a>(&mut self, mc: &Mutation<'gc>) {
+        self.methods.iter().for_each(|(st, &method_fn)| {
+            // let type_id = self.type_id;
+            // let method_name = method_name.to_string();
+
+            let native_fn = move |vm: &mut VM<'gc>,
+                                  mc: &Mutation<'gc>,
+                                  args: Vec<Value<'gc>>|
+                  -> InnerResult<'gc> {
+                let method_args = args[1..].to_vec();
                 // First argument should be the UserData instance
-                if let Some(Value::UserData(ud_ref)) = args.get(0) {
-                    let mut ud_borrow = ud_ref.borrow_mut(mc);
+                if let Value::UserData(ud_ref) = args[0] {
+                    let ud_borrow = ud_ref.borrow();
                     if let Ok(mut data_lock) = ud_borrow.data.lock() {
                         if let Some(typed_data) = data_lock.downcast_mut::<T>() {
                             // Call the method with remaining arguments
-                            let method_args = args[1..].to_vec();
                             return method_fn(vm, mc, typed_data, method_args);
                         }
-                    }
+                    };
                 }
                 Err(SiltError::UDBadCast)
             };
-            
-            Some(Value::NativeFunction(Gc::new(mc, WrappedFn::new(Box::new(native_fn)))))
-        } else {
-            None
-        }
+            let r = Rc::new(native_fn);
+            self.method_cache.push(r.clone());
+            self.getters.insert(st.to_string(), Box::new(move |_,m,_|{
+                Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
+            }));
+        });
     }
 }
 
-impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<T> {
+impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'gc, T> {
     fn call_method(
         &self,
         vm: &VM<'gc>,
@@ -214,7 +252,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<T
         name: &str,
     ) -> InnerResult<'gc> {
         println!("name {}", name);
-        if let Some(&getter_fn) = self.getters.get(name) {
+        if let Some(getter_fn) = self.getters.get(name) {
             println!("yeah we exist {}", name);
             if let Ok(d) = ud.data.lock() {
                 return match d.downcast_ref() {
@@ -222,10 +260,6 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<T
                     None => Err(SiltError::UDBadCast),
                 };
             }
-        } else if let Some(_) = self.methods.get(name) {
-            // Return a bound method as a NativeFunction
-            return self.create_method_function(mc, name)
-                .ok_or(SiltError::UDNoMethodRef);
         }
         Err(SiltError::UDNoFieldGet)
     }
@@ -256,7 +290,7 @@ pub struct UserDataMap<'gc> {
 }
 
 impl<'gc> UserDataMap<'gc> {
-    pub fn new<T: UserData + 'static>(methods: UserDataTypedMap<T>) -> Self {
+    pub fn new<T: UserData + 'static>(methods: UserDataTypedMap<'gc, T>) -> Self {
         Self {
             data: Box::new(methods),
         }
@@ -330,7 +364,7 @@ impl<'gc> UserDataMap<'gc> {
 //     Value::Nil
 // }
 //
-impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<T> {
+impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
@@ -348,9 +382,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     where
         F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
     {
-        let func: UserDataMethodFn<T> = |vm, mc, ud, args| {
-            Err(SiltError::Unknown)
-        };
+        let func: UserDataMethodFn<T> = |vm, mc, ud, args| Err(SiltError::Unknown);
         self.methods.insert(name.to_string(), func);
     }
 
@@ -358,22 +390,18 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     where
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
     {
-        let func: UserDataMethodFn<T> = |vm, mc, ud, args| {
-            Err(SiltError::Unknown)
-        };
+        let func: UserDataMethodFn<T> = |vm, mc, ud, args| Err(SiltError::Unknown);
         self.methods.insert(name.to_string(), func);
     }
 }
 
-impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<T> {
+impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_field_method_get<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> InnerResult<'gc> + 'static,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> InnerResult<'gc> + 'gc,
     {
         println!("add getter {}", name);
-        let func: UserDataGetterFn<T> = |vm, mc, ud| {
-            Err(SiltError::Unknown)
-        };
+        let func: Box<UserDataGetterFn<T>> = Box::new(move |vm, mc, ud| closure(vm,mc,ud));
         self.getters.insert(name.to_string(), func);
     }
 
@@ -382,9 +410,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
         F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'static,
     {
         println!("add setter {}", name);
-        let func: UserDataSetterFn<T> = |vm, mc, ud, val| {
-            Err(SiltError::Unknown)
-        };
+        let func: UserDataSetterFn<T> = |vm, mc, ud, val| Err(SiltError::Unknown);
         self.setters.insert(name.to_string(), func);
     }
 }
@@ -416,6 +442,7 @@ impl<'gc> UserDataRegistry<'gc> {
             // Register fields
             T::add_fields(&mut typed_map);
             println!("TypedMap {}", typed_map.to_string());
+            typed_map.create_method_function(mc);
             let map = UserDataMap::new(typed_map);
 
             // Store in registry

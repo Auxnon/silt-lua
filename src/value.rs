@@ -10,7 +10,7 @@ use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 use crate::vec::{Vec2, Vec3};
 use crate::{
     error::{SiltError, ValueTypes},
-    function::{Closure, FunctionObject, WrappedFn},
+    function::{Closure, FunctionObject, NativeFunctionRc, NativeFunctionRef, WrappedFn},
     lua::VM,
     table::Table,
     userdata::{MetaMethod, UserDataWrapper},
@@ -71,6 +71,7 @@ pub enum Value<'gc> {
     Function(Gc<'gc, FunctionObject<'gc>>), // closure: Environment,
     Closure(Gc<'gc, Closure<'gc>>),
     // Func(fn(Vec<Value>) -> Value)
+    // NativeFunction(Gc<'gc, WrappedFn<'gc>>),
     NativeFunction(Gc<'gc, WrappedFn<'gc>>),
     UserData(Gc<'gc, RefLock<UserDataWrapper>>),
     #[cfg(feature = "vectors")]
