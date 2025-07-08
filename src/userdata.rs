@@ -73,7 +73,7 @@ pub type UserDataMethodFn<'gc, T> =
 pub type UserDataGetterFn<'gc, T> = dyn Fn(&VM<'gc>, &Mutation<'gc>, &T) -> InnerResult<'gc> + 'gc;
 
 /// Function pointer for setting a field on a UserData instance
-pub type UserDataSetterFn<'gc, T> = fn(&VM, &Mutation, &mut T, Value) -> InnerResult<'gc>;
+pub type UserDataSetterFn<'gc, T> = dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'gc;
 
 /// Trait object for type-erased UserData methods
 pub trait UserDataMapTraitObj<'gc>: 'gc {
@@ -116,7 +116,7 @@ pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
     method_cache: Vec<NativeFunctionRc<'gc>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
     getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
-    setters: HashMap<String, UserDataSetterFn<'gc, T>>,
+    setters: HashMap<String, Box<UserDataSetterFn<'gc, T>>>,
     type_id: std::any::TypeId,
     _phantom: PhantomData<T>,
 }
@@ -272,7 +272,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         name: &str,
         value: Value<'gc>,
     ) -> InnerResult<'gc> {
-        if let Some(&setter_fn) = self.setters.get(name) {
+        if let Some(setter_fn) = self.setters.get(name) {
             if let Ok(mut d) = ud.data.lock() {
                 return match d.downcast_mut() {
                     Some(typed_ud) => setter_fn(vm, mc, typed_ud, value),
@@ -407,10 +407,10 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
 
     fn add_field_method_set<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'static,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'gc,
     {
         println!("add setter {}", name);
-        let func: UserDataSetterFn<T> = |vm, mc, ud, val| Err(SiltError::Unknown);
+        let func: Box<UserDataSetterFn<T>> = Box::new(move |vm, mc, ud, val| closure(vm,mc,ud,val));
         self.setters.insert(name.to_string(), func);
     }
 }
