@@ -2,8 +2,6 @@ use std::{
     cmp::Ordering,
     fmt::{Display, Formatter},
     iter::Peekable,
-    mem::{swap, take},
-    panic::Location,
     println, vec,
 };
 
@@ -12,9 +10,9 @@ use hashbrown::HashMap;
 
 use crate::{
     code::OpCode,
-    error::{ErrorTuple, SiltError, TokenCell, TokenTriple},
+    error::{ErrorTuple, SiltError, TokenCell},
     function::FunctionObject,
-    lexer::{Lexer, TokenResult, TokenTripleResult},
+    lexer::{Lexer,  TokenTripleResult},
     token::{Operator, Token},
     value::Value,
 };
@@ -1750,6 +1748,19 @@ fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step
     Ok(())
 }
 
+
+/// Walk through expression precedence but stop at commas, used by arguments, and table building
+fn expression_single(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    skip_step: bool,
+) -> Catch {
+    devnote!(this it "expression_single");
+    this.parse_precedence(f, it, Precedence::Assignment, skip_step)?;
+    Ok(())
+}
+
 fn next_expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
     devnote!(this it "next_expression");
     this.eat(it);
@@ -2086,13 +2097,13 @@ fn tabulate(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign
                         this.eat(it);
                         true
                     } else {
-                        expression(this, f, it, true)?; // we skip the store because the ip is already where it needs to be
+                        expression_single(this, f, it, true)?; // we skip the store because the ip is already where it needs to be
                         false
                     }
                 }
                 Token::OpenBracket => {
                     this.eat(it);
-                    expression(this, f, it, false)?;
+                    expression_single(this, f, it, false)?;
                     expect_token!(
                         this,
                         it,
@@ -2103,11 +2114,11 @@ fn tabulate(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign
                     true
                 }
                 _ => {
-                    expression(this, f, it, false)?; // normal store expression
+                    expression_single(this, f, it, false)?; // normal store expression
                     false
                 }
             } {
-                expression(this, f, it, false)?;
+                expression_single(this, f, it, false)?;
                 this.emit_at(f, OpCode::TABLE_INSERT { offset: count });
             } else {
                 count += 1;
@@ -2397,17 +2408,6 @@ fn arguments(
     Ok(args)
 }
 
-/// Walk through expression precedence but stop at commas, used by arguments
-fn expression_single(
-    this: &mut Compiler,
-    f: FnRef,
-    it: &mut Peekable<Lexer>,
-    skip_step: bool,
-) -> Catch {
-    devnote!(this it "expression_single");
-    this.parse_precedence(f, it, Precedence::Assignment, skip_step)?;
-    Ok(())
-}
 
 fn print(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
     devnote!(this it "print");
