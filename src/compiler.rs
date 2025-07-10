@@ -12,7 +12,7 @@ use crate::{
     code::OpCode,
     error::{ErrorTuple, SiltError, TokenCell},
     function::FunctionObject,
-    lexer::{Lexer,  TokenTripleResult},
+    lexer::{Lexer, TokenTripleResult},
     token::{Operator, Token},
     value::Value,
 };
@@ -589,7 +589,7 @@ impl Compiler {
         let b = f.chunk.drop_last_if(op);
         #[cfg(feature = "dev-out")]
         {
-            println!("drop_last_if {}? {}!", op, b);
+            println!("{} drop_last_if {}? {}!", "DROP".on_red(), op, b);
             // self.chunk.print_chunk()
         }
     }
@@ -1268,6 +1268,7 @@ fn build_function<'c>(
         }
     }
 
+    // this.override_pop=true; // the function declare is inside our scope and it would trigger a pop
     block(this, mc, fr2, it)?;
 
     if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() { //read_last_code
@@ -1748,7 +1749,6 @@ fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step
     Ok(())
 }
 
-
 /// Walk through expression precedence but stop at commas, used by arguments, and table building
 fn expression_single(
     this: &mut Compiler,
@@ -1770,7 +1770,11 @@ fn next_expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> C
 
 fn expression_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
     devnote!(this it "expression_statement");
-    devout!("{} {}", "At".on_cyan(), this.expression_count);
+    devout!(
+        "{} {}",
+        "At (expression statement start)".on_cyan(),
+        this.expression_count
+    );
 
     expression(this, f, it, false)?;
 
@@ -2037,7 +2041,7 @@ fn named_variable(
                 this.override_pop = true;
             } else {
                 this.emit_at(f, OpCode::TABLE_GET { depth: count });
-                add!(this);
+                // add!(this);
             }
         }
         _ => {
