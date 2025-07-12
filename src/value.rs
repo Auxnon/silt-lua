@@ -117,7 +117,6 @@ impl<'a, 'b> Into<&'a Value<'b>> for MultiVal<'a, 'b> {
     }
 }
 
-
 impl Eq for ExVal {}
 impl PartialEq for ExVal {
     fn eq(&self, other: &Self) -> bool {
@@ -201,7 +200,7 @@ impl std::fmt::Display for Value<'_> {
             Value::NativeFunction(_) => write!(f, "native_function"),
             Value::Closure(c) => write!(f, "=>({})", c.function),
             Value::Function(ff) => write!(f, "{}", ff),
-            Value::Table(_t) => write!(f, "{}", 't'),
+            Value::Table(t) => write!(f, "table[;{}]", t.borrow().len()),
             Value::UserData(_) => write!(f, "userdata"), // TODO
             #[cfg(feature = "vectors")]
             Value::Vec3(v) => write!(f, "{}", v),
@@ -355,7 +354,6 @@ impl Hash for Value<'_> {
 //     }
 // }
 
-
 impl Deref for Value<'_> {
     type Target = i64;
     fn deref(&self) -> &Self::Target {
@@ -366,15 +364,15 @@ impl Deref for Value<'_> {
     }
 }
 
-impl<'a> Into<f64> for Value<'a> {
-    fn into(self) -> f64 {
-        match self {
-            Value::Number(f) => f,
-            Value::Integer(i) => i as f64,
-            _ => 0.,
-        }
-    }
-}
+// impl<'a> Into<f64> for Value<'a> {
+//     fn into(self) -> f64 {
+//         match self {
+//             Value::Number(f) => f,
+//             Value::Integer(i) => i as f64,
+//             _ => 0.,
+//         }
+//     }
+// }
 
 impl From<i64> for Value<'_> {
     fn from(value: i64) -> Self {
@@ -386,6 +384,7 @@ impl From<&str> for Value<'_> {
         Value::String(value.to_string())
     }
 }
+
 impl From<&String> for Value<'_> {
     fn from(value: &String) -> Self {
         Value::String(value.to_string())
@@ -405,6 +404,26 @@ impl From<()> for Value<'_> {
 impl From<f64> for Value<'_> {
     fn from(value: f64) -> Self {
         Value::Number(value)
+    }
+}
+
+impl From<Value<'_>> for f64 {
+    fn from(value: Value<'_>) -> f64 {
+        match value {
+            Value::Number(f) => f,
+            Value::Integer(i) => i as f64,
+            _ => 0.,
+        }
+    }
+}
+
+impl From<&Value<'_>> for f64 {
+    fn from(value: &Value<'_>) -> f64 {
+        match value {
+            Value::Number(f) => *f,
+            Value::Integer(i) => *i as f64,
+            _ => 0.,
+        }
     }
 }
 

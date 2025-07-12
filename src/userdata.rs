@@ -1,3 +1,4 @@
+use core::f64;
 use std::{
     any::Any,
     collections::HashMap,
@@ -6,6 +7,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
+use colored::Colorize;
 use gc_arena::{Collect, Gc, Mutation};
 
 use crate::{
@@ -73,7 +75,8 @@ pub type UserDataMethodFn<'gc, T> =
 pub type UserDataGetterFn<'gc, T> = dyn Fn(&VM<'gc>, &Mutation<'gc>, &T) -> InnerResult<'gc> + 'gc;
 
 /// Function pointer for setting a field on a UserData instance
-pub type UserDataSetterFn<'gc, T> = dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'gc;
+pub type UserDataSetterFn<'gc, T> =
+    dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'gc;
 
 /// Trait object for type-erased UserData methods
 pub trait UserDataMapTraitObj<'gc>: 'gc {
@@ -112,7 +115,10 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 
 /// Stores methods and fields for a specific UserData type T
 pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
-    methods: HashMap<String, UserDataMethodFn<'gc, T>>,
+    methods: HashMap<
+        String,
+        Box<dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc>,
+    >,
     method_cache: Vec<NativeFunctionRc<'gc>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
     getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
@@ -172,10 +178,10 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     //     let b=self.method_cache.last().unwrap();
     //     let rr=Box::leak(b);
     // }
-    
+
     /// Create a NativeFunction that calls a UserData method
     pub fn create_method_function<'a>(&mut self, mc: &Mutation<'gc>) {
-        self.methods.iter().for_each(|(st, &method_fn)| {
+        self.methods.drain().for_each(|(st, method_fn)| {
             // let type_id = self.type_id;
             // let method_name = method_name.to_string();
 
@@ -189,6 +195,10 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
                     let ud_borrow = ud_ref.borrow();
                     if let Ok(mut data_lock) = ud_borrow.data.lock() {
                         if let Some(typed_data) = data_lock.downcast_mut::<T>() {
+                            // println!("we're here an dthen{:?}", method_fn);
+                            for ele in method_args.iter() {
+                                println!(" args {}", ele);
+                            }
                             // Call the method with remaining arguments
                             return method_fn(vm, mc, typed_data, method_args);
                         }
@@ -198,9 +208,12 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
             };
             let r = Rc::new(native_fn);
             self.method_cache.push(r.clone());
-            self.getters.insert(st.to_string(), Box::new(move |_,m,_|{
-                Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
-            }));
+            self.getters.insert(
+                st.to_string(),
+                Box::new(move |_, m, _| {
+                    Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
+                }),
+            );
         });
     }
 }
@@ -214,14 +227,14 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         name: &str,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
-        if let Some(&method_fn) = self.methods.get(name) {
-            if let Ok(mut d) = ud.data.lock() {
-                return match d.downcast_mut() {
-                    Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
-                    None => Err(SiltError::UDBadCast),
-                };
-            }
-        }
+        //     if let Some(&method_fn) = self.methods.get(name) {
+        //         if let Ok(mut d) = ud.data.lock() {
+        //             return match d.downcast_mut() {
+        //                 Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
+        //                 None => Err(SiltError::UDBadCast),
+        //             };
+        //         }
+        //     }
         Err(SiltError::UDNoMethodRef)
     }
 
@@ -233,14 +246,14 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         name: &str,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
-        if let Some(&method_fn) = self.meta_methods.get(name) {
-            if let Ok(mut d) = ud.data.lock() {
-                return match d.downcast_mut() {
-                    Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
-                    None => Err(SiltError::UDBadCast),
-                };
-            }
-        }
+        //     if let Some(&method_fn) = self.meta_methods.get(name) {
+        //         if let Ok(mut d) = ud.data.lock() {
+        //             return match d.downcast_mut() {
+        //                 Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
+        //                 None => Err(SiltError::UDBadCast),
+        //             };
+        //         }
+        //     }
         Err(SiltError::UDNoMethodRef)
     }
 
@@ -380,18 +393,20 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
 
     fn add_method_mut<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc,
     {
-        let func: UserDataMethodFn<T> = |vm, mc, ud, args| Err(SiltError::Unknown);
-        self.methods.insert(name.to_string(), func);
+        // let func: UserDataMethodFn<T> = |vm, mc, ud, args| Err(SiltError::Unknown);
+        self.methods.insert(name.to_string(), Box::new(closure));
     }
 
     fn add_method<F>(&mut self, name: &str, closure: F)
     where
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
     {
-        let func: UserDataMethodFn<T> = |vm, mc, ud, args| Err(SiltError::Unknown);
-        self.methods.insert(name.to_string(), func);
+        self.methods.insert(
+            name.to_string(),
+            Box::new(move |vm, mc, ud, args| closure(vm, mc, ud, args)),
+        );
     }
 }
 
@@ -401,7 +416,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> InnerResult<'gc> + 'gc,
     {
         println!("add getter {}", name);
-        let func: Box<UserDataGetterFn<T>> = Box::new(move |vm, mc, ud| closure(vm,mc,ud));
+        let func: Box<UserDataGetterFn<T>> = Box::new(move |vm, mc, ud| closure(vm, mc, ud));
         self.getters.insert(name.to_string(), func);
     }
 
@@ -410,7 +425,8 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
         F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'gc,
     {
         println!("add setter {}", name);
-        let func: Box<UserDataSetterFn<T>> = Box::new(move |vm, mc, ud, val| closure(vm,mc,ud,val));
+        let func: Box<UserDataSetterFn<T>> =
+            Box::new(move |vm, mc, ud, val| closure(vm, mc, ud, val));
         self.setters.insert(name.to_string(), func);
     }
 }
@@ -660,14 +676,14 @@ impl UserData for TestEnt {
             // Example of parsing a table to set position
             if let Some(Value::Table(t)) = args.first() {
                 let t_ref = (*t).borrow();
-                if let Some(Value::Number(x)) = t_ref.get(&Value::String("x".to_string())) {
-                    this.x = *x;
+                if let Some(x) = t_ref.get("x") {
+                    this.x = x.into();
                 }
-                if let Some(Value::Number(y)) = t_ref.get(&Value::String("y".to_string())) {
-                    this.y = *y;
+                if let Some(y) = t_ref.get(Value::String("y".to_string())) {
+                    this.y = y.into();
                 }
-                if let Some(Value::Number(z)) = t_ref.get(&Value::String("z".to_string())) {
-                    this.z = *z;
+                if let Some(z) = t_ref.get(Value::String("z".to_string())) {
+                    this.z = z.into();
                 }
             }
             Ok(Value::Nil)

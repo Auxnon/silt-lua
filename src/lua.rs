@@ -1,5 +1,11 @@
 use std::{
-    borrow::{Borrow, BorrowMut}, cell::RefCell, collections::HashMap, mem::take, ops::DerefMut, rc::Rc, sync::{Arc, Mutex}
+    borrow::{Borrow, BorrowMut},
+    cell::RefCell,
+    collections::HashMap,
+    mem::take,
+    ops::DerefMut,
+    rc::Rc,
+    sync::{Arc, Mutex},
 };
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
@@ -573,8 +579,8 @@ impl<'gc> VM<'gc> {
         u
     }
 
-    pub(crate) fn yank(&mut self, offset: usize)->Value<'gc>{
-        let i=self.stack_count-offset;
+    pub(crate) fn yank(&mut self, offset: usize) -> Value<'gc> {
+        let i = self.stack_count - offset;
         self.stack[i].clone()
     }
 
@@ -925,7 +931,7 @@ impl<'gc> VM<'gc> {
                     // devout!("ident: {}", value);
                     if let Value::String(s) = value {
                         devout!("\"{}\"", s);
-                        if let Some(v) = self.globals.borrow_mut(ep.mc).get(&s.into()) {
+                        if let Some(v) = self.globals.borrow_mut(ep.mc).get(s) {
                             self.push(ep, v.clone());
                         } else {
                             self.push(ep, Value::Nil);
@@ -1251,6 +1257,7 @@ impl<'gc> VM<'gc> {
                         Value::NativeFunction(_) => {
                             // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
                             let mut args = self.popn(ep, *arity + 1);
+
                             if let Value::NativeFunction(f) = args.remove(0) {
                                 let res = (f.f)(self, ep.mc, args);
                                 // self.popn_drop(*param_count);
@@ -1692,7 +1699,7 @@ impl<'gc> VM<'gc> {
                     return Ok(());
                 } else {
                     let v = current.try_borrow().unwrap();
-                    let check = v.get(&key);
+                    let check = v.getr(&key);
                     // let check = unsafe { current.try_borrow_unguarded() }.unwrap().get(&key);
                     match check {
                         Some(Value::Table(t)) => {
@@ -1763,7 +1770,9 @@ impl<'gc> VM<'gc> {
     {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
-        let f = WrappedFn { f: Rc::new(function)};
+        let f = WrappedFn {
+            f: Rc::new(function),
+        };
 
         self.globals
             .borrow_mut(mc)

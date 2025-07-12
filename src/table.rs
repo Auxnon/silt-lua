@@ -33,11 +33,21 @@ impl<'v> Table<'v> {
         self.data.insert(key, value);
     }
 
-    pub fn get<'f>(&self, key: &Value<'v>) -> Option<&Value<'v>>
-// where
-    //     'v: 'f,
+    // same as get but accepts reference Into<&Value> which is better
+    pub fn getr<'f, T>(&self, key: T) -> Option<&Value<'v>>
+    where
+        'v: 'f,
+        T: Into<&'f Value<'v>>,
     {
-        self.data.get(key)
+        self.data.get(key.into())
+    }
+
+    pub fn get<'f, T>(&self, key: T) -> Option<&Value<'v>>
+    where
+        'v: 'f,
+        T: Into<Value<'v>>,
+    {
+        self.data.get(&key.into())
     }
 
     pub fn getn(&self, i: usize) -> Option<&Value<'v>> {
@@ -66,6 +76,8 @@ impl<'v> Table<'v> {
     pub fn len(&self) -> usize {
         self.data.len()
     }
+    // pub fn display(&self){
+    //     self.data.
 
     /** push by counter's current index, if it aready exists keep incrementing until empty position is found */
     pub fn push(&mut self, value: Value<'v>) {
@@ -95,7 +107,7 @@ impl<'v> Table<'v> {
             println!("looking for meta method: {}", s);
             if let Some(func) = t
                 .borrow()
-                .get(&Value::String(method.as_table_key().to_string()))
+                .get(Value::String(method.as_table_key().to_string()))
             {
                 println!("found meta method: {}", func);
                 return if let Value::Closure(_) = func {
@@ -135,7 +147,7 @@ impl ExTable {
         self.data.get(&ExVal::Integer(i as i64))
     }
     pub fn get(&self, field: &str) -> Option<&ExVal> {
-        self.data.get(&ExVal::String(field.to_owned() ))
+        self.data.get(&ExVal::String(field.to_owned()))
     }
 }
 

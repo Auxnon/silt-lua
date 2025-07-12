@@ -275,6 +275,8 @@ pub struct Compiler {
     pending_gotos: Vec<(String, usize, TokenCell)>,
     /** hack to flip off a pop when an expression takes on statement properties, used only for := right now */
     override_pop: bool,
+    /// flag that a self calling method was used
+    self_arg: bool,
     /** language flags for optional features */
     language_flags: LanguageFlags,
     /** tracks if the last statement was an expression for implicit returns */
@@ -317,6 +319,7 @@ impl Compiler {
             // previous: (Token::Nil, (0, 0)),
             // pre_previous: (Token::Nil, (0, 0)),
             override_pop: false,
+            self_arg: false,
             language_flags: LanguageFlags::default(),
             last_was_expression: false,
             expression_count: 0,
@@ -512,6 +515,9 @@ impl Compiler {
         for v in self.var_stack.drain(..) {
             f.chunk.write_code(v.1, self.current_location);
         }
+    }
+    fn pull_getter(&mut self, f: FnRef) -> OpCode {
+        self.var_stack.first().unwrap().1.clone()
     }
 
     /** only use after peek */
@@ -2044,6 +2050,16 @@ fn named_variable(
                 // add!(this);
             }
         }
+        Token::Colon => {
+            let target = this.pull_getter(f);
+            this.drain_getters(f);
+            single_table_index(this, f, it)?;
+            // we should only have one getter, table_indexer is just a faster getter opcode
+            // sequence anyway
+            this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
+            this.emit_at(f, target);
+            this.self_arg = true;
+        }
         _ => {
             // this.return_count = this.var_stack.len() as u8;
             this.drain_getters(f);
@@ -2202,16 +2218,7 @@ fn table_indexer(
             true
         }
         Token::Dot => {
-            this.eat(it);
-            let t = this.pop(it);
-            this.current_location = t.1;
-            let field = t.0?;
-            devout!("table_indexer: {} p:{}", field, this.peek(it)?);
-            if let Token::Identifier(ident) = field {
-                this.emit_identifer_constant_at(f, ident);
-            } else {
-                return Err(this.error_at(SiltError::ExpectedFieldIdentifier));
-            }
+            single_table_index(this, f, it)?;
             true
         }
         _ => false,
@@ -2219,6 +2226,24 @@ fn table_indexer(
         count += 1;
     }
     Ok(count)
+}
+
+fn single_table_index(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+) -> Result<(), ErrorTuple> {
+    this.eat(it);
+    let t = this.pop(it);
+    this.current_location = t.1;
+    let field = t.0?;
+    devout!("table_indexer: {} p:{}", field, this.peek(it)?);
+    if let Token::Identifier(ident) = field {
+        this.emit_identifer_constant_at(f, ident);
+    } else {
+        return Err(this.error_at(SiltError::ExpectedFieldIdentifier));
+    }
+    Ok(())
 }
 
 fn binary(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
@@ -2383,7 +2408,13 @@ fn arguments(
     start: TokenCell,
 ) -> Result<u8, ErrorTuple> {
     devnote!(this it "arguments");
-    let mut args = 0;
+    // self was pushed on the stack recently, include it and turn off
+    let mut args = if this.self_arg {
+        this.self_arg = false;
+        1
+    } else {
+        0
+    };
     if !matches!(this.peek(it)?, &Token::CloseParen) {
         while {
             expression_single(this, f, it, false)?;
@@ -2411,7 +2442,6 @@ fn arguments(
 
     Ok(args)
 }
-
 
 fn print(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
     devnote!(this it "print");
