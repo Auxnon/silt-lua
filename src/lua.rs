@@ -12,7 +12,7 @@ use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
     code::OpCode,
-    compiler::Compiler,
+    compiler::{self, Compiler},
     error::{ErrorTuple, SiltError, ValueTypes},
     function::{CallFrame, Closure, FunctionObject, NativeFunctionRef, UpValue, WrappedFn},
     prelude::UserData,
@@ -510,6 +510,16 @@ impl<'gc> VM<'gc> {
         // out
     }
 
+    pub fn build_and_run(&mut self, mc: &Mutation<'gc>, name: Option<String>, code: &str, compiler: &mut Compiler) -> Result<ExVal,  Vec<ErrorTuple>> {
+        match compiler.try_compile(mc, name, code) {
+            Ok(f) => {
+                let fun = Gc::new(mc, f);
+                self.run(mc, fun)
+            }
+            Err(er) => Err(er),
+        }
+    }
+
     pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, Vec<ErrorTuple>> {
         match self.execute(mc, self.root) {
             Ok(v) => Ok(v),
@@ -520,6 +530,7 @@ impl<'gc> VM<'gc> {
         }
     }
 
+    /// Identical to run (mostly), set a built Function Object as root and run it
     pub fn execute(
         &mut self,
         mc: &Mutation<'gc>,
@@ -546,7 +557,7 @@ impl<'gc> VM<'gc> {
         self.process(&mut ep, frames)
     }
 
-    /// dump all newest userdata as weak references but keep atomic srong references within the lua
+    /// dump all newest userdata as weak references but keep atomic strong references within the lua
     /// vm. Ideally garbage collected
     pub fn drain_userdata(&mut self) -> Vec<WeakWrapper> {
         match &mut self.userdata_stack {
@@ -786,6 +797,9 @@ impl<'gc> VM<'gc> {
     //     self.compiler.compile(source.to_owned())
     // }
 
+    /// The actual crawl through the entire root function object until it completes. This does not
+    /// clear state on subsequent re-runs so variables could get redefined without any checks ( if
+    /// x~=nil then x=1 end for instance )
     fn process(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
