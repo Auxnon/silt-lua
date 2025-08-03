@@ -448,3 +448,13 @@ pub trait ToLuaMulti<'lua> {
 pub trait FromLuaMulti<'lua>: Sized {
     fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
 }
+
+
+// pub trait FromValue: Sized {
+//     fn from_value(value: Value) -> Result<Self, SiltError>;
+// }
+#[derive(Debug)]
+pub struct Variadic<'a,T> {
+    values: Vec<Value<'a>>,
+    _phantom: std::marker::PhantomData<T>,
+}

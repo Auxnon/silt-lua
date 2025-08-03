@@ -17,7 +17,9 @@ use crate::{
     value::Value,
 };
 
-use colored::Colorize;
+// use colored::Colorize;
+#[cfg(feature = "wasm")]
+use serde::{Serialize,Deserialize};
 
 macro_rules! build_block_until_then_eat {
     ($self:ident, $mc:ident, $f:ident, $it:ident, $($rule:ident)|*) => {{
@@ -229,6 +231,19 @@ struct ParseRule {
     prefix: fn(&mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign: bool) -> Catch,
     infix: fn(&mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign: bool) -> Catch,
     precedence: Precedence,
+}
+
+const WORD_MAP: [&str;4]=["keyword", "value", "string", "ident"];
+
+type IndentMark =(usize, usize);
+
+#[derive(Serialize, Deserialize)]
+pub struct LanguageServerOutput<'c>  
+    {
+    #[serde(borrow)]
+    legend:  [&'c str;4],
+    map: Vec<u8>,
+    indents: Vec<IndentMark>,
 }
 
 /** stores a local identifier's name by boxed string, if none is provbided it serves as a placeholder for statements such as a loop, this way they cannot be resolved as variables */
@@ -795,6 +810,21 @@ impl Compiler {
             Ok(obj)
         } else {
             Err(self.pop_errors())
+        }
+    }
+
+
+    pub fn lsp(&mut self ,source: &str)-> LanguageServerOutput{
+        let map=Vec::new();
+        let indents = Vec::new();
+
+        let lexer = Lexer::new(source);
+        let mut iter = lexer.peekable();
+        // 
+        LanguageServerOutput{
+            legend: WORD_MAP,
+            map,
+            indents,
         }
     }
 

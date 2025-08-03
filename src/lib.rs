@@ -69,6 +69,16 @@ pub fn run(source: &str) -> String {
     }
 }
 
+pub fn lsp(source: &str) -> Result<JsValue, JsError>{
+let mut compiler = Compiler::new();
+    let mut lua = Lua::new_with_standard();
+    match lua.run(source, &mut compiler) {
+        Ok(v) => Ok(v.to_string().into()),
+        Err(e) => Err(JsError::new(&e[0].to_string())),
+    }
+    // Err(JsError::new("failed to run LSP"))
+}
+
 #[allow(unused_macros)]
 macro_rules! valeq {
     ($source:literal, $val:expr) => {
