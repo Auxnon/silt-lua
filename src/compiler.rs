@@ -235,15 +235,18 @@ struct ParseRule {
 
 const WORD_MAP: [&str;4]=["keyword", "value", "string", "ident"];
 
-type IndentMark =(usize, usize);
+// type LSPIndent =(usize, usize);
+// start, length, type
+type LSPFormatMark=(usize,usize,u8);
 
 #[derive(Serialize, Deserialize)]
 pub struct LanguageServerOutput<'c>  
     {
     #[serde(borrow)]
     legend:  [&'c str;4],
-    map: Vec<u8>,
-    indents: Vec<IndentMark>,
+    map: Vec<LSPFormatMark>,
+    indented: String
+    // indents: Vec<IndentMark>,
 }
 
 /** stores a local identifier's name by boxed string, if none is provbided it serves as a placeholder for statements such as a loop, this way they cannot be resolved as variables */
@@ -816,7 +819,7 @@ impl Compiler {
 
     pub fn lsp(&mut self ,source: &str)-> LanguageServerOutput{
         let map=Vec::new();
-        let indents = Vec::new();
+        let indented="".to_string();
 
         let lexer = Lexer::new(source);
         let mut iter = lexer.peekable();
@@ -824,7 +827,7 @@ impl Compiler {
         LanguageServerOutput{
             legend: WORD_MAP,
             map,
-            indents,
+            indented,
         }
     }
 
