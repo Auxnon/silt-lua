@@ -817,14 +817,101 @@ impl Compiler {
     }
 
 
-    pub fn lsp(&mut self ,source: &str)-> LanguageServerOutput{
-        let map=Vec::new();
-        let indented="".to_string();
+    pub fn lsp(&mut self, source: &str) -> LanguageServerOutput {
+        let mut map = Vec::new();
+        let mut indented = String::new();
+        let mut indent_level = 0;
+        let mut at_line_start = true;
+        let mut last_pos = 0;
 
         let lexer = Lexer::new(source);
         let mut iter = lexer.peekable();
-        // 
-        LanguageServerOutput{
+
+        while let Some(token_result) = iter.next() {
+            match token_result {
+                Ok((token, (line, start, end))) => {
+                    // Add any whitespace/newlines between tokens to maintain formatting
+                    if start > last_pos {
+                        let between = &source[last_pos..start];
+                        indented.push_str(between);
+                        
+                        // Track if we're at the start of a new line
+                        if between.contains('\n') {
+                            at_line_start = true;
+                        }
+                    }
+
+                    // Add indentation at the start of new lines
+                    if at_line_start && !matches!(token, Token::EOF) {
+                        // Adjust indent level based on token
+                        match &token {
+                            Token::End | Token::Else | Token::ElseIf => {
+                                if indent_level > 0 {
+                                    indent_level -= 1;
+                                }
+                            }
+                            _ => {}
+                        }
+
+                        // Add the indentation
+                        for _ in 0..indent_level {
+                            indented.push_str("  ");
+                        }
+                        at_line_start = false;
+                    }
+
+                    // Categorize the token and add to map
+                    let token_type = match &token {
+                        // Keywords (type 0)
+                        Token::Local | Token::Global | Token::Function | Token::If | Token::Then |
+                        Token::Else | Token::ElseIf | Token::End | Token::While | Token::Do |
+                        Token::For | Token::Return | Token::Print | Token::Goto => 0,
+                        
+                        // Identifiers (type 1)
+                        Token::Identifier(_) | Token::ColonIdentifier(_) => 1,
+                        
+                        // Values (type 2) - numbers, booleans, nil
+                        Token::Integer(_) | Token::Number(_) | Token::True | Token::False | Token::Nil => 2,
+                        
+                        // Strings (type 3)
+                        Token::StringLiteral(_) => 3,
+                        
+                        // Everything else defaults to keyword for now
+                        _ => 0,
+                    };
+
+                    // Only add non-whitespace tokens to the map
+                    if !matches!(token, Token::EOF) {
+                        let token_str = &source[start..end];
+                        if !token_str.trim().is_empty() {
+                            map.push((start, end - start, token_type));
+                            indented.push_str(token_str);
+                        }
+                    }
+
+                    // Adjust indent level for tokens that increase nesting
+                    match &token {
+                        Token::Then | Token::Do | Token::Function => {
+                            indent_level += 1;
+                        }
+                        _ => {}
+                    }
+
+                    last_pos = end;
+                }
+                Err(_) => {
+                    // Skip error tokens but continue processing
+                    continue;
+                }
+            }
+        }
+
+        // Add any remaining content after the last token
+        if last_pos < source.len() {
+            indented.push_str(&source[last_pos..]);
+        }
+
+        LanguageServerOutput {
             legend: WORD_MAP,
             map,
             indented,
