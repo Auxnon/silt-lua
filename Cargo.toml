@@ -35,7 +35,7 @@ inherits = "release"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["silt"]
+default = ["silt", "wasm" ]
 silt = [
     "bang",
     "under-number",
@@ -44,6 +44,7 @@ silt = [
     "short-declare",
     # "vectors",
 ]
+wasm=["wasm-bindgen", "serde", "serde-wasm-bindgen"]
 under-number = []
 bang = []
 global = []
@@ -55,7 +56,9 @@ dev-out = []
 [dependencies]
 byteyarn = "0.5.1"
 hashbrown = "0.15.1"
-wasm-bindgen = "0.2.87"
+wasm-bindgen = {version= "0.2.87", optional=true }
+serde = { version = "1.0.219", features = ["derive"], optional=true }
+serde-wasm-bindgen = {version="0.6.5", optional=true}
 gc-arena = {version= "0.5.3", features=["allocator-api2"] }
 string-interner = "0.18.0"
 colored = "3.0.0"
