@@ -1,4 +1,3 @@
-
 use crate::{token::Token, userdata::MetaMethod};
 
 #[derive(Clone, PartialEq, Debug)]
@@ -90,7 +89,34 @@ pub enum ValueTypes {
     Vec2,
 }
 
-pub type TokenTriple = (usize, usize, usize);
+pub struct TokenTriple {
+    pub line: usize,
+    pub col: usize,
+    pub index: usize,
+    pub length: usize,
+}
+
+impl TokenTriple {
+    pub fn new(line: usize, col: usize, index: usize, length: usize) -> Self {
+        TokenTriple {
+            line,
+            col,
+            index,
+            length,
+        }
+    }
+}
+
+impl Default for TokenTriple {
+    fn default() -> Self {
+        TokenTriple {
+            line: 0,
+            col: 0,
+            index: 0,
+            length: 0,
+        }
+    }
+}
 pub type TokenCell = (usize, usize);
 
 // impl TripleLocation{

@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{
     cmp::Ordering,
     fmt::{Display, Formatter},
@@ -10,16 +11,17 @@ use hashbrown::HashMap;
 
 use crate::{
     code::OpCode,
-    error::{ErrorTuple, SiltError, TokenCell},
+    error::{ErrorTuple, SiltError, TokenCell, TokenTriple},
     function::FunctionObject,
     lexer::{Lexer, TokenTripleResult},
     token::{Operator, Token},
     value::Value,
 };
 
-// use colored::Colorize;
+#[cfg(feature = "dev-out")]
+use colored::Colorize;
 #[cfg(feature = "wasm")]
-use serde::{Serialize,Deserialize};
+use serde::{Deserialize, Serialize};
 
 macro_rules! build_block_until_then_eat {
     ($self:ident, $mc:ident, $f:ident, $it:ident, $($rule:ident)|*) => {{
@@ -233,20 +235,28 @@ struct ParseRule {
     precedence: Precedence,
 }
 
-const WORD_MAP: [&str;4]=["keyword", "value", "string", "ident"];
+const WORD_MAP: [&str; 4] = ["keyword", "value", "string", "ident"];
 
 // type LSPIndent =(usize, usize);
 // start, length, type
-type LSPFormatMark=(usize,usize,u8);
+type LSPFormatMark = (usize, usize, u8);
 
 #[derive(Serialize, Deserialize)]
-pub struct LanguageServerOutput<'c>  
-    {
+pub struct LanguageServerOutput<'c> {
     #[serde(borrow)]
-    legend:  [&'c str;4],
+    legend: [&'c str; 4],
     map: Vec<LSPFormatMark>,
-    indented: String
-    // indents: Vec<IndentMark>,
+    indented: String, // indents: Vec<IndentMark>,
+}
+
+impl Display for LanguageServerOutput<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "legend [{}],\n map ", self.legend.join(","))?;
+        for (s, l, t) in self.map.iter() {
+            write!(f, "({} {} {}),", s, l, t)?;
+        }
+        writeln!(f, "{}", self.indented)
+    }
 }
 
 /** stores a local identifier's name by boxed string, if none is provbided it serves as a placeholder for statements such as a loop, this way they cannot be resolved as variables */
@@ -442,7 +452,7 @@ impl Compiler {
         match iter.next() {
             Some(Ok(t)) => {
                 // devout!("popped {}", t.0);
-                (Ok(t.0), (t.1 .0, t.1 .2))
+                (Ok(t.0), (t.1.line, t.1.col))
             }
             Some(Err(e)) => {
                 let l = e.location;
@@ -476,7 +486,7 @@ impl Compiler {
     fn store(&mut self, iter: &mut Peekable<Lexer>) {
         self.current_index += 1;
         (self.current, self.current_location) = match iter.next() {
-            Some(Ok(t)) => (Ok(t.0), (t.1 .0, t.1 .2)),
+            Some(Ok(t)) => (Ok(t.0), (t.1.line, t.1.col)),
             Some(Err(er)) => {
                 // self.error_syntax(e.code, e.location);
                 let l = er.location;
@@ -496,7 +506,7 @@ impl Compiler {
     fn store_and_return(&mut self, iter: &mut Peekable<Lexer>) -> Result<Token, ErrorTuple> {
         self.current_index += 1;
         let (r, l) = match iter.next() {
-            Some(Ok(t)) => (Ok(t.0), (t.1 .0, t.1 .2)),
+            Some(Ok(t)) => (Ok(t.0), (t.1.line, t.1.col)),
             Some(Err(e)) => {
                 // self.error_syntax(e.code, e.location);
                 let l = e.location;
@@ -565,26 +575,31 @@ impl Compiler {
     }
 
     /** return the peeked token tuple (token+location) result */
-    fn peek_result<'c>(&mut self, iter: &'c mut Peekable<Lexer>) -> &'c TokenTripleResult {
+    fn peek_result<'c>(&mut self, iter: &'c mut Peekable<Lexer>) -> Result<&'c Token, ErrorTuple> {
         #[cfg(feature = "dev-out")]
         match iter.peek() {
-            Some(r) => {
-                match r {
-                    Ok(t) => {
-                        println!("peek_res {}", t.0);
-                    }
-                    Err(e) => {
-                        println!("peek_res err {}", e.code);
-                    }
+            Some(r) => match r {
+                Ok(t) => {
+                    println!("peek_res {}", t.0);
+                    Ok(&t.0)
                 }
-                r
-            }
-            None => &Ok((Token::EOF, (0, 0, 0))),
+                Err(e) => {
+                    println!("peek_res err {}", e.code);
+                    Err(e.clone())
+                }
+            },
+            None => Ok(&Token::EOF),
         }
         #[cfg(not(feature = "dev-out"))]
-        match iter.peek() {
-            Some(r) => r,
-            None => &Ok((Token::EOF, (0, 0, 0))),
+        {
+            // let t = iter.peek();
+            match iter.peek() {
+                Some(r) => match r {
+                    Ok(o) => Ok(&o.0),
+                    Err(e) => Err(e.clone()),
+                },
+                None => Ok(&Token::EOF),
+            }
         }
     }
 
@@ -816,7 +831,6 @@ impl Compiler {
         }
     }
 
-
     pub fn lsp(&mut self, source: &str) -> LanguageServerOutput {
         let mut map = Vec::new();
         let mut indented = String::new();
@@ -829,15 +843,28 @@ impl Compiler {
 
         while let Some(token_result) = iter.next() {
             match token_result {
-                Ok((token, (line, start, end))) => {
+                Ok((
+                    token,
+                    TokenTriple {
+                        line,
+                        col,
+                        index,
+                        length,
+                    },
+                )) => {
+                    let start = index;
                     // Add any whitespace/newlines between tokens to maintain formatting
                     if start > last_pos {
                         let between = &source[last_pos..start];
-                        indented.push_str(between);
-                        
+                        // indented.push_str(between);
+
+                        println!(">>{}<<",between);
                         // Track if we're at the start of a new line
                         if between.contains('\n') {
+                            indented.push('\n');
                             at_line_start = true;
+                        }else{
+                            indented.push_str(between);
                         }
                     }
 
@@ -853,38 +880,57 @@ impl Compiler {
                             _ => {}
                         }
 
-                        // Add the indentation
                         for _ in 0..indent_level {
-                            indented.push_str("  ");
+                            indented.push_str("___");
                         }
                         at_line_start = false;
                     }
 
-                    // Categorize the token and add to map
                     let token_type = match &token {
-                        // Keywords (type 0)
-                        Token::Local | Token::Global | Token::Function | Token::If | Token::Then |
-                        Token::Else | Token::ElseIf | Token::End | Token::While | Token::Do |
-                        Token::For | Token::Return | Token::Print | Token::Goto => 0,
-                        
-                        // Identifiers (type 1)
-                        Token::Identifier(_) | Token::ColonIdentifier(_) => 1,
-                        
-                        // Values (type 2) - numbers, booleans, nil
-                        Token::Integer(_) | Token::Number(_) | Token::True | Token::False | Token::Nil => 2,
-                        
-                        // Strings (type 3)
-                        Token::StringLiteral(_) => 3,
-                        
-                        // Everything else defaults to keyword for now
+                        // Keywords (type 1)
+                        Token::Local
+                        | Token::Global
+                        | Token::Function
+                        | Token::If
+                        | Token::Then
+                        | Token::Else
+                        | Token::ElseIf
+                        | Token::End
+                        | Token::While
+                        | Token::Do
+                        | Token::For
+                        | Token::Return
+                        | Token::Print
+                        | Token::Goto => 1,
+
+                        // Ops (type 2)
+                        Token::Op(_) => 2,
+
+                        // Values (type 3) - numbers
+                        Token::Integer(_) | Token::Number(_) => 3,
+
+                        // Values (type 4) - bool
+                        Token::True | Token::False => 4,
+
+                        // Values (type 5) - nil
+                        Token::Nil => 5,
+
+                        // Strings (type 6)
+                        Token::StringLiteral(_) => 6,
+                        // Comment (type 7)
+                        Token::Comment => 7,
+
+                        // Everything else that's not a comment
                         _ => 0,
                     };
 
                     // Only add non-whitespace tokens to the map
                     if !matches!(token, Token::EOF) {
-                        let token_str = &source[start..end];
+                        // println!("start len {} {}", start, length);
+                        let token_str = &source[start..start + length];
+                        println!("~{}~",token_str);
                         if !token_str.trim().is_empty() {
-                            map.push((start, end - start, token_type));
+                            map.push((start, length, token_type));
                             indented.push_str(token_str);
                         }
                     }
@@ -897,7 +943,7 @@ impl Compiler {
                         _ => {}
                     }
 
-                    last_pos = end;
+                    last_pos = start + length;
                 }
                 Err(_) => {
                     // Skip error tokens but continue processing
@@ -959,8 +1005,8 @@ impl Compiler {
         loop {
             let c = self.peek_result(it);
             let rule = match c {
-                Ok((Token::EOF, _)) => break,
-                Ok((t, _)) => Self::get_rule(t),
+                Ok(&Token::EOF) => break,
+                Ok(t) => Self::get_rule(t),
                 Err(e) => {
                     return Err(e.clone());
                 }

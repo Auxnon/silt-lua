@@ -1,11 +1,14 @@
+-- test
+
 function fun(g)
-	local a = test_ent()
+local a = test_ent()
 	print("we made ent")
 	print("it has " .. a.x)
-	print("it has " .. g)
-	-- a.x=10
-	-- print("it has "..a.x)
+	print("it has " .. g) 
+    -- test
+    if true or nil then
 	local b = { x = 8, y = 7, z = 6 }
+    end
 	a:pos(b)
 	return a.x
 end
