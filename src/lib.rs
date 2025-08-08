@@ -16,7 +16,9 @@ pub mod userdata;
 pub mod value;
 pub extern crate gc_arena;
 
-pub use self::{compiler::Compiler, error::SiltError as LuaError, value::Value, value::ExVal, lua::Lua, lua::VM};
+pub use self::{
+    compiler::Compiler, error::SiltError as LuaError, lua::Lua, lua::VM, value::ExVal, value::Value,
+};
 
 #[cfg(feature = "vectors")]
 pub mod vec;
@@ -69,13 +71,16 @@ pub fn run(source: &str) -> String {
     }
 }
 
-pub fn lsp(source: &str) -> Result<JsValue, JsError>{
-let mut compiler = Compiler::new();
-    let mut lua = Lua::new_with_standard();
-    match lua.run(source, &mut compiler) {
-        Ok(v) => Ok(v.to_string().into()),
-        Err(e) => Err(JsError::new(&e[0].to_string())),
-    }
+#[wasm_bindgen]
+pub fn lsp(source: &str, format: Option<bool> ) -> Result<JsValue, JsError> {
+    let mut compiler = Compiler::new();
+    let obj = compiler.lsp(source, format.unwrap_or(false));
+    Ok(serde_wasm_bindgen::to_value(&obj)?)
+    // let mut lua = Lua::new_with_standard();
+    // match lua.run(source, &mut compiler) {
+    //     Ok(v) => Ok(v.to_string().into()),
+    //     Err(e) => Err(JsError::new(&e[0].to_string())),
+    // }
     // Err(JsError::new("failed to run LSP"))
 }
 
@@ -359,8 +364,6 @@ mod tests {
             ExVal::Integer(7)
         );
     }
-
-    
 
     #[test]
     fn string_infererence() {

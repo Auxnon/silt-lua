@@ -235,7 +235,7 @@ struct ParseRule {
     precedence: Precedence,
 }
 
-const WORD_MAP: [&str; 4] = ["keyword", "value", "string", "ident"];
+const WORD_MAP: [&str; 7] = ["keyword", "op", "number", "bool", "nil", "string", "comment"];
 
 // type LSPIndent =(usize, usize);
 // start, length, type
@@ -244,7 +244,7 @@ type LSPFormatMark = (usize, usize, u8);
 #[derive(Serialize, Deserialize)]
 pub struct LanguageServerOutput<'c> {
     #[serde(borrow)]
-    legend: [&'c str; 4],
+    legend: [&'c str; 7],
     map: Vec<LSPFormatMark>,
     indented: String, // indents: Vec<IndentMark>,
 }
@@ -831,12 +831,13 @@ impl Compiler {
         }
     }
 
-    pub fn lsp(&mut self, source: &str) -> LanguageServerOutput {
+    pub fn lsp(&mut self, source: &str, format: bool) -> LanguageServerOutput {
         let mut map = Vec::new();
         let mut indented = String::new();
         let mut indent_level = 0;
         let mut at_line_start = true;
         let mut last_pos = 0;
+        let mut offset: isize = 0;
 
         let lexer = Lexer::new(source);
         let mut iter = lexer.peekable();
@@ -854,22 +855,27 @@ impl Compiler {
                 )) => {
                     let start = index;
                     // Add any whitespace/newlines between tokens to maintain formatting
-                    if start > last_pos {
+                    if start > last_pos && format {
                         let between = &source[last_pos..start];
                         // indented.push_str(between);
 
-                        println!(">>{}<<",between);
+                        println!(">>{}<<", between);
                         // Track if we're at the start of a new line
                         if between.contains('\n') {
-                            indented.push('\n');
+                            let squash: String = between
+                                .chars()
+                                .filter(|c| !c.is_whitespace() || *c == '\n')
+                                .collect();
+                            offset -= (between.len() as isize) - squash.len() as isize;
+                            indented.push_str(&squash);
                             at_line_start = true;
-                        }else{
+                        } else {
                             indented.push_str(between);
                         }
                     }
 
                     // Add indentation at the start of new lines
-                    if at_line_start && !matches!(token, Token::EOF) {
+                    if format && at_line_start && !matches!(token, Token::EOF) {
                         // Adjust indent level based on token
                         match &token {
                             Token::End | Token::Else | Token::ElseIf => {
@@ -881,7 +887,7 @@ impl Compiler {
                         }
 
                         for _ in 0..indent_level {
-                            indented.push_str("___");
+                            indented.push('\t');
                         }
                         at_line_start = false;
                     }
@@ -904,7 +910,7 @@ impl Compiler {
                         | Token::Goto => 1,
 
                         // Ops (type 2)
-                        Token::Op(_) => 2,
+                        Token::Op(_) | Token::Assign => 2,
 
                         // Values (type 3) - numbers
                         Token::Integer(_) | Token::Number(_) => 3,
@@ -928,19 +934,29 @@ impl Compiler {
                     if !matches!(token, Token::EOF) {
                         // println!("start len {} {}", start, length);
                         let token_str = &source[start..start + length];
-                        println!("~{}~",token_str);
+                        println!("~{}~", token_str);
                         if !token_str.trim().is_empty() {
-                            map.push((start, length, token_type));
-                            indented.push_str(token_str);
+                            let i: usize = if offset < 0 {
+                                start.checked_sub(offset.wrapping_abs() as usize)
+                            } else {
+                                start.checked_add(offset as usize)
+                            }
+                            .unwrap_or(0);
+                            map.push((i, length, token_type));
+                            if format {
+                                indented.push_str(token_str);
+                            }
                         }
                     }
 
-                    // Adjust indent level for tokens that increase nesting
-                    match &token {
-                        Token::Then | Token::Do | Token::Function => {
-                            indent_level += 1;
+                    if format {
+                        // Adjust indent level for tokens that increase nesting
+                        match &token {
+                            Token::Then | Token::Do | Token::Function => {
+                                indent_level += 1;
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
 
                     last_pos = start + length;
@@ -952,9 +968,13 @@ impl Compiler {
             }
         }
 
-        // Add any remaining content after the last token
-        if last_pos < source.len() {
-            indented.push_str(&source[last_pos..]);
+        if format {
+            // Add any remaining content after the last token
+            if last_pos < source.len() {
+                indented.push_str(&source[last_pos..]);
+            }
+        } else {
+            indented = source.to_owned();
         }
 
         LanguageServerOutput {

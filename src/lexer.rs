@@ -229,7 +229,7 @@ impl<'c> Lexer<'c> {
 
     fn string(&mut self, apos: bool) -> TokenOption {
         // start column at '"' not within string starter
-        self.column_start = self.column;
+        self.column_start = self.column-1;
         self.eat();
         self.start_token = self.current;
         while self.current < self.end {
@@ -477,9 +477,9 @@ impl<'c> Lexer<'c> {
                                     }
                                 }
 
-                                self.current-=1;
+                                // self.current-=1;
                                 let t=self.send(Token::Comment);
-                                self.current+=1;
+                                // self.current+=1;
                                 t
                             }
                         }
