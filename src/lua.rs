@@ -17,7 +17,7 @@ use crate::{
     function::{CallFrame, Closure, FunctionObject, NativeFunctionRef, UpValue, WrappedFn},
     prelude::UserData,
     table::Table,
-    userdata::{MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
+    userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
     value::{ExVal, Value},
 };
 
@@ -331,7 +331,7 @@ impl<'gc> Lua {
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
     pub fn call(&mut self, index: usize) -> LuaResult {
-        self.arena.mutate_root(|mc, vm| vm.call_by_index(mc, index))
+        self.arena.mutate_root(|mc, vm| vm.call_fn(mc, index))
     }
 
     //     pub fn register<N>(&mut self, name: &str, function: N)
@@ -510,7 +510,14 @@ impl<'gc> VM<'gc> {
         // out
     }
 
-    pub fn build_and_run(&mut self, mc: &Mutation<'gc>, name: Option<String>, code: &str, compiler: &mut Compiler) -> Result<ExVal,  Vec<ErrorTuple>> {
+    /// compile and run lua once
+    pub fn build_and_run(
+        &mut self,
+        mc: &Mutation<'gc>,
+        name: Option<String>,
+        code: &str,
+        compiler: &mut Compiler,
+    ) -> Result<ExVal, Vec<ErrorTuple>> {
         match compiler.try_compile(mc, name, code) {
             Ok(f) => {
                 let fun = Gc::new(mc, f);
@@ -520,6 +527,9 @@ impl<'gc> VM<'gc> {
         }
     }
 
+    /// run through the full program again, keeping previous state. This will redeclare top level
+    /// code too. Ideally you will want to directly run a function via call_by_index after load_fn
+    /// or store_fn
     pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, Vec<ErrorTuple>> {
         match self.execute(mc, self.root) {
             Ok(v) => Ok(v),
@@ -1512,7 +1522,8 @@ impl<'gc> VM<'gc> {
     //     new_frame
     // }
 
-    pub fn call_by_index(&mut self, mc: &Mutation<'gc>, u: usize) -> LuaResult {
+    /// call a previously stored function by it's index
+    pub fn call_fn(&mut self, mc: &Mutation<'gc>, u: usize, ) -> LuaResult {
         match self.external_functions.get(u) {
             Some(f) => self.run(mc, *f),
             None => Err(vec![ErrorTuple {
@@ -1773,14 +1784,16 @@ impl<'gc> VM<'gc> {
     pub fn testy<'a>(&mut self, mc: &'a Mutation<'gc>, name: &str) {}
 
     /** Register a native function on the global table  */
-    pub fn register_native_function<'a>(
+    pub fn register_native_function<'a, F>(
         &mut self,
         mc: &'a Mutation<'gc>,
         name: &str,
-        function: NativeFunctionRef<'gc>,
-    )
-    // where
-    //         N: for <'a, 'b> Fn(&'a mut VM<'gc>, &'b Mutation<'gc>, Vec<Value<'gc>>)-> Value<'gc>,
+        function: F,
+    ) where
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static, // pub type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a> + 'a;
+
+                                                                                            // where
+                                                                                            //         N: for <'a, 'b> Fn(&'a mut VM<'gc>, &'b Mutation<'gc>, Vec<Value<'gc>>)-> Value<'gc>,
     {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
@@ -1809,12 +1822,19 @@ impl<'gc> VM<'gc> {
     }
 
     /** Load standard library functions */
-    pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
+    pub fn load_standard_library<'a>(&mut self, mc: &Mutation<'gc>) {
+        // <fn(VM,Mutation,Vec<Value>)>
+        // // ::<'a, &'static fn(&VM,&Mutation,Vec<Value>)->InnerResult<'gc>>
         self.register_native_function(mc, "clock", &crate::standard::clock);
         self.register_native_function(mc, "print", &crate::standard::print);
         self.register_native_function(mc, "setmetatable", &crate::standard::setmetatable);
         self.register_native_function(mc, "getmetatable", &crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", &crate::standard::test_ent);
+        // let  test = Box::new(5);
+        // self.register_native_function(mc, "test_closure", move |_, _, _| {
+        //     // (*test) += 5;
+        //     Ok((*test).into())
+        // });
     }
 
     /// Clean up dropped UserData references from the userdata_stack

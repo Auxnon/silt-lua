@@ -9,11 +9,7 @@ use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 #[cfg(feature = "vectors")]
 use crate::vec::{Vec2, Vec3};
 use crate::{
-    error::{SiltError, ValueTypes},
-    function::{Closure, FunctionObject, NativeFunctionRc, NativeFunctionRef, WrappedFn},
-    lua::VM,
-    table::Table,
-    userdata::{MetaMethod, UserDataWrapper},
+    error::{SiltError, ValueTypes}, function::{Closure, FunctionObject, NativeFunctionRc, NativeFunctionRef, WrappedFn}, lua::VM, prelude::UserData, table::Table, userdata::{MetaMethod, UserDataWrapper}
 };
 
 /**

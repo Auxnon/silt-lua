@@ -67,6 +67,11 @@ pub enum SiltError {
     VmNonTableOperations(ValueTypes),
 
     Unknown,
+
+    // Generic custom enums
+    Custom(String),
+    Network(String),
+    IO(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,6 +241,9 @@ impl std::fmt::Display for SiltError {
                 write!(f, "UserData type mismatch during method or field access")
             }
             SiltError::UDBadCast => write!(f, "UserData bad downcast"),
+            SiltError::Custom(s)=> write!(f, "{}",s),
+            SiltError::Network(s)=> write!(f, "Network Error; {}",s),
+            SiltError::IO(s)=> write!(f, "Input Output Error; {}",s),
         }
     }
 }
