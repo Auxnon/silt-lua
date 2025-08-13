@@ -331,7 +331,16 @@ impl<'gc> Lua {
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
     pub fn call(&mut self, index: usize) -> LuaResult {
-        self.arena.mutate_root(|mc, vm| vm.call_fn(mc, index))
+        self.call_with_params(index, vec![])
+    }
+
+    /// call an internal function by index with parameters
+    pub fn call_with_params(&mut self, index: usize, params: Vec<ExVal>) -> LuaResult {
+        self.arena.mutate_root(|mc, vm| {
+            // Convert ExVal parameters to Value parameters
+            let vm_params: Vec<Value> = params.into_iter().map(|p| p.into()).collect();
+            vm.call_fn(mc, index, vm_params)
+        })
     }
 
     //     pub fn register<N>(&mut self, name: &str, function: N)
@@ -1522,10 +1531,20 @@ impl<'gc> VM<'gc> {
     //     new_frame
     // }
 
-    /// call a previously stored function by it's index
-    pub fn call_fn(&mut self, mc: &Mutation<'gc>, u: usize, ) -> LuaResult {
+    /// call a previously stored function by it's index with optional parameters
+    pub fn call_fn(&mut self, mc: &Mutation<'gc>, u: usize, params: Vec<Value<'gc>>) -> LuaResult {
         match self.external_functions.get(u) {
-            Some(f) => self.run(mc, *f),
+            Some(f) => {
+                // Create ephemeral pointer for stack operations
+                let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr().add(self.stack_count));
+                
+                // Push parameters onto the stack
+                for param in params {
+                    self.push(&mut ep, param);
+                }
+                
+                self.run(mc, *f)
+            },
             None => Err(vec![ErrorTuple {
                 code: SiltError::Unknown,
                 location: (0, 0),
