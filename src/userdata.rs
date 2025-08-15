@@ -46,7 +46,7 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a method that can mutate the UserData
     fn add_method_mut<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F>(&mut self, name: &str, closure: F)
@@ -117,7 +117,7 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
     methods: HashMap<
         String,
-        Box<dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc>,
+        Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc>,
     >,
     method_cache: Vec<NativeFunctionRc<'gc>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
@@ -393,7 +393,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
 
     fn add_method_mut<F>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc,
     {
         // let func: UserDataMethodFn<T> = |vm, mc, ud, args| Err(SiltError::Unknown);
         self.methods.insert(name.to_string(), Box::new(closure));
