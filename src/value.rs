@@ -9,7 +9,12 @@ use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 #[cfg(feature = "vectors")]
 use crate::vec::{Vec2, Vec3};
 use crate::{
-    error::{SiltError, ValueTypes}, function::{Closure, FunctionObject, NativeFunctionRc, NativeFunctionRef, WrappedFn}, lua::VM, prelude::UserData, table::Table, userdata::{MetaMethod, UserDataWrapper}
+    error::{SiltError, ValueTypes},
+    function::{Closure, FunctionObject, NativeFunctionRc, NativeFunctionRef, WrappedFn},
+    lua::VM,
+    prelude::UserData,
+    table::Table,
+    userdata::{MetaMethod, UserDataWrapper},
 };
 
 /**
@@ -91,6 +96,26 @@ pub enum ExVal {
     Vec3(Vec3),
     #[cfg(feature = "vectors")]
     Vec2(Vec2),
+}
+
+impl ExVal {
+    pub fn into_value<'g>(
+        &self,
+        vm: &mut VM<'g>,
+        mc: &Mutation<'g>,
+    ) -> Result<Value<'g>, SiltError> {
+        Ok(match self {
+            ExVal::Nil => Value::Nil,
+            ExVal::Bool(b) => Value::Bool(*b),
+            ExVal::Number(n) => Value::Number(*n),
+            ExVal::String(s) => Value::String(s.to_owned()),
+            ExVal::Table(t) => vm.convert_table(mc, t)?,
+            ExVal::Integer(i) => Value::Integer(*i),
+            ExVal::Infinity(b) => Value::Infinity(*b),
+            ExVal::UserData(ud) => return Err(SiltError::VmValBadConvert(ValueTypes::UserData)),
+            ExVal::Meta(_) => return Err(SiltError::VmValBadConvert(ValueTypes::Function)),
+        })
+    }
 }
 
 pub enum MultiVal<'a, 'b> {
@@ -426,7 +451,7 @@ impl From<&Value<'_>> for f64 {
 impl Eq for Value<'_> {}
 
 pub trait ToLua<'lua>: Sized + 'static {
-    fn to_lua(self, lua: &'lua VM, mc: &Mutation) -> Result<Value<'lua>, SiltError>;
+    fn to_lua(&self, lua: &'lua VM, mc: &Mutation) -> Result<Value<'lua>, SiltError>;
 }
 
 /// Trait for types convertible from `Value`.
@@ -434,23 +459,103 @@ pub trait FromLua<'lua>: Sized {
     fn from_lua(lua_value: Value<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
 }
 
-#[derive(Debug, Clone)]
-pub struct MultiValue<'lua>(Vec<Value<'lua>>);
+// #[derive(Debug, Clone)]
+// pub struct MultiValue<'lua>(Vec<Value<'lua>>);
+type Values<'a> = Vec<Value<'a>>;
+type ValuesResult<'a> = Result<Values<'a>, SiltError>;
 
-pub trait ToLuaMulti<'lua> {
-    fn to_lua_multi(self, lua: &'lua VM) -> Result<MultiValue<'lua>, SiltError>;
+pub trait ToLuaMulti<'a> {
+    fn to_lua_multi(self, lua: &VM<'a>, mc: &Mutation) -> ValuesResult<'a>;
 }
 
-pub trait FromLuaMulti<'lua>: Sized {
-    fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
+impl<'a, A, I> ToLuaMulti<'a> for I
+where
+    I: IntoIterator<Item = A>,
+    A: Into<Value<'a>>,
+    I: NotSingle,
+{
+    fn to_lua_multi(self, _: &VM<'a>, _: &Mutation) -> ValuesResult<'a> {
+        let mut bucket = vec![];
+        for v in self.into_iter() {
+            bucket.push(v.into())
+        }
+        Ok(bucket)
+    }
 }
 
+trait NotSingle {}
+// impl<T> NotSingle for Vec<T>{}
+// impl<T, const N: usize> NotSingle for [ T; N ]{}
+// impl<T> NotSingle for &[T] {}
+// impl NotSingle for std::ops::Range<i32>{}
+// impl NotSingle for std::ops::Range<usize>{}
+// impl NotSingle for std::ops::Range<i64>{}
+// impl NotSingle for std::ops::RangeInclusive<i32>{}
+// impl NotSingle for std::ops::RangeInclusive<usize>{}
+// impl NotSingle for std::ops::RangeInclusive<i64>{}
+
+// impl<'a, A> ToLuaMulti<'a> for A
+// where
+//     A: Into<Value<'a>>,
+// {
+//     fn to_lua_multi(self, _: &VM<'a>, _: &Mutation<'a>) -> ValuesResult<'a> {
+//         Ok(vec![self.into()])
+//     }
+// }
+//
+
+impl<'a> ToLuaMulti<'a> for Vec<()> {
+    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
+        Ok(vec![])
+    }
+}
+
+impl<'a, A, B> ToLuaMulti<'a> for (A, B)
+where
+    A: Into<Value<'a>>,
+    B: Into<Value<'a>>,
+{
+    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
+        Ok(vec![self.0.into(), self.1.into()])
+    }
+}
+
+impl<'a, A, B, C> ToLuaMulti<'a> for (A, B, C)
+where
+    A: Into<Value<'a>>,
+    B: Into<Value<'a>>,
+    C: Into<Value<'a>>,
+{
+    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
+        Ok(vec![self.0.into(), self.1.into(), self.2.into()])
+    }
+}
+
+impl<'a, A, B, C, D> ToLuaMulti<'a> for (A, B, C, D)
+where
+    A: Into<Value<'a>>,
+    B: Into<Value<'a>>,
+    C: Into<Value<'a>>,
+    D: Into<Value<'a>>,
+{
+    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
+        Ok(vec![
+            self.0.into(),
+            self.1.into(),
+            self.2.into(),
+            self.3.into(),
+        ])
+    }
+}
+// pub trait FromLuaMulti<'lua>: Sized {
+//     fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
+// }
 
 // pub trait FromValue: Sized {
 //     fn from_value(value: Value) -> Result<Self, SiltError>;
 // }
 #[derive(Debug)]
-pub struct Variadic<'a,T> {
+pub struct Variadic<'a, T> {
     values: Vec<Value<'a>>,
     _phantom: std::marker::PhantomData<T>,
 }

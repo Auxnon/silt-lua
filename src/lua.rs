@@ -16,9 +16,9 @@ use crate::{
     error::{ErrorTuple, SiltError, ValueTypes},
     function::{CallFrame, Closure, FunctionObject, NativeFunctionRef, UpValue, WrappedFn},
     prelude::UserData,
-    table::Table,
+    table::{ExTable, Table},
     userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
-    value::{ExVal, Value},
+    value::{ExVal, ToLuaMulti, Value},
 };
 
 /** Convert Integer to Float, lossy for now */
@@ -335,12 +335,15 @@ impl<'gc> Lua {
     }
 
     /// call an internal function by index with parameters
-    pub fn call_with_params(&mut self, index: usize, params: Vec<ExVal>) -> LuaResult {
+    pub fn call_with_params<T>(&mut self, index: usize, params: T) -> LuaResult
+    where
+        T: for<'e> ToLuaMulti<'e>,
+    {
         self.arena.mutate_root(|mc, vm| {
-            // Convert ExVal parameters to Value parameters
-            let vm_params: Vec<Value> = params.into_iter().map(|p| p.into()).collect();
-            vm.call_fn(mc, index, vm_params)
-        })
+            vm.call_fn(mc, index, params);
+        });
+        // rr
+        Ok(ExVal::Nil)
     }
 
     //     pub fn register<N>(&mut self, name: &str, function: N)
@@ -614,12 +617,19 @@ impl<'gc> VM<'gc> {
         self.stack[i].clone()
     }
 
+    /// push value to stack
     pub(crate) fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
+        VM::push_raw(ep, value);
+        self.stack_count += 1;
+    }
+
+    /// push value to stack without stack adjustment (convenience for mutable reference hiccups)
+    fn push_raw<'e>(ep: &mut Ephemeral<'e, 'gc>, value: Value<'gc>) {
         devout!(" | push: {}", value);
         unsafe { ep.ip.write(value) };
         ep.ip = unsafe { ep.ip.add(1) };
-        self.stack_count += 1;
     }
+
     pub(crate) fn push_nils(&mut self, ep: &mut Ephemeral<'_, 'gc>, amount: usize) {
         devout!(" | push nils x{}", amount);
         // const NIL: u8 = unsafe{ std::mem::transmute::<Value, u8>(Value::Nil)};
@@ -1532,24 +1542,74 @@ impl<'gc> VM<'gc> {
     // }
 
     /// call a previously stored function by it's index with optional parameters
-    pub fn call_fn(&mut self, mc: &Mutation<'gc>, u: usize, params: Vec<Value<'gc>>) -> LuaResult {
+    pub fn call_fn<T>(&mut self, mc: &Mutation<'gc>, u: usize, params: T) -> LuaResult
+    where
+        T: for<'e> ToLuaMulti<'e>,
+    {
+        let res = match params.to_lua_multi(self, mc) {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(vec![ErrorTuple {
+                    code: e,
+                    location: (0, 0),
+                }])
+            }
+        };
+
+        let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr());
+        self.stack_count += res.len();
         match self.external_functions.get(u) {
             Some(f) => {
-                // Create ephemeral pointer for stack operations
-                let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr().add(self.stack_count));
-                
-                // Push parameters onto the stack
-                for param in params {
-                    self.push(&mut ep, param);
+                for param in res {
+                    VM::push_raw(&mut ep, param);
                 }
-                
+
                 self.run(mc, *f)
-            },
+            }
             None => Err(vec![ErrorTuple {
                 code: SiltError::Unknown,
                 location: (0, 0),
             }]),
         }
+        // Ok(ExVal::Nil)
+
+        // if !params.is_empty() {
+        //     let mut bucket = vec![];
+        //     let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr());
+        //     for ev in params.into_iter() {
+        //         match ev.into_value(self, mc) {
+        //             Ok(v) => bucket.push(v),
+        //             Err(e) => {
+        //                 return Err(vec![ErrorTuple {
+        //                     code: e,
+        //                     location: (0, 0),
+        //                 }])
+        //             }
+        //         }
+        //     }
+        //     self.stack_count += bucket.len();
+        //     match self.external_functions.get(u) {
+        //         Some(f) => {
+        //             for param in bucket {
+        //                 VM::push_raw(&mut ep, param);
+        //             }
+        //
+        //             self.run(mc, *f)
+        //         }
+        //         None => Err(vec![ErrorTuple {
+        //             code: SiltError::Unknown,
+        //             location: (0, 0),
+        //         }]),
+        //     }
+        // } else {
+        //     match self.external_functions.get(u) {
+        //         Some(f) => self.run(mc, *f),
+        //         None => Err(vec![ErrorTuple {
+        //             code: SiltError::Unknown,
+        //             location: (0, 0),
+        //         }]),
+        //     }
+        // }
     }
 
     pub(crate) fn capture_upvalue(
@@ -1640,9 +1700,17 @@ impl<'gc> VM<'gc> {
         // });
     }
 
-    fn new_table(&self, mc: &Mutation<'gc>) -> Value<'gc> {
+    /// create a new Table Value, iterating our primative table id counter
+    pub fn new_table(&self, mc: &Mutation<'gc>) -> Value<'gc> {
         let t = Table::new(*self.table_counter.borrow());
         Value::Table(Gc::new(mc, RefLock::new(t)))
+    }
+
+    /// create a new Table Value from an existing hashmap, iterates our primative table id counter
+    pub fn convert_table(&mut self, mc: &Mutation<'gc>, data: &ExTable) -> InnerResult<'gc> {
+        let id = *self.table_counter.borrow();
+        let t = Table::wrap_map(self, mc, id, data)?;
+        Ok(Value::Table(Gc::new(mc, RefLock::new(t))))
     }
 
     pub fn raw_table(&self) -> Table<'gc> {

@@ -1,11 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, vec::IntoIter};
 
-use gc_arena::Collect;
+use gc_arena::{Collect, Mutation};
 
 use crate::{
     error::SiltError,
     userdata::MetaMethod,
-    value::{ExVal, Value},
+    value::{ExVal, ToLua, Value},
+    VM,
 };
 
 #[derive(Collect)]
@@ -27,6 +28,29 @@ impl<'v> Table<'v> {
             counter: 0,
             id,
         }
+    }
+
+    pub fn wrap_map(
+        vm: &mut VM<'v>,
+        mc: &Mutation<'v>,
+        id: usize,
+        input: &ExTable,
+    ) -> Result<Table<'v>, SiltError>
+// where
+        // T: ToLua<'v>,
+    {
+        let mut data = HashMap::new();
+        for (k, v) in input.into_iter(){
+            let kk: Value = k.into_value(vm, mc)?;
+            let vv = v.into_value(vm, mc)?;
+            data.insert(kk, vv);
+        }
+        Ok(Table {
+            data,
+            meta: None,
+            counter: 0,
+            id,
+        })
     }
 
     pub fn insert<'f>(&mut self, key: Value<'v>, value: Value<'v>) {
@@ -92,7 +116,7 @@ impl<'v> Table<'v> {
     }
 
     pub fn set_metatable(&mut self, metatable: Value<'v>) {
-        println!("setting metatable: {}", metatable);
+        // println!("setting metatable: {}", metatable);
         self.meta = Some(metatable);
     }
 
@@ -101,15 +125,15 @@ impl<'v> Table<'v> {
     }
 
     pub fn by_meta_method(&self, method: MetaMethod) -> Result<Value<'v>, SiltError> {
-        println!("meta: {}", self.meta.clone().unwrap_or(Value::Nil));
+        // println!("meta: {}", self.meta.clone().unwrap_or(Value::Nil));
         if let Some(Value::Table(t)) = &self.meta {
             let s = method.as_table_key().to_string();
-            println!("looking for meta method: {}", s);
+            // println!("looking for meta method: {}", s);
             if let Some(func) = t
                 .borrow()
                 .get(Value::String(method.as_table_key().to_string()))
             {
-                println!("found meta method: {}", func);
+                // println!("found meta method: {}", func);
                 return if let Value::Closure(_) = func {
                     Ok(func.clone())
                 } else {
@@ -169,5 +193,25 @@ impl ToString for ExTable {
                 .collect::<Vec<String>>()
                 .join(", ")
         )
+    }
+}
+
+impl IntoIterator for ExTable{
+    type Item = (ExVal, ExVal);
+    type IntoIter = std::collections::hash_map::IntoIter<ExVal,ExVal>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.into_iter()
+        
+    }
+}
+
+impl <'a> IntoIterator for &'a ExTable{
+    type Item = (&'a ExVal, &'a ExVal);
+    type IntoIter = std::collections::hash_map::Iter<'a,ExVal,ExVal>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.iter()
+        
     }
 }

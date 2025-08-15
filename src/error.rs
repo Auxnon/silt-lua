@@ -65,6 +65,7 @@ pub enum SiltError {
     VmCorruptConstant,
     VmUpvalueResolveError,
     VmNonTableOperations(ValueTypes),
+    VmValBadConvert(ValueTypes),
 
     Unknown,
 
@@ -223,6 +224,8 @@ impl std::fmt::Display for SiltError {
             Self::VmCompileError => write!(f, "Error compiling chunk"),
             Self::VmRuntimeError => write!(f, "Runtime error for chunk"),
             Self::VmCorruptConstant => write!(f, "Constant store corrupted"),
+            Self::VmValBadConvert(t)=> write!(f, "Impossible to convert from \"{}\"",t),
+
             Self::Unknown => write!(f, "Unknown error"),
             SiltError::MetaMethodMissing(meta_method) => {
                 write!(f, "Meta method missing for '{}'", meta_method)
