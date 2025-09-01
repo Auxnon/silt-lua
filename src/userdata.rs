@@ -1,10 +1,6 @@
 use core::f64;
 use std::{
-    any::Any,
-    collections::HashMap,
-    marker::PhantomData,
-    rc::Rc,
-    sync::{Arc, Mutex, Weak},
+    any::Any, collections::HashMap, error::Error, marker::PhantomData, rc::Rc, sync::{Arc, Mutex, Weak}
 };
 
 use colored::Colorize;
@@ -117,7 +113,9 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
     methods: HashMap<
         String,
-        Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc>,
+        Box<
+            dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc,
+        >,
     >,
     method_cache: Vec<NativeFunctionRc<'gc>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
@@ -599,10 +597,28 @@ impl UserDataWrapper {
         format!("{} userdata (id: {})", self.type_name, self.id)
     }
 
-    // pub fn downcast_mut<'a, 'b: 'a, T>(&'b mut self) -> &'a mut T {
-    //     self.data.lock().unwrap().downcast_mut::<T>().unwrap()
+    fn to_silt<T>(e: Result<T, impl Error>, res: SiltError) -> Result<T, SiltError> {
+        match e {
+            Ok(t) => Ok(t),
+            Err(_) => Err(res),
+        }
+    }
+
+    // pub fn lock()
+
+    // pub fn downcast_mut2<'a, 'b: 'a, T:'static>(&'b mut self) -> Result<&'a mut T, SiltError> {
+    //     let mut i = Self::to_silt(self.data.lock(),SiltError::UDNoMap)?;
+    //     (*i).downcast_mut::<T>().ok_or(SiltError::Unknown)
+    //     // self.data.lock().unwrap().downcast_mut::<T>().unwrap()
     //     //.downcast_mut::<T>()
     // }
+    // pub fn 
+pub fn downcast_mut<'a, 'b: 'a, T: 'static>(&mut self, apply: fn(&T)->Result<(),SiltError>) -> Result<(), SiltError> {
+        let mut i = Self::to_silt(self.data.lock(),SiltError::UDNoMap)?;
+        let ud=(*i).downcast_mut::<T>().ok_or(SiltError::Unknown)?;
+        apply(ud)
+        //.downcast_mut::<T>()
+    }
 }
 
 // impl Deref for UserDataWrapper {

@@ -305,6 +305,16 @@ impl<'v> Value<'v> {
         // Ok(())
     }
 
+    pub fn apply_userdata<T>(&mut self, mc: &Mutation<'v>, apply: fn(&T)->Result<(),SiltError>)->Result<(),SiltError>
+        where 
+            T: UserData,
+    {
+        if let Value::UserData(udw)= self{
+           return udw.borrow_mut(mc).downcast_mut( apply) ;
+        }
+        Err(SiltError::UDBadCast)
+    }
+
     pub fn clone(&self) -> Value<'v> {
         match self {
             Value::Integer(i) => Value::Integer(*i),
@@ -447,6 +457,15 @@ impl From<&Value<'_>> for f64 {
         }
     }
 }
+
+// impl From<Value<'_>> for &mut UserDataWrapper{
+//     fn from(value: Value<'_>) -> Self {
+//         if let Value::UserData(ud)=value {
+//             ud.borrow_mut(mc)
+//
+//         }
+//     }
+// }
 
 impl Eq for Value<'_> {}
 

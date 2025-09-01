@@ -133,14 +133,14 @@ pub fn make_userdata<'lua>(
     vm: &mut VM<'lua>,
     mc: &Mutation<'lua>,
     args: Vec<Value<'lua>>,
-) -> Value<'lua> {
+) -> Result<Value<'lua>,LuaError> {
     // Register the Counter type with the VM
     // vm.register_userdata_type::<Counter>();
 
     // Create a Counter instance
     let counter = Counter::new();
 
-    vm.create_userdata(mc, counter)
+    Ok(vm.create_userdata(mc, counter))
 
     // Now in Lua code, you can use:
     // counter:increment()
