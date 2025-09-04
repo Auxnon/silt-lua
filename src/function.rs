@@ -8,7 +8,7 @@ use crate::{
     error::SiltError,
     lua::{Ephemeral, VM},
     userdata::InnerResult,
-    value::Value,
+    value::{FromLuaMulti, ToLuaMulti, Value},
 };
 
 /////////////
@@ -260,10 +260,42 @@ impl Display for FunctionObject<'_> {
 //     pub function: NativeFunction<'static>,
 // }
 
-pub type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a> + 'a;
+// pub type NativeFunctionRaw<'a, T: FromLuaMulti<'a>> =
+//     dyn Fn(&mut VM<'a>, &Mutation<'a>, impl FromLuaMulti<'a>) -> InnerResult<'a> + 'a;
+
+// pub type NativeFunctionRaw<'a> = NativeFunctionS<'a>;
+
 pub type NativeFunctionRef<'a> = &'a NativeFunctionRaw<'a>;
 pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
 // pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
+
+pub struct NativeFunctionRaw<'a> {
+    func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> InnerResult<'a> + 'a>,
+}
+
+impl<'a> NativeFunctionRaw<'a> {
+    pub fn new<T, F>(f: F) -> Self
+    where
+        T: FromLuaMulti<'a>,
+        F: Fn(&mut VM<'a>, &Mutation<'a>, T) -> InnerResult<'a> + 'a,
+    {
+        Self {
+            func: Box::new(move |vm, mutation, raw_args| {
+                let args = T::from_lua_multi(raw_args, vm, mutation)?;
+                f(vm, mutation, args)
+            }),
+        }
+    }
+
+    pub fn call(
+        &self,
+        vm: &mut VM<'a>,
+        mutation: &Mutation<'a>,
+        args: &[Value<'a>],
+    ) -> InnerResult<'a> {
+        (self.func)(vm, mutation, args)
+    }
+}
 
 // native        (vm, mc, val[])-> res
 // meth          (vm, mc, &ud, val[])-> res
@@ -273,22 +305,20 @@ pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
 pub struct WrappedFn<'gc> {
     // pub f: Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc>>, // used exclusively by userdata, a bit of a hack
     pub f: NativeFunctionRc<'gc>,
-                                   // pub meta: u8
+    // pub meta: u8
 }
 
 impl<'gc> WrappedFn<'gc> {
-
-    pub fn new(callback: Rc< dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc> +'gc>) -> Self {
+    pub fn new(
+        // callback: Rc<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, T) -> InnerResult<'gc> + 'gc>,
+        callback: NativeFunctionRc<'gc>,
+    ) -> Self {
         Self { f: callback }
     }
 
-    pub fn call(
-        &self,
-        vm: &mut VM<'gc>,
-        mc: &Mutation<'gc>,
-        args: Vec<Value<'gc>>,
-    ) -> InnerResult<'gc> {
-        (self.f)(vm, mc, args)
+    pub fn call(&self, vm: &mut VM<'gc>, mc: &Mutation<'gc>, args: &[Value<'gc>]) -> InnerResult<'gc>
+    {
+        (self.f.func)(vm, mc, args)
     }
 }
 

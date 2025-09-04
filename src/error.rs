@@ -66,6 +66,7 @@ pub enum SiltError {
     VmUpvalueResolveError,
     VmNonTableOperations(ValueTypes),
     VmValBadConvert(ValueTypes),
+    VmNativeParameterMismatch,
 
     Unknown,
 
@@ -225,6 +226,7 @@ impl std::fmt::Display for SiltError {
             Self::VmRuntimeError => write!(f, "Runtime error for chunk"),
             Self::VmCorruptConstant => write!(f, "Constant store corrupted"),
             Self::VmValBadConvert(t)=> write!(f, "Impossible to convert from \"{}\"",t),
+            Self::VmNativeParameterMismatch=>write!(f, "Cannot call native function with available parameters"), 
 
             Self::Unknown => write!(f, "Unknown error"),
             SiltError::MetaMethodMissing(meta_method) => {

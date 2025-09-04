@@ -3,10 +3,10 @@ use gc_arena::Mutation;
 use crate::{
     prelude::VM,
     userdata::{InnerResult, TestEnt},
-    value::Value,
+    value::{Value, FromLuaMulti},
 };
 
-pub fn clock<'lua>(_: &mut VM, _: &Mutation<'lua>, _: Vec<Value>) -> InnerResult<'lua> {
+pub fn clock<'lua>(_: &mut VM<'lua>, _: &Mutation<'lua>, _: Vec<Value<'lua>>) -> InnerResult<'lua> {
     Ok(Value::Number(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

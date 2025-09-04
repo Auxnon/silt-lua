@@ -1,6 +1,11 @@
 use core::f64;
 use std::{
-    any::Any, collections::HashMap, error::Error, marker::PhantomData, rc::Rc, sync::{Arc, Mutex, Weak}
+    any::Any,
+    collections::HashMap,
+    error::Error,
+    marker::PhantomData,
+    rc::Rc,
+    sync::{Arc, Mutex, Weak},
 };
 
 use colored::Colorize;
@@ -204,7 +209,8 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
                 }
                 Err(SiltError::UDBadCast)
             };
-            let r = Rc::new(native_fn);
+            let raw = NativeFunctionRaw::new(native_fn);
+            let r = Rc::new(raw);
             self.method_cache.push(r.clone());
             self.getters.insert(
                 st.to_string(),
@@ -612,10 +618,13 @@ impl UserDataWrapper {
     //     // self.data.lock().unwrap().downcast_mut::<T>().unwrap()
     //     //.downcast_mut::<T>()
     // }
-    // pub fn 
-pub fn downcast_mut<'a, 'b: 'a, T: 'static>(&mut self, apply: fn(&T)->Result<(),SiltError>) -> Result<(), SiltError> {
-        let mut i = Self::to_silt(self.data.lock(),SiltError::UDNoMap)?;
-        let ud=(*i).downcast_mut::<T>().ok_or(SiltError::Unknown)?;
+    // pub fn
+    pub fn downcast_mut<'a, 'b: 'a, T: 'static>(
+        &mut self,
+        apply: impl Fn(&T) -> Result<(), SiltError>,
+    ) -> Result<(), SiltError> {
+        let mut i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
+        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::Unknown)?;
         apply(ud)
         //.downcast_mut::<T>()
     }
