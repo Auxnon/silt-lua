@@ -305,12 +305,16 @@ impl<'v> Value<'v> {
         // Ok(())
     }
 
-    pub fn apply_userdata<T>(&mut self, mc: &Mutation<'v>, apply: fn(&T)->Result<(),SiltError>)->Result<(),SiltError>
-        where 
-            T: UserData,
+    pub fn apply_userdata<T>(
+        &mut self,
+        mc: &Mutation<'v>,
+        apply: impl Fn(&T) -> Result<(), SiltError>,
+    ) -> Result<(), SiltError>
+    where
+        T: UserData,
     {
-        if let Value::UserData(udw)= self{
-           return udw.borrow_mut(mc).downcast_mut( apply) ;
+        if let Value::UserData(udw) = self {
+            return udw.borrow_mut(mc).downcast_mut(apply);
         }
         Err(SiltError::UDBadCast)
     }
@@ -443,6 +447,7 @@ impl From<Value<'_>> for f64 {
         match value {
             Value::Number(f) => f,
             Value::Integer(i) => i as f64,
+            // TODO Value::String()
             _ => 0.,
         }
     }
@@ -453,7 +458,32 @@ impl From<&Value<'_>> for f64 {
         match value {
             Value::Number(f) => *f,
             Value::Integer(i) => *i as f64,
+            // TODO Value::String()
             _ => 0.,
+        }
+    }
+}
+
+impl From<Value<'_>> for i64 {
+    fn from(value: Value<'_>) -> i64 {
+        match value {
+            // TODO is this lossless conversion best?
+            Value::Number(f) => f.max(i64::MIN as f64).min(i64::MAX as f64).round() as i64,
+            Value::Integer(i) => i,
+            // TODO Value::String()
+            _ => 0,
+        }
+    }
+}
+
+impl From<&Value<'_>> for i64 {
+    fn from(value: &Value<'_>) -> i64 {
+        match value {
+            // TODO is this lossless conversion best?
+            Value::Number(f) => f.max(i64::MIN as f64).min(i64::MAX as f64).round() as i64,
+            Value::Integer(i) => *i,
+            // TODO Value::String()
+            _ => 0,
         }
     }
 }
@@ -474,8 +504,8 @@ pub trait ToLua<'lua>: Sized + 'static {
 }
 
 /// Trait for types convertible from `Value`.
-pub trait FromLua<'lua>: Sized {
-    fn from_lua(lua_value: Value<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
+pub trait FromLua: Sized {
+    fn from_lua<'lua>(lua_value: &Value<'lua>, lua: &VM<'lua>) -> Result<Self, SiltError>;
 }
 
 // #[derive(Debug, Clone)]
@@ -523,6 +553,12 @@ trait NotSingle {}
 // }
 //
 
+impl<'a> ToLuaMulti<'a> for () {
+    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
+        Ok(vec![])
+    }
+}
+
 impl<'a> ToLuaMulti<'a> for Vec<()> {
     fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
         Ok(vec![])
@@ -566,6 +602,57 @@ where
         ])
     }
 }
+
+pub trait FromLuaMulti<'a>: Sized {
+    fn from_lua_multi<'b>(
+        args: &'b [Value<'a>],
+        lua: &VM<'a>,
+        mc: &Mutation<'a>,
+    ) -> Result<Self, SiltError>;
+}
+
+// TODO how to return... the same args again?
+// impl<'a,'c> FromLuaMulti<'a> for &'c [Value<'a>]{
+//     fn from_lua_multi<'b>(
+//         args: &'b [Value<'a>],
+//         lua: &VM<'a>,
+//         mc: &Mutation<'a>,
+//     ) -> Result<Self, SiltError> {
+//         Ok(args)
+//     }
+// }
+
+impl<'a> FromLuaMulti<'a> for Vec<Value<'a>> {
+    fn from_lua_multi(args: &[Value<'a>], _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
+        Ok(args.to_vec())
+    }
+}
+
+impl<'a> FromLuaMulti<'a> for () {
+    fn from_lua_multi(_: &[Value<'a>], _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
+        Ok(())
+    }
+}
+
+impl<'a, T1> FromLuaMulti<'a> for (T1,)
+where
+    // T1: From<Value<'a>>,
+    T1: FromLua,
+{
+    fn from_lua_multi(
+        args: &[Value<'a>],
+        vm: &VM<'a>,
+        _: &Mutation<'a>,
+    ) -> Result<Self, SiltError> {
+        // if self.len() != 1 {
+        //     return Err(SiltError::VmNativeParameterMismatch);
+        // }
+        // T1::from
+        let a = T1::from_lua(&args[0], vm)?;
+        Ok((T1::from_lua(&args[0], vm)?,))
+    }
+}
+
 // pub trait FromLuaMulti<'lua>: Sized {
 //     fn from_lua_multi(values: MultiValue<'lua>, lua: &'lua VM) -> Result<Self, SiltError>;
 // }
