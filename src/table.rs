@@ -40,7 +40,7 @@ impl<'v> Table<'v> {
         // T: ToLua<'v>,
     {
         let mut data = HashMap::new();
-        for (k, v) in input.into_iter(){
+        for (k, v) in input.into_iter() {
             let kk: Value = k.into_value(vm, mc)?;
             let vv = v.into_value(vm, mc)?;
             data.insert(kk, vv);
@@ -84,6 +84,26 @@ impl<'v> Table<'v> {
             Some(v) => v.clone(),
             None => Value::Nil,
         }
+    }
+
+    pub fn get_number<'f, T>(&self, key: T) -> f64
+    where
+        'v: 'f,
+        T: Into<Value<'v>>,
+    {
+        match self.data.get(&key.into()) {
+            Some(v) => v.into(),
+            _ => 0.,
+        }
+    }
+
+    pub fn set<'f, K,V>(&mut self, key: K, val: V) -> Option<Value<'v>>
+    where
+        'v: 'f,
+        K: Into<Value<'v>>,
+        V: Into<Value<'v>>,
+    {
+        self.data.insert(key.into(), val.into())
     }
 
     pub fn to_exval(&self) -> ExTable {
@@ -196,22 +216,20 @@ impl ToString for ExTable {
     }
 }
 
-impl IntoIterator for ExTable{
+impl IntoIterator for ExTable {
     type Item = (ExVal, ExVal);
-    type IntoIter = std::collections::hash_map::IntoIter<ExVal,ExVal>;
+    type IntoIter = std::collections::hash_map::IntoIter<ExVal, ExVal>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.data.into_iter()
-        
     }
 }
 
-impl <'a> IntoIterator for &'a ExTable{
+impl<'a> IntoIterator for &'a ExTable {
     type Item = (&'a ExVal, &'a ExVal);
-    type IntoIter = std::collections::hash_map::Iter<'a,ExVal,ExVal>;
+    type IntoIter = std::collections::hash_map::Iter<'a, ExVal, ExVal>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.data.iter()
-        
     }
 }
