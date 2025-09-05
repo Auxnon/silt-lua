@@ -325,7 +325,7 @@ impl<'gc> Lua {
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
     pub fn call(&mut self, index: usize) -> LuaResult {
-        self.call_with_params(index, vec![])
+        self.call_with_params::<Vec<()>>(index, vec![])
     }
 
     /// call an internal function by index with parameters
@@ -1698,6 +1698,7 @@ impl<'gc> VM<'gc> {
     /// create a new Table Value, iterating our primative table id counter
     pub fn new_table(&self, mc: &Mutation<'gc>) -> Value<'gc> {
         let t = Table::new(*self.table_counter.borrow());
+        *self.table_counter.borrow_mut() += 1;
         Value::Table(Gc::new(mc, RefLock::new(t)))
     }
 

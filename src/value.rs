@@ -514,7 +514,7 @@ type Values<'a> = Vec<Value<'a>>;
 type ValuesResult<'a> = Result<Values<'a>, SiltError>;
 
 pub trait ToLuaMulti<'a> {
-    fn to_lua_multi(self, lua: &VM<'a>, mc: &Mutation) -> ValuesResult<'a>;
+    fn to_lua_multi(self, lua: &VM<'a>, mc: &Mutation<'a>) -> ValuesResult<'a>;
 }
 
 impl<'a, A, I> ToLuaMulti<'a> for I
@@ -554,14 +554,28 @@ trait NotSingle {}
 //
 
 impl<'a> ToLuaMulti<'a> for () {
-    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
+    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'a>) -> ValuesResult<'a> {
         Ok(vec![])
     }
 }
 
-impl<'a> ToLuaMulti<'a> for Vec<()> {
-    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
-        Ok(vec![])
+// impl<'a> ToLuaMulti<'a> for Vec<()> {
+//     fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {
+//         Ok(vec![])
+//     }
+// }
+
+impl<'a, A> ToLuaMulti<'a> for Vec<A>
+where
+    A: Into<Value<'a>>,
+{
+    fn to_lua_multi<'e>(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValuesResult<'a> {
+        if self.len() == 0 {
+            return Ok(vec![]);
+        }
+        let mut t = vm.raw_table();
+        t.concat_array(self);
+        Ok(vec![vm.wrap_table(mc, t)])
     }
 }
 

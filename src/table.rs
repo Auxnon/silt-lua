@@ -97,7 +97,7 @@ impl<'v> Table<'v> {
         }
     }
 
-    pub fn set<'f, K,V>(&mut self, key: K, val: V) -> Option<Value<'v>>
+    pub fn set<'f, K, V>(&mut self, key: K, val: V) -> Option<Value<'v>>
     where
         'v: 'f,
         K: Into<Value<'v>>,
@@ -130,9 +130,21 @@ impl<'v> Table<'v> {
         let mut key = Value::Integer(self.counter);
         while self.data.contains_key(&key) {
             self.counter += 1;
-            key.force_to_int(self.counter);
         }
+        key.force_to_int(self.counter);
         self.data.insert(key, value);
+    }
+
+    pub fn concat_array<A>(&mut self, array: Vec<A>)
+    where
+        A: Into<Value<'v>>,
+    {
+        self.counter += 1;
+        for v in array.into_iter() {
+            let key = Value::Integer(self.counter);
+            self.data.insert(key, A::into(v));
+            self.counter += 1;
+        }
     }
 
     pub fn set_metatable(&mut self, metatable: Value<'v>) {
