@@ -16,7 +16,7 @@ use crate::{
     error::SiltError,
     function::{NativeFunctionRaw, NativeFunctionRc, NativeFunctionRef, WrappedFn},
     lua::VM,
-    value::Value,
+    value::{FromLuaMulti, Value},
 };
 
 /// Result type for Lua operations
@@ -50,9 +50,10 @@ pub trait UserDataMethods<'gc, T: UserData> {
         F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
 
     /// Add a method that doesn't mutate the UserData
-    fn add_method<F>(&mut self, name: &str, closure: F)
+    fn add_method<F,V>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
+        V: FromLuaMulti<'gc>,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static;
 }
 
 /// Trait for registering fields on UserData types
@@ -115,11 +116,11 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 }
 
 /// Stores methods and fields for a specific UserData type T
-pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
+pub struct UserDataTypedMap<'gc, T: UserData + 'static > {
     methods: HashMap<
         String,
         Box<
-            dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc,
+            dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc 
         >,
     >,
     method_cache: Vec<NativeFunctionRc<'gc>>,
@@ -130,7 +131,7 @@ pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
     _phantom: PhantomData<T>,
 }
 
-impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
+impl<'gc, T: UserData + 'static > UserDataTypedMap<'gc, T> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
@@ -403,13 +404,14 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
         self.methods.insert(name.to_string(), Box::new(closure));
     }
 
-    fn add_method<F>(&mut self, name: &str, closure: F)
+    fn add_method<F,V>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
+        V: FromLuaMulti<'gc>,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static,
     {
         self.methods.insert(
             name.to_string(),
-            Box::new(move |vm, mc, ud, args| closure(vm, mc, ud, args)),
+            Box::new(move |vm, mc, ud, args| closure(vm, mc, ud, V::from_lua_multi(&args, vm, mc)?)),
         );
     }
 }
