@@ -16,11 +16,12 @@ use crate::{
     error::SiltError,
     function::{NativeFunctionRaw, NativeFunctionRc, NativeFunctionRef, WrappedFn},
     lua::VM,
-    value::{FromLuaMulti, Value},
+    value::{FromLua, FromLuaMulti, ToLua, Value},
 };
 
 /// Result type for Lua operations
-pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
+pub type InnerResult<'gc> = Result< Value<'gc>, SiltError>;
+pub type ToInnerResult<'gc, V: ToLua<'gc>> =  V;
 
 /// Trait for Rust types that can be used as Lua UserData
 pub trait UserData: Sized + 'static {
@@ -45,9 +46,11 @@ pub trait UserDataMethods<'gc, T: UserData> {
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
 
     /// Add a method that can mutate the UserData
-    fn add_method_mut<F>(&mut self, name: &str, closure: F)
+    fn add_method_mut<F,V,R>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
+        V: FromLuaMulti<'gc>,
+        R: ToLua<'gc>,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc,R> + 'static;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F,V>(&mut self, name: &str, closure: F)
@@ -59,14 +62,17 @@ pub trait UserDataMethods<'gc, T: UserData> {
 /// Trait for registering fields on UserData types
 pub trait UserDataFields<'gc, T: UserData> {
     /// Add a field getter
-    fn add_field_method_get<F>(&mut self, name: &str, closure: F)
+    fn add_field_method_get<F,R>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> InnerResult<'gc> + 'static;
+        R: ToLua<'gc>,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> ToInnerResult<'gc,R> + 'static;
 
     /// Add a field setter
-    fn add_field_method_set<F>(&mut self, name: &str, closure: F)
+    fn add_field_method_set<F,V,R>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'static;
+        V: FromLua<'gc>,
+        R: ToLua<'gc>,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc,R> + 'static;
 }
 
 /// Function pointer for calling a method on a UserData instance
@@ -78,7 +84,7 @@ pub type UserDataGetterFn<'gc, T> = dyn Fn(&VM<'gc>, &Mutation<'gc>, &T) -> Inne
 
 /// Function pointer for setting a field on a UserData instance
 pub type UserDataSetterFn<'gc, T> =
-    dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'gc;
+    dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc>+ 'gc;
 
 /// Trait object for type-erased UserData methods
 pub trait UserDataMapTraitObj<'gc>: 'gc {
@@ -152,7 +158,7 @@ impl<'gc, T: UserData + 'static > UserDataTypedMap<'gc, T> {
             .join(",")
     }
 
-    /// Create a NativeFunction that calls a UserData method
+    // Create a NativeFunction that calls a UserData method
     // pub fn create_method_function<'a>(&mut self, mc: &Mutation<'gc>) {
     //     if let Some(&method_fn) = self.methods.get("t") {
     //
@@ -184,7 +190,7 @@ impl<'gc, T: UserData + 'static > UserDataTypedMap<'gc, T> {
     // }
 
     /// Create a NativeFunction that calls a UserData method
-    pub fn create_method_function<'a>(&mut self, mc: &Mutation<'gc>) {
+    pub fn create_method_function(&mut self) {
         self.methods.drain().for_each(|(st, method_fn)| {
             // let type_id = self.type_id;
             // let method_name = method_name.to_string();
@@ -396,12 +402,16 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
         self.meta_methods.insert(name.to_string(), func);
     }
 
-    fn add_method_mut<F>(&mut self, name: &str, closure: F)
+    fn add_method_mut<F,V,R>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc,
+        R: ToLua<'gc>,
+        V: FromLuaMulti<'gc>,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc,R> + 'gc,
     {
         // let func: UserDataMethodFn<T> = |vm, mc, ud, args| Err(SiltError::Unknown);
-        self.methods.insert(name.to_string(), Box::new(closure));
+        self.methods.insert(name.to_string(),
+            Box::new(move |vm, mc, ud, args| R::to_lua(closure(vm, mc, ud, V::from_lua_multi(&args, vm, mc)?),vm,mc)),
+        );
     }
 
     fn add_method<F,V>(&mut self, name: &str, closure: F)
@@ -417,22 +427,25 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
 }
 
 impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc, T> {
-    fn add_field_method_get<F>(&mut self, name: &str, closure: F)
+    fn add_field_method_get<F,R>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> InnerResult<'gc> + 'gc,
+        R: ToLua<'gc>,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> ToInnerResult<'gc,R> + 'gc,
     {
         println!("add getter {}", name);
-        let func: Box<UserDataGetterFn<T>> = Box::new(move |vm, mc, ud| closure(vm, mc, ud));
+        let func: Box<UserDataGetterFn<T>> = Box::new(move |vm, mc, ud| R::to_lua(closure(vm, mc, ud),vm,mc));
         self.getters.insert(name.to_string(), func);
     }
 
-    fn add_field_method_set<F>(&mut self, name: &str, closure: F)
+    fn add_field_method_set<F,V,R>(&mut self, name: &str, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'gc,
+        V: FromLua<'gc>,
+        R: ToLua<'gc>,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc,R> + 'gc,
     {
         println!("add setter {}", name);
         let func: Box<UserDataSetterFn<T>> =
-            Box::new(move |vm, mc, ud, val| closure(vm, mc, ud, val));
+            Box::new(move |vm, mc, ud, arg| R::to_lua(closure(vm, mc, ud, V::from_lua(&arg, vm, mc)?),vm,mc));
         self.setters.insert(name.to_string(), func);
     }
 }
@@ -452,7 +465,7 @@ impl<'gc> UserDataRegistry<'gc> {
     }
 
     /// Register a UserData type
-    pub fn register<T: UserData>(&mut self, mc: &Mutation<'gc>) {
+    pub fn register<T: UserData>(&mut self, _: &Mutation<'gc>) {
         let type_name = T::type_name();
         // Only register if not already registered
         if !self.maps.contains_key(type_name) {
@@ -464,7 +477,7 @@ impl<'gc> UserDataRegistry<'gc> {
             // Register fields
             T::add_fields(&mut typed_map);
             println!("TypedMap {}", typed_map.to_string());
-            typed_map.create_method_function(mc);
+            typed_map.create_method_function();
             let map = UserDataMap::new(typed_map);
 
             // Store in registry
@@ -623,7 +636,7 @@ impl UserDataWrapper {
     // pub fn
     pub fn downcast_mut<'a, 'b: 'a, T: 'static>(
         &mut self,
-        apply: impl Fn(&T) -> Result<(), SiltError>,
+        mut apply: impl FnMut(&T) -> Result<(), SiltError>,
     ) -> Result<(), SiltError> {
         let mut i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
         let ud = (*i).downcast_mut::<T>().ok_or(SiltError::Unknown)?;
@@ -699,7 +712,7 @@ impl UserData for TestEnt {
             Ok(Value::String(format!("[entity {}]", this.get_id())))
         });
 
-        methods.add_method_mut("pos", |_, _, this, args| {
+        methods.add_method_mut("pos", |_, _, this, args: Vec<Value>| {
             // Example of parsing a table to set position
             if let Some(Value::Table(t)) = args.first() {
                 let t_ref = (*t).borrow();
@@ -717,7 +730,7 @@ impl UserData for TestEnt {
         });
 
         // Add a method that demonstrates multiple parameters
-        methods.add_method_mut("set_pos", |vm, mc, this, args| {
+        methods.add_method_mut("set_pos", |vm, mc, this, args: Vec<Value>| {
             if args.len() >= 3 {
                 if let Value::Number(x) = args[0] {
                     this.x = x;
@@ -760,7 +773,6 @@ impl UserData for TestEnt {
             } else if let Value::Integer(x) = val {
                 this.x = x as f64;
             }
-            Ok(Value::Nil)
         });
 
         fields.add_field_method_get("y", |_, _, this| Ok(Value::Number(this.y)));
