@@ -276,7 +276,7 @@ impl<'v> Value<'v> {
             _ => "NA".to_string(),
         }
     }
-    pub fn to_string(&self) -> String {
+    pub fn coerce_string(&self) -> String {
         match self {
             Value::String(s) => s.to_string(),
             Value::Integer(i) => i.to_string(),
@@ -697,6 +697,7 @@ impl<'a> From<&Value<'a>> for Option<Value<'a>> {
         }
     }
 }
+
 impl<'a> FromLua<'a> for Option<Value<'a>> {
     fn from_lua(val: &Value<'a>, _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
         Ok(val.into())
@@ -724,6 +725,27 @@ pub trait ToLua<'a> {
     fn to_lua(self, lua: &VM<'a>, mc: &Mutation<'a>) -> Result<Value<'a>, SiltError>;
 }
 
+macro_rules! to_lua {
+    ($t:ty) => {
+        impl<'a> ToLua<'a> for $t {
+            fn to_lua(self, _: &VM<'a>, _: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
+                Ok(self.into())
+            }
+        }
+
+        // impl<'a> ToLua<'a> for Result<$t, SiltError> {
+        //     fn to_lua(self, _: &VM<'a>, _: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
+        //         match self {
+        //             Err(e) => Err(e),
+        //             Ok(v) => Ok(v.into()),
+        //         }
+        //     }
+        // }
+    };
+}
+
+// to_lua!(());
+
 impl<'a, A> ToLua<'a> for A
 where
     A: Into<Value<'a>>,
@@ -732,27 +754,76 @@ where
         Ok(self.into())
     }
 }
-// impl<'a> ToLua<'a> for Value<'a> {
-//     fn to_lua(self, _: &VM<'a>, _: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
-//         Ok(self)
-//     }
-// }
-// impl<'a> ToLua<'a> for Result<Value<'a>, SiltError> {
-//     fn to_lua(self, _: &VM<'a>, _: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
-//         self
-//     }
-// }
+
 impl<'a, A> ToLua<'a> for Result<A, SiltError>
 where
-    A: Into<Value<'a>>,
+    A: ToLua<'a>,
 {
-    fn to_lua(self, _: &VM<'a>, _: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
+    fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
         match self {
             Err(e) => Err(e),
-            Ok(v) => Ok(v.into()),
+            Ok(v) => Ok(v.to_lua(vm, mc)?),
         }
     }
 }
+
+// impl<'a, I> ToLua<'a> for I
+// where
+//     I: IntoIterator<Item = A>,
+//     A: Into<Value<'a>>,
+// {
+//     fn to_lua(self, _: &VM<'a>, _: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
+//
+//         self.
+//     }
+// }
+
+// impl<'a,I> ToLua<'a> for I
+// where
+//     I: IntoIterator,
+//     I::Item: Into<Value<'a>>,
+// {
+//     fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
+//         // if self.len() == 0 {
+//         //     return Ok(vm.new_table(mc));
+//         // }
+//         let mut t = vm.raw_table();
+//         t.concat_array(self);
+//         Ok(vm.wrap_table(mc, t))
+//     }
+// }
+
+impl<'a, T, const N: usize> ToLua<'a> for [T; N]
+where
+    T: Copy,
+    T: Into<Value<'a>>,
+{
+    fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
+        if N == 0 {
+                return Ok(vm.new_table(mc));
+        }
+        let mut t = vm.raw_table();
+        t.concat_array(self);
+        Ok(vm.wrap_table(mc, t))
+        // [value; N]
+    }
+}
+
+impl<'a, T> ToLua<'a> for Vec<T>
+where
+    // T: Copy,
+    T: Into<Value<'a>>,
+{
+    fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
+        if self.len()==0{
+                return Ok(vm.new_table(mc));
+        }
+        let mut t = vm.raw_table();
+        t.concat_array(self);
+        Ok(vm.wrap_table(mc, t))
+    }
+}
+
 // #[derive(Debug, Clone)]
 // pub struct MultiValue<'lua>(Vec<Value<'lua>>);
 type ValueResult<'a> = Result<Value<'a>, SiltError>;
@@ -825,20 +896,6 @@ impl<'a> ToLuaMulti<'a> for () {
 //         Ok(vec![self.into()])
 //     }
 // }
-
-impl<'a, A> ToLua<'a> for Vec<A>
-where
-    A: Into<Value<'a>>,
-{
-    fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
-        if self.len() == 0 {
-            return Ok(vm.new_table(mc));
-        }
-        let mut t = vm.raw_table();
-        t.concat_array(self);
-        Ok(vm.wrap_table(mc, t))
-    }
-}
 
 impl<'a, A, B> ToLuaMulti<'a> for (A, B)
 where

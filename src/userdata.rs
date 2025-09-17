@@ -726,7 +726,7 @@ impl UserData for TestEnt {
                     this.z = z.into();
                 }
             }
-            Ok(Value::Nil)
+            Ok(())
         });
 
         // Add a method that demonstrates multiple parameters

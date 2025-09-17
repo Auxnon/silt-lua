@@ -120,6 +120,7 @@ impl<'v> Table<'v> {
     pub fn len(&self) -> usize {
         self.data.len()
     }
+    
     // pub fn display(&self){
     //     self.data.
 
@@ -135,9 +136,10 @@ impl<'v> Table<'v> {
         self.data.insert(key, value);
     }
 
-    pub fn concat_array<A>(&mut self, array: Vec<A>)
+    pub fn concat_array<A,I>(&mut self, array: I)
     where
-        A: Into<Value<'v>>,
+    I: IntoIterator<Item = A>,
+    A: Into<Value<'v>>,
     {
         self.counter += 1;
         for v in array.into_iter() {
