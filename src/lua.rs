@@ -11,8 +11,8 @@ use crate::{
     function::{CallFrame, Closure, FunctionObject, NativeFunctionRaw, NativeFunctionRef, UpValue, WrappedFn},
     prelude::UserData,
     table::{ExTable, Table},
-    userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
-    value::{ExVal, FromLuaMulti, ToLuaMulti, Value},
+    userdata::{InnerResult, MetaMethod, ToInnerResult, UserDataRegistry, UserDataWrapper, WeakWrapper},
+    value::{ExVal, FromLuaMulti, ToLua, ToLuaMulti, Value},
 };
 
 /** Convert Integer to Float, lossy for now */
@@ -326,6 +326,7 @@ impl<'gc> Lua {
     /// each time
     pub fn call(&mut self, index: usize) -> LuaResult {
         self.call_with_params::<Vec<()>>(index, vec![])
+        // Ok(ExVal::Nil)
     }
 
     /// call an internal function by index with parameters
@@ -1867,13 +1868,14 @@ impl<'gc> VM<'gc> {
     pub fn testy<'a>(&mut self, mc: &'a Mutation<'gc>, name: &str) {}
 
     /** Register a native function on the global table  */
-    pub fn register_native_function<'a, F,T>(
+    pub fn register_native_function<'a, F,T,R>(
         &mut self,
         mc: &'a Mutation<'gc>,
         name: &str,
         function: F,
     ) where
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, T)-> InnerResult<'gc> + 'static,
+        R: ToLua<'gc>,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, T)-> ToInnerResult<'gc,R> + 'static,
         T:  FromLuaMulti<'gc> , // pub type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a> + 'a;
 
                                                                                             // where
