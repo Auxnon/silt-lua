@@ -7,8 +7,8 @@ use crate::{
     code::OpCode,
     error::SiltError,
     lua::{Ephemeral, VM},
-    userdata::InnerResult,
-    value::{FromLuaMulti, ToLuaMulti, Value},
+    userdata::{InnerResult, ToInnerResult},
+    value::{FromLuaMulti, ToLua, ToLuaMulti, Value},
 };
 
 /////////////
@@ -274,15 +274,16 @@ pub struct NativeFunctionRaw<'a> {
 }
 
 impl<'a> NativeFunctionRaw<'a> {
-    pub fn new<T, F>(f: F) -> Self
+    pub fn new<T, F, R>(f: F) -> Self
     where
+        R: ToLua<'a>,
         T: FromLuaMulti<'a>,
-        F: Fn(&mut VM<'a>, &Mutation<'a>, T) -> InnerResult<'a> + 'a,
+        F: Fn(&mut VM<'a>, &Mutation<'a>, T) -> ToInnerResult<'a, R> + 'a,
     {
         Self {
-            func: Box::new(move |vm, mutation, raw_args| {
-                let args = T::from_lua_multi(raw_args, vm, mutation)?;
-                f(vm, mutation, args)
+            func: Box::new(move |vm, mc, raw_args| {
+                let args = T::from_lua_multi(raw_args, vm, mc)?;
+                R::to_lua(f(vm, mc, args), vm, mc)
             }),
         }
     }
@@ -316,8 +317,12 @@ impl<'gc> WrappedFn<'gc> {
         Self { f: callback }
     }
 
-    pub fn call(&self, vm: &mut VM<'gc>, mc: &Mutation<'gc>, args: &[Value<'gc>]) -> InnerResult<'gc>
-    {
+    pub fn call(
+        &self,
+        vm: &mut VM<'gc>,
+        mc: &Mutation<'gc>,
+        args: &[Value<'gc>],
+    ) -> InnerResult<'gc> {
         (self.f.func)(vm, mc, args)
     }
 }
