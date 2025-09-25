@@ -35,7 +35,7 @@ inherits = "release"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["silt", "wasm" ]
+default = ["silt"  ]
 silt = [
     "bang",
     "under-number",

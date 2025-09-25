@@ -241,9 +241,16 @@ const WORD_MAP: [&str; 7] = ["keyword", "op", "number", "bool", "nil", "string",
 // start, length, type
 type LSPFormatMark = (usize, usize, u8);
 
+#[cfg(feature = "wasm")]
 #[derive(Serialize, Deserialize)]
 pub struct LanguageServerOutput<'c> {
     #[serde(borrow)]
+    legend: [&'c str; 7],
+    map: Vec<LSPFormatMark>,
+    indented: String, // indents: Vec<IndentMark>,
+}
+#[cfg(not(feature = "wasm"))]
+pub struct LanguageServerOutput<'c> {
     legend: [&'c str; 7],
     map: Vec<LSPFormatMark>,
     indented: String, // indents: Vec<IndentMark>,

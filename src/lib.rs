@@ -23,6 +23,8 @@ pub use self::{
 #[cfg(feature = "vectors")]
 pub mod vec;
 
+
+#[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 
 fn simple(source: &str) -> ExVal {
@@ -60,7 +62,7 @@ extern "C" {
     pub fn jprintln(s: &str);
 }
 
-// #[cfg(target_arch = "wasm32")]
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn run(source: &str) -> String {
     let mut compiler = Compiler::new();
@@ -71,6 +73,7 @@ pub fn run(source: &str) -> String {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn lsp(source: &str, format: Option<bool> ) -> Result<JsValue, JsError> {
     let mut compiler = Compiler::new();
