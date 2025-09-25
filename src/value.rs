@@ -116,6 +116,19 @@ impl ExVal {
             ExVal::Meta(_) => return Err(SiltError::VmValBadConvert(ValueTypes::Function)),
         })
     }
+pub fn coerce_string(&self) -> String {
+        match self {
+            ExVal::String(s) => s.to_string(),
+            ExVal::Integer(i) => i.to_string(),
+            ExVal::Number(n) => n.to_string(),
+            ExVal::Meta(m) => m.to_string(),
+            ExVal::UserData(u) => u.to_string(),
+            ExVal::Infinity(b) => format!("{}inf", if *b { "" } else { "-" }),
+            ExVal::Bool(b) => b.to_string(),
+            ExVal::Nil => "nil".to_string(),
+            ExVal::Table(_) => "table".to_string(),
+        }
+    }
 }
 
 pub enum MultiVal<'a, 'b> {
@@ -485,6 +498,27 @@ impl From<&Value<'_>> for i64 {
         }
     }
 }
+impl From<&ExVal> for i64 {
+    fn from(value: &ExVal) -> i64 {
+        match value {
+            // TODO is this lossless conversion best?
+            ExVal::Number(f) => f.max(i64::MIN as f64).min(i64::MAX as f64).round() as i64,
+            ExVal::Integer(i) => *i,
+            // TODO Value::String()
+            _ => 0,
+        }
+    }
+}
+impl From<ExVal> for i64 {
+    fn from(value: ExVal) -> Self {
+        match value {
+            ExVal::Number(f) => f.max(i64::MIN as f64).min(i64::MAX as f64).round() as i64,
+            ExVal::Integer(i) => i,
+            // TODO Value::String()
+            _ => 0,
+        }
+    }
+}
 
 // ========== convert u32 ==========
 impl From<u32> for Value<'_> {
@@ -662,6 +696,16 @@ impl From<&Value<'_>> for String {
         val.to_string()
     }
 }
+impl From<ExVal> for String {
+    fn from(val: ExVal) -> Self {
+        val.coerce_string()
+    }
+}
+impl From<&ExVal> for String {
+    fn from(val: &ExVal) -> Self {
+        val.coerce_string()
+    }
+}
 
 impl FromLua<'_> for String {
     fn from_lua(val: &Value<'_>, _: &VM<'_>, _: &Mutation<'_>) -> Result<Self, SiltError> {
@@ -800,7 +844,7 @@ where
 {
     fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
         if N == 0 {
-                return Ok(vm.new_table(mc));
+            return Ok(vm.new_table(mc));
         }
         let mut t = vm.raw_table();
         t.concat_array(self);
@@ -815,8 +859,8 @@ where
     T: Into<Value<'a>>,
 {
     fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
-        if self.len()==0{
-                return Ok(vm.new_table(mc));
+        if self.len() == 0 {
+            return Ok(vm.new_table(mc));
         }
         let mut t = vm.raw_table();
         t.concat_array(self);

@@ -1,11 +1,14 @@
-use std::{collections::HashMap, vec::IntoIter};
+use std::{
+    collections::{hash_map::Iter, HashMap},
+    vec::IntoIter,
+};
 
 use gc_arena::{Collect, Mutation};
 
 use crate::{
     error::SiltError,
     userdata::MetaMethod,
-    value::{ExVal, ToLua, Value},
+    value::{ExVal,  Value},
     VM,
 };
 
@@ -120,7 +123,11 @@ impl<'v> Table<'v> {
     pub fn len(&self) -> usize {
         self.data.len()
     }
-    
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
     // pub fn display(&self){
     //     self.data.
 
@@ -136,10 +143,10 @@ impl<'v> Table<'v> {
         self.data.insert(key, value);
     }
 
-    pub fn concat_array<A,I>(&mut self, array: I)
+    pub fn concat_array<A, I>(&mut self, array: I)
     where
-    I: IntoIterator<Item = A>,
-    A: Into<Value<'v>>,
+        I: IntoIterator<Item = A>,
+        A: Into<Value<'v>>,
     {
         self.counter += 1;
         for v in array.into_iter() {
@@ -175,7 +182,10 @@ impl<'v> Table<'v> {
                 };
             }
         }
-        return Err(SiltError::MetaMethodMissing(method));
+        Err(SiltError::MetaMethodMissing(method))
+    }
+    pub fn iter(&self) -> Iter<'_, Value<'v>, Value<'v>> {
+        self.data.iter()
     }
 }
 
@@ -204,9 +214,18 @@ impl ExTable {
     pub fn getn(&self, i: usize) -> Option<&ExVal> {
         self.data.get(&ExVal::Integer(i as i64))
     }
+    pub fn pop_value(&mut self, i: usize) -> ExVal {
+        self.data
+            .remove(&ExVal::Integer(i as i64))
+            .unwrap_or(ExVal::Nil)
+    }
     pub fn get(&self, field: &str) -> Option<&ExVal> {
         self.data.get(&ExVal::String(field.to_owned()))
     }
+    // pub fn iter(&self) -> Iter<'_, ExVal, ExVal> {
+    //     self.data.iter()
+    // }
+
 }
 
 impl PartialEq for ExTable {
@@ -229,7 +248,15 @@ impl ToString for ExTable {
         )
     }
 }
-
+// TODO proper immutable iterator
+// impl Iterator for ExTable {
+//     type Item = (ExVal, ExVal);
+//     type IntoIter = std::collections::hash_map::IntoIter<ExVal, ExVal>;
+//
+//     fn into_iter(self) -> Self::IntoIter {
+//         self.data.into_iter()
+//     }
+// }
 impl IntoIterator for ExTable {
     type Item = (ExVal, ExVal);
     type IntoIter = std::collections::hash_map::IntoIter<ExVal, ExVal>;
@@ -245,5 +272,50 @@ impl<'a> IntoIterator for &'a ExTable {
 
     fn into_iter(self) -> Self::IntoIter {
         self.data.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut ExTable {
+    type Item = (&'a ExVal, &'a mut ExVal);
+    type IntoIter = std::collections::hash_map::IterMut<'a, ExVal, ExVal>;
+
+    
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.iter_mut()
+    }
+}
+
+impl<A, B> From<ExVal> for (A, B)
+where
+    A: From<ExVal>,
+    B: From<ExVal>,
+{
+    fn from( value: ExVal) -> Self {
+        match value {
+            ExVal::Table(mut t) => (&mut t).into(),
+            _ => (ExVal::Nil.into(), ExVal::Nil.into()),
+        }
+    }
+}
+
+impl<A, B> From<&mut ExVal> for (A, B)
+where
+    A: From<ExVal>,
+    B: From<ExVal>,
+{
+    fn from( value: &mut ExVal) -> Self {
+        match value {
+            ExVal::Table(t) => t.into(),
+            _ => (ExVal::Nil.into(), ExVal::Nil.into()),
+        }
+    }
+}
+impl<A, B> From<&mut ExTable> for (A, B)
+where
+    A: From<ExVal>,
+    B: From<ExVal>,
+{
+    fn from(value: &mut ExTable) -> Self {
+        (value.pop_value(0).into(), value.pop_value(1).into())
     }
 }
