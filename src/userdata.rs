@@ -51,12 +51,14 @@ pub trait UserDataMethods<'gc, T: UserData> {
         V: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
         F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'static
+            where 'gc: 'a;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F, V>(&mut self, name: &str, closure: F)
     where
         V: FromLuaMulti<'gc>,
         F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static
+            where 'gc: 'a;
 }
 
 /// Trait for registering fields on UserData types
