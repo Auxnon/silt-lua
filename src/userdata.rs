@@ -418,7 +418,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     where
         R: ToLua<'gc>,
         V: FromLuaMulti<'gc>,
-        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'gc
+        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'static
             where 'gc: 'a,
     {
         self.methods.insert(
