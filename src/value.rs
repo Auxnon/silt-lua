@@ -1002,8 +1002,8 @@ where
 pub trait FromLuaMulti<'gc:'a,'a >: Sized {
     fn from_lua_multi(
         args: &'a [Value<'gc>],
-        lua: &'a VM<'gc>,
-        mc: &'a Mutation<'gc>,
+        lua: & VM<'gc>,
+        mc: & Mutation<'gc>,
     ) -> Result<Self, SiltError>;
 }
 
@@ -1054,8 +1054,8 @@ where
 {
     fn from_lua_multi(
         args: &'b [Value<'a>],
-        _vm: &'b VM<'a>,
-        _mc: &'b Mutation<'a>,
+        _vm: & VM<'a>,
+        _mc: & Mutation<'a>,
     ) -> Result<Self, SiltError> {
         Ok(Variadic::new(args.iter()))
     }

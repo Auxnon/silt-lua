@@ -8,13 +8,13 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
-use colored::Colorize;
+// use colored::Colorize;
 use gc_arena::{Collect, Gc, Mutation};
 
 use crate::{
     code::OpCode,
     error::SiltError,
-    function::{NativeFunctionRaw, NativeFunctionRc, NativeFunctionRef, WrappedFn},
+    function::{NativeFunctionRaw, NativeFunctionRc, WrappedFn},
     lua::VM,
     value::{FromLua, FromLuaMulti, ToLua, Value},
 };
@@ -48,15 +48,15 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a method that can mutate the UserData
     fn add_method_mut<F, V, R>(&mut self, name: &str, closure: F)
     where
-        for<'a> V: FromLuaMulti<'gc, 'a>,
+        for<'a > V: FromLuaMulti<'gc, 'a> + 'a ,
         R: ToLua<'gc>,
-        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'static;
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'static;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F, V>(&mut self, name: &str, closure: F)
     where
         for<'a> V: FromLuaMulti<'gc, 'a>,
-        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static;
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static;
 }
 
 /// Trait for registering fields on UserData types
@@ -398,7 +398,6 @@ impl<'gc> UserDataMap<'gc> {
 //     type Type<'e> = MyHeldValue<'e>;
 // }
 
-
 // <V as MyFromLuaMulti<'gc>>::Type<'e>
 
 impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
@@ -416,7 +415,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     }
 
     fn add_method_mut<F, V, R>(&mut self, name: &str, closure: F)
-    where 
+    where
         R: ToLua<'gc>,
         for<'e> V: FromLuaMulti<'gc, 'e>,
         F: for<'e> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'gc,
@@ -961,10 +960,7 @@ pub mod vm_integration {
     use gc_arena::lock::RefLock;
 
     use super::*;
-    use crate::{
-        lua::{UDVec, VM},
-        standard::print,
-    };
+    use crate::lua::{UDVec, VM};
 
     /// Create a new UserData value
     pub fn create_userdata<'gc, T: UserData>(
