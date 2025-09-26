@@ -2,6 +2,7 @@ use std::{
     hash::{Hash, Hasher},
     ops::Deref,
     rc::Rc,
+    slice::Iter,
 };
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
@@ -116,7 +117,7 @@ impl ExVal {
             ExVal::Meta(_) => return Err(SiltError::VmValBadConvert(ValueTypes::Function)),
         })
     }
-pub fn coerce_string(&self) -> String {
+    pub fn coerce_string(&self) -> String {
         match self {
             ExVal::String(s) => s.to_string(),
             ExVal::Integer(i) => i.to_string(),
@@ -998,11 +999,11 @@ where
     }
 }
 
-pub trait FromLuaMulti<'a>: Sized {
-    fn from_lua_multi<'b>(
-        args: &'b [Value<'a>],
-        lua: &VM<'a>,
-        mc: &Mutation<'a>,
+pub trait FromLuaMulti<'gc:'a,'a >: Sized {
+    fn from_lua_multi(
+        args: &'a [Value<'gc>],
+        lua: &'a VM<'gc>,
+        mc: &'a Mutation<'gc>,
     ) -> Result<Self, SiltError>;
 }
 
@@ -1017,19 +1018,19 @@ pub trait FromLuaMulti<'a>: Sized {
 //     }
 // }
 
-impl<'a> FromLuaMulti<'a> for Vec<Value<'a>> {
+impl<'a:'b, 'b> FromLuaMulti<'a, 'b> for Vec<Value<'a>> {
     fn from_lua_multi(args: &[Value<'a>], _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
         Ok(args.to_vec())
     }
 }
 
-impl<'a> FromLuaMulti<'a> for () {
+impl<'a:'b, 'b> FromLuaMulti<'a,'b> for () {
     fn from_lua_multi(_: &[Value<'a>], _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
         Ok(())
     }
 }
 
-impl<'a, T1> FromLuaMulti<'a> for (T1,)
+impl<'a:'b, 'b, T1> FromLuaMulti<'a,'b> for (T1,)
 where
     // T1: From<Value<'a>>,
     T1: FromLua<'a>,
@@ -1047,7 +1048,20 @@ where
     }
 }
 
-impl<'a, A, B> FromLuaMulti<'a> for (A, B)
+impl<'a:'b, 'b, T> FromLuaMulti<'a,'b> for Variadic<'b, 'a, T>
+where
+    T: FromLua<'a>,
+{
+    fn from_lua_multi(
+        args: &'b [Value<'a>],
+        _vm: &'b VM<'a>,
+        _mc: &'b Mutation<'a>,
+    ) -> Result<Self, SiltError> {
+        Ok(Variadic::new(args.iter()))
+    }
+}
+
+impl<'a:'b, 'b, A, B> FromLuaMulti<'a,'b> for (A, B)
 where
     A: FromLua<'a>,
     B: FromLua<'a>,
@@ -1064,7 +1078,7 @@ where
     }
 }
 
-impl<'a, A, B, C> FromLuaMulti<'a> for (A, B, C)
+impl<'a:'b, 'b, A, B, C> FromLuaMulti<'a,'b> for (A, B, C)
 where
     A: FromLua<'a>,
     B: FromLua<'a>,
@@ -1083,7 +1097,7 @@ where
     }
 }
 
-impl<'a, A, B, C, D> FromLuaMulti<'a> for (A, B, C, D)
+impl<'a:'b, 'b, A, B, C, D> FromLuaMulti<'a,'b> for (A, B, C, D)
 where
     A: FromLua<'a>,
     B: FromLua<'a>,
@@ -1104,7 +1118,7 @@ where
     }
 }
 
-impl<'a, A, B, C, D, E> FromLuaMulti<'a> for (A, B, C, D, E)
+impl<'a:'b, 'b, A, B, C, D, E> FromLuaMulti<'a,'b> for (A, B, C, D, E)
 where
     A: FromLua<'a>,
     B: FromLua<'a>,
@@ -1127,7 +1141,7 @@ where
     }
 }
 
-impl<'a, A, B, C, D, E, F> FromLuaMulti<'a> for (A, B, C, D, E, F)
+impl<'a:'b, 'b, A, B, C, D, E, F> FromLuaMulti<'a,'b> for (A, B, C, D, E, F)
 where
     A: FromLua<'a>,
     B: FromLua<'a>,
@@ -1159,8 +1173,90 @@ where
 // pub trait FromValue: Sized {
 //     fn from_value(value: Value) -> Result<Self, SiltError>;
 // }
-#[derive(Debug)]
-pub struct Variadic<'a, T> {
-    values: Vec<Value<'a>>,
+pub struct Variadic<'a, 'gc, T> {
+    values: Iter<'a, Value<'gc>>,
     _phantom: std::marker::PhantomData<T>,
+}
+
+impl<'a, 'gc, T> Variadic<'a, 'gc, T>
+where
+    T: FromLua<'gc>,
+{
+    pub fn new(iter: Iter<'a, Value<'gc>>) -> Self {
+        Variadic {
+            values: iter,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Get the number of remaining values
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Check if there are no remaining values
+    pub fn is_empty(&self) -> bool {
+        self.values.len() == 0
+    }
+
+    /// Convert all remaining values to a Vec<T>
+    pub fn collect(self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Result<Vec<T>, SiltError> {
+        let mut result = Vec::new();
+        for value in self.values {
+            result.push(T::from_lua(value, vm, mc)?);
+        }
+        Ok(result)
+    }
+
+    /// Get the next value as type T
+    pub fn next(&mut self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Option<Result<T, SiltError>> {
+        self.values
+            .next()
+            .map(|value| T::from_lua(value, vm, mc))
+    }
+
+    /// Peek at the next value without consuming it
+    pub fn peek(&self) -> Option<&Value<'gc>> {
+        self.values.as_slice().first()
+    }
+
+    /// Get a specific value by index as type T
+    pub fn get(&self, index: usize, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Option<Result<T, SiltError>> {
+        self.values
+            .as_slice()
+            .get(index)
+            .map(|value| T::from_lua(value, vm, mc))
+    }
+
+    /// Skip the next n values
+    pub fn skip(&mut self, n: usize) {
+        for _ in 0..n {
+            if self.values.next().is_none() {
+                break;
+            }
+        }
+    }
+
+    /// Get the remaining values as a slice
+    pub fn as_slice(&self) -> &[Value<'gc>] {
+        self.values.as_slice()
+    }
+}
+
+impl<'a, 'gc> Iterator for Variadic<'a, 'gc, Value<'gc>> {
+    type Item = &'a Value<'gc>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.values.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.values.size_hint()
+    }
+}
+
+impl<'a, 'gc> ExactSizeIterator for Variadic<'a, 'gc, Value<'gc>> {
+    fn len(&self) -> usize {
+        self.values.len()
+    }
 }

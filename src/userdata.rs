@@ -20,8 +20,8 @@ use crate::{
 };
 
 /// Result type for Lua operations
-pub type InnerResult<'gc> = Result< Value<'gc>, SiltError>;
-pub type ToInnerResult<'gc, V: ToLua<'gc>> =  V;
+pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
+pub type ToInnerResult<'gc, V: ToLua<'gc>> = V;
 
 /// Trait for Rust types that can be used as Lua UserData
 pub trait UserData: Sized + 'static {
@@ -46,33 +46,33 @@ pub trait UserDataMethods<'gc, T: UserData> {
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
 
     /// Add a method that can mutate the UserData
-    fn add_method_mut<F,V,R>(&mut self, name: &str, closure: F)
+    fn add_method_mut<F, V, R>(&mut self, name: &str, closure: F)
     where
-        V: FromLuaMulti<'gc>,
+        for<'a> V: FromLuaMulti<'gc, 'a>,
         R: ToLua<'gc>,
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc,R> + 'static;
+        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'static;
 
     /// Add a method that doesn't mutate the UserData
-    fn add_method<F,V>(&mut self, name: &str, closure: F)
+    fn add_method<F, V>(&mut self, name: &str, closure: F)
     where
-        V: FromLuaMulti<'gc>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static;
+        for<'a> V: FromLuaMulti<'gc, 'a>,
+        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static;
 }
 
 /// Trait for registering fields on UserData types
 pub trait UserDataFields<'gc, T: UserData> {
     /// Add a field getter
-    fn add_field_method_get<F,R>(&mut self, name: &str, closure: F)
+    fn add_field_method_get<F, R>(&mut self, name: &str, closure: F)
     where
         R: ToLua<'gc>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> ToInnerResult<'gc,R> + 'static;
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> ToInnerResult<'gc, R> + 'static;
 
     /// Add a field setter
-    fn add_field_method_set<F,V,R>(&mut self, name: &str, closure: F)
+    fn add_field_method_set<F, V, R>(&mut self, name: &str, closure: F)
     where
         V: FromLua<'gc>,
         R: ToLua<'gc>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc,R> + 'static;
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'static;
 }
 
 /// Function pointer for calling a method on a UserData instance
@@ -84,7 +84,7 @@ pub type UserDataGetterFn<'gc, T> = dyn Fn(&VM<'gc>, &Mutation<'gc>, &T) -> Inne
 
 /// Function pointer for setting a field on a UserData instance
 pub type UserDataSetterFn<'gc, T> =
-    dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc>+ 'gc;
+    dyn Fn(&VM<'gc>, &Mutation<'gc>, &mut T, Value<'gc>) -> InnerResult<'gc> + 'gc;
 
 /// Trait object for type-erased UserData methods
 pub trait UserDataMapTraitObj<'gc>: 'gc {
@@ -122,11 +122,11 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 }
 
 /// Stores methods and fields for a specific UserData type T
-pub struct UserDataTypedMap<'gc, T: UserData + 'static > {
+pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
     methods: HashMap<
         String,
         Box<
-            dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc 
+            dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc,
         >,
     >,
     method_cache: Vec<NativeFunctionRc<'gc>>,
@@ -137,7 +137,7 @@ pub struct UserDataTypedMap<'gc, T: UserData + 'static > {
     _phantom: PhantomData<T>,
 }
 
-impl<'gc, T: UserData + 'static > UserDataTypedMap<'gc, T> {
+impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
@@ -388,6 +388,19 @@ impl<'gc> UserDataMap<'gc> {
 //     Value::Nil
 // }
 //
+
+// trait MyFromLuaMulti<'gc>{
+//     type Type<'e>: FromLuaMulti<'gc,'e>;
+// }
+//
+// struct MyHeldValue<'e>(&'e str);
+// impl<'gc> MyFromLuaMulti<'gc> for MyHeldValue<'static>{
+//     type Type<'e> = MyHeldValue<'e>;
+// }
+
+
+// <V as MyFromLuaMulti<'gc>>::Type<'e>
+
 impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
@@ -402,50 +415,58 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
         self.meta_methods.insert(name.to_string(), func);
     }
 
-    fn add_method_mut<F,V,R>(&mut self, name: &str, closure: F)
-    where
+    fn add_method_mut<F, V, R>(&mut self, name: &str, closure: F)
+    where 
         R: ToLua<'gc>,
-        V: FromLuaMulti<'gc>,
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc,R> + 'gc,
-    {
-        // let func: UserDataMethodFn<T> = |vm, mc, ud, args| Err(SiltError::Unknown);
-        self.methods.insert(name.to_string(),
-            Box::new(move |vm, mc, ud, args| R::to_lua(closure(vm, mc, ud, V::from_lua_multi(&args, vm, mc)?),vm,mc)),
-        );
-    }
-
-    fn add_method<F,V>(&mut self, name: &str, closure: F)
-    where
-        V: FromLuaMulti<'gc>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static,
+        for<'e> V: FromLuaMulti<'gc, 'e>,
+        F: for<'e> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'gc,
     {
         self.methods.insert(
             name.to_string(),
-            Box::new(move |vm, mc, ud, args| closure(vm, mc, ud, V::from_lua_multi(&args, vm, mc)?)),
+            Box::new(move |vm, mc, ud, args| {
+                let r = V::from_lua_multi(&args, vm, mc)?;
+                R::to_lua(closure(vm, mc, ud, r), vm, mc)
+            }),
+        );
+    }
+
+    fn add_method<F, V>(&mut self, name: &str, closure: F)
+    where
+        for<'e> V: FromLuaMulti<'gc, 'e>,
+        F: for<'e> Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static,
+    {
+        self.methods.insert(
+            name.to_string(),
+            Box::new(move |vm, mc, ud, args| {
+                let r = V::from_lua_multi(&args, vm, mc)?;
+                closure(vm, mc, ud, r)
+            }),
         );
     }
 }
 
 impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc, T> {
-    fn add_field_method_get<F,R>(&mut self, name: &str, closure: F)
+    fn add_field_method_get<F, R>(&mut self, name: &str, closure: F)
     where
         R: ToLua<'gc>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> ToInnerResult<'gc,R> + 'gc,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> ToInnerResult<'gc, R> + 'gc,
     {
         println!("add getter {}", name);
-        let func: Box<UserDataGetterFn<T>> = Box::new(move |vm, mc, ud| R::to_lua(closure(vm, mc, ud),vm,mc));
+        let func: Box<UserDataGetterFn<T>> =
+            Box::new(move |vm, mc, ud| R::to_lua(closure(vm, mc, ud), vm, mc));
         self.getters.insert(name.to_string(), func);
     }
 
-    fn add_field_method_set<F,V,R>(&mut self, name: &str, closure: F)
+    fn add_field_method_set<F, V, R>(&mut self, name: &str, closure: F)
     where
         V: FromLua<'gc>,
         R: ToLua<'gc>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc,R> + 'gc,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'gc,
     {
         println!("add setter {}", name);
-        let func: Box<UserDataSetterFn<T>> =
-            Box::new(move |vm, mc, ud, arg| R::to_lua(closure(vm, mc, ud, V::from_lua(&arg, vm, mc)?),vm,mc));
+        let func: Box<UserDataSetterFn<T>> = Box::new(move |vm, mc, ud, arg| {
+            R::to_lua(closure(vm, mc, ud, V::from_lua(&arg, vm, mc)?), vm, mc)
+        });
         self.setters.insert(name.to_string(), func);
     }
 }
