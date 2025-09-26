@@ -48,15 +48,17 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a method that can mutate the UserData
     fn add_method_mut<F, V, R>(&mut self, name: &str, closure: F)
     where
-        for<'a > V: FromLuaMulti<'gc, 'a> + 'a ,
+        V: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'static;
+        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'static
+            where 'gc: 'a;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F, V>(&mut self, name: &str, closure: F)
     where
-        for<'a> V: FromLuaMulti<'gc, 'a>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static;
+        V: FromLuaMulti<'gc>,
+        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static
+            where 'gc: 'a;
 }
 
 /// Trait for registering fields on UserData types
@@ -417,8 +419,9 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     fn add_method_mut<F, V, R>(&mut self, name: &str, closure: F)
     where
         R: ToLua<'gc>,
-        for<'e> V: FromLuaMulti<'gc, 'e>,
-        F: for<'e> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'gc,
+        V: FromLuaMulti<'gc>,
+        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'gc
+            where 'gc: 'a,
     {
         self.methods.insert(
             name.to_string(),
@@ -431,8 +434,9 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
 
     fn add_method<F, V>(&mut self, name: &str, closure: F)
     where
-        for<'e> V: FromLuaMulti<'gc, 'e>,
-        F: for<'e> Fn(&VM<'gc>, &Mutation<'gc>, &T, V) -> InnerResult<'gc> + 'static,
+        V: FromLuaMulti<'gc>,
+        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static
+            where 'gc: 'a,
     {
         self.methods.insert(
             name.to_string(),
