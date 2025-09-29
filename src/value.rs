@@ -1021,10 +1021,10 @@ pub trait FromLuaMulti<'gc>: Sized {
 // }
 
 impl<'gc> FromLuaMulti<'gc> for Vec<Value<'gc>> {
-    type Args<'a> = Vec<Value<'gc>> where 'gc: 'a;
+    type Args<'a> = &'a [Value<'gc>] where 'gc: 'a;
     
     fn from_lua_multi<'a>(args: &'a [Value<'gc>], _: &VM<'gc>, _: &Mutation<'gc>) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
-        Ok(args.to_vec())
+        Ok(args)
     }
 }
 
