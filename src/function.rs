@@ -278,7 +278,7 @@ impl<'a> NativeFunctionRaw<'a> {
     where
         R: ToLua<'a>,
         T: FromLuaMulti<'a>,
-        F: Fn(&mut VM<'a>, &Mutation<'a>, T) -> ToInnerResult<'a, R> + 'a,
+        F: for <'f> Fn(&mut VM<'a>, &Mutation<'a>, T::Args<'f>) -> ToInnerResult<'a, R> + 'a,
     {
         Self {
             func: Box::new(move |vm, mc, raw_args| {

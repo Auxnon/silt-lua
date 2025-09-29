@@ -1,5 +1,12 @@
 use std::{
-    borrow::{Borrow, BorrowMut}, cell::RefCell, collections::HashMap, error::Error, mem::take, ops::DerefMut, rc::Rc, sync::{Arc, Mutex}
+    borrow::{Borrow, BorrowMut},
+    cell::RefCell,
+    collections::HashMap,
+    error::Error,
+    mem::take,
+    ops::DerefMut,
+    rc::Rc,
+    sync::{Arc, Mutex},
 };
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
@@ -8,10 +15,15 @@ use crate::{
     code::OpCode,
     compiler::{self, Compiler},
     error::{ErrorTuple, SiltError, ValueTypes},
-    function::{CallFrame, Closure, FunctionObject, NativeFunctionRaw, NativeFunctionRef, UpValue, WrappedFn},
+    function::{
+        CallFrame, Closure, FunctionObject, NativeFunctionRaw, NativeFunctionRef, UpValue,
+        WrappedFn,
+    },
     prelude::UserData,
     table::{ExTable, Table},
-    userdata::{InnerResult, MetaMethod, ToInnerResult, UserDataRegistry, UserDataWrapper, WeakWrapper},
+    userdata::{
+        InnerResult, MetaMethod, ToInnerResult, UserDataRegistry, UserDataWrapper, WeakWrapper,
+    },
     value::{ExVal, FromLuaMulti, ToLua, ToLuaMulti, Value},
 };
 
@@ -297,9 +309,9 @@ impl<'gc> Lua {
     }
 
     /// enter into the VM state to modify the VM directly
-    pub fn enter<F>(&mut self, closure: F) -> Result<ExVal,Box< dyn std::error::Error>>
+    pub fn enter<F>(&mut self, closure: F) -> Result<ExVal, Box<dyn std::error::Error>>
     where
-        F: for<'a> Fn(&mut VM<'a>, &Mutation<'a>)->Result<ExVal,Box< dyn std::error::Error>>,
+        F: for<'a> Fn(&mut VM<'a>, &Mutation<'a>) -> Result<ExVal, Box<dyn std::error::Error>>,
     {
         self.arena.mutate_root(move |mc, vm| {
             closure(vm, mc)
@@ -1298,7 +1310,7 @@ impl<'gc> VM<'gc> {
                             let mut args = self.popn(ep, *arity + 1);
 
                             if let Value::NativeFunction(f) = args.remove(0) {
-                                let res = f.f.call(self,  ep.mc, &args);
+                                let res = f.f.call(self, ep.mc, &args);
                                 // self.popn_drop(*param_count);
                                 self.push(ep, res?);
                             } else {
@@ -1868,26 +1880,24 @@ impl<'gc> VM<'gc> {
     pub fn testy<'a>(&mut self, mc: &'a Mutation<'gc>, name: &str) {}
 
     /** Register a native function on the global table  */
-    pub fn register_native_function<'a, F,T,R>(
+    pub fn register_native_function<'a, F, T, R>(
         &mut self,
         mc: &'a Mutation<'gc>,
         name: &str,
         function: F,
     ) where
         R: ToLua<'gc>,
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, T)-> ToInnerResult<'gc,R> + 'static,
-        T:  FromLuaMulti<'gc> , // pub type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a> + 'a;
+        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, T::Args<'f>) -> ToInnerResult<'gc, R> + 'gc,
+        T: FromLuaMulti<'gc>, // pub type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a> + 'a;
 
-                                                                                            // where
-                                                                                            //         N: for <'a, 'b> Fn(&'a mut VM<'gc>, &'b Mutation<'gc>, Vec<Value<'gc>>)-> Value<'gc>,
+                              // where
+                              //         N: for <'a, 'b> Fn(&'a mut VM<'gc>, &'b Mutation<'gc>, Vec<Value<'gc>>)-> Value<'gc>,
     {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
         let raw = NativeFunctionRaw::new(function);
 
-        let f = WrappedFn {
-            f: Rc::new(raw),
-        };
+        let f = WrappedFn { f: Rc::new(raw) };
 
         self.globals
             .borrow_mut(mc)

@@ -12,11 +12,7 @@ use std::{
 use gc_arena::{Collect, Gc, Mutation};
 
 use crate::{
-    code::OpCode,
-    error::SiltError,
-    function::{NativeFunctionRaw, NativeFunctionRc, WrappedFn},
-    lua::VM,
-    value::{FromLua, FromLuaMulti, ToLua, Value},
+    code::OpCode, error::SiltError, function::{NativeFunctionRaw, NativeFunctionRc, WrappedFn}, lua::VM, table::ExTable, value::{FromLua, FromLuaMulti, ToLua, Value}
 };
 
 /// Result type for Lua operations
@@ -50,15 +46,13 @@ pub trait UserDataMethods<'gc, T: UserData> {
     where
         V: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
-        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'static
-            where 'gc: 'a;
+        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'static;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F, V>(&mut self, name: &str, closure: F)
     where
         V: FromLuaMulti<'gc>,
-        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static
-            where 'gc: 'a;
+        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static;
 }
 
 /// Trait for registering fields on UserData types
@@ -218,7 +212,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
                 }
                 Err(SiltError::UDBadCast)
             };
-            let raw = NativeFunctionRaw::new(native_fn);
+            let raw = NativeFunctionRaw::new::<Vec<Value<'gc>>,_,_>(native_fn);
             let r = Rc::new(raw);
             self.method_cache.push(r.clone());
             self.getters.insert(
@@ -402,7 +396,7 @@ impl<'gc> UserDataMap<'gc> {
 
 // <V as MyFromLuaMulti<'gc>>::Type<'e>
 
-impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
+impl< 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
@@ -421,7 +415,6 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
         R: ToLua<'gc>,
         V: FromLuaMulti<'gc>,
         F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'static
-            where 'gc: 'a,
     {
         self.methods.insert(
             name.to_string(),
@@ -436,7 +429,6 @@ impl<'a, 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMa
     where
         V: FromLuaMulti<'gc>,
         F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static
-            where 'gc: 'a,
     {
         self.methods.insert(
             name.to_string(),
@@ -736,7 +728,7 @@ impl UserData for TestEnt {
             Ok(Value::String(format!("[entity {}]", this.get_id())))
         });
 
-        methods.add_method_mut("pos", |_, _, this, args: Vec<Value>| {
+        methods.add_method_mut("pos", |_, _, this, args: Table| {
             // Example of parsing a table to set position
             if let Some(Value::Table(t)) = args.first() {
                 let t_ref = (*t).borrow();
