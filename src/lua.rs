@@ -1921,12 +1921,12 @@ impl<'gc> VM<'gc> {
             };
         }
 
-        self.register_native_function::<(), _, _>(mc, "clock", &crate::standard::clock);
-        // register_native_fn!("clock", &crate::standard::clock, ());
-        // register_native_fn!("print", &crate::standard::print);
-        // register_native_fn!("setmetatable", &crate::standard::setmetatable);
-        // register_native_fn!("getmetatable", &crate::standard::getmetatable);
-        // register_native_fn!("test_ent", &crate::standard::test_ent);
+        self.register_native_function::<(), _, _>(mc, "clock", crate::standard::clock);
+        // register_native_fn!("clock", crate::standard::clock, ());
+        // register_native_fn!("print", crate::standard::print);
+        // register_native_fn!("setmetatable", crate::standard::setmetatable);
+        // register_native_fn!("getmetatable", crate::standard::getmetatable);
+        // register_native_fn!("test_ent", crate::standard::test_ent);
 
         // Example of closure without turbofish
         // let test = Box::new(5);
