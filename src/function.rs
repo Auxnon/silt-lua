@@ -288,6 +288,16 @@ impl<'a> NativeFunctionRaw<'a> {
         }
     }
 
+    /// Helper method that infers types from closure signature
+    pub fn from_closure<F, T, R>(f: F) -> Self
+    where
+        R: ToLua<'a>,
+        T: FromLuaMulti<'a>,
+        F: for <'f> Fn(&mut VM<'a>, &Mutation<'a>, T::Args<'f>) -> ToInnerResult<'a, R> + 'a,
+    {
+        Self::new::<T, F, R>(f)
+    }
+
     pub fn call(
         &self,
         vm: &mut VM<'a>,

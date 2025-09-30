@@ -1904,6 +1904,18 @@ impl<'gc> VM<'gc> {
             .insert(name.into(), Value::NativeFunction(Gc::new(mc, f)));
     }
 
+    /** Register a native function with automatic type inference */
+    pub fn register_native_fn<F>(&mut self, mc: &Mutation<'gc>, name: &str, function: F)
+    where
+        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, <() as FromLuaMulti<'gc>>::Args<'f>) -> ToInnerResult<'gc, ()> + 'gc,
+    {
+        let raw = NativeFunctionRaw::from_closure(function);
+        let f = WrappedFn { f: Rc::new(raw) };
+        self.globals
+            .borrow_mut(mc)
+            .insert(name.into(), Value::NativeFunction(Gc::new(mc, f)));
+    }
+
     // /// Register a UserData type with the VM
     // pub fn register_userdata_type<T: UserData>(&mut self) {
     //     self.userdata_registry.register::<T>();
@@ -1921,22 +1933,26 @@ impl<'gc> VM<'gc> {
 
     /** Load standard library functions */
     pub fn load_standard_library<'a>(&mut self, mc: &Mutation<'gc>) {
-        // <fn(VM,Mutation,Vec<Value>)>
-        // // ::<'a, &'static fn(&VM,&Mutation,Vec<Value>)->InnerResult<'gc>>
-        self.register_native_function::<(),_,_>(
-            mc,
-            "clock",
-            &crate::standard::clock,
-        );
-        self.register_native_function::<Vec<Value>,_,_>(mc, "print", &crate::standard::print);
+        // Helper macro to avoid turbofish syntax
+        macro_rules! register_fn {
+            ($name:expr, $func:expr, $input_type:ty) => {
+                self.register_native_function::<$input_type, _, _>(mc, $name, $func)
+            };
+        }
+
+        register_fn!("clock", &crate::standard::clock, ());
+        register_fn!("print", &crate::standard::print, Vec<Value>);
+        
+        // For functions where type inference works
         self.register_native_function(mc, "setmetatable", &crate::standard::setmetatable);
         self.register_native_function(mc, "getmetatable", &crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", &crate::standard::test_ent);
-        // let  test = Box::new(5);
-        // self.register_native_function(mc, "test_closure", move |_, _, _| {
-        //     // (*test) += 5;
+        
+        // Example of closure without turbofish
+        // let test = Box::new(5);
+        // register_fn!("test_closure", move |_, _, _: ()| {
         //     Ok((*test).into())
-        // });
+        // }, ());
     }
 
     /// Clean up dropped UserData references from the userdata_stack
