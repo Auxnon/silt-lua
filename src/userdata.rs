@@ -12,7 +12,12 @@ use std::{
 use gc_arena::{Collect, Gc, Mutation};
 
 use crate::{
-    code::OpCode, error::SiltError, function::{NativeFunctionRaw, NativeFunctionRc, WrappedFn}, lua::VM, table::ExTable, value::{FromLua, FromLuaMulti, ToLua, Value}
+    code::OpCode,
+    error::SiltError,
+    function::{NativeFunctionRaw, NativeFunctionRc, WrappedFn},
+    lua::VM,
+    table::{ExTable, Table},
+    value::{FromLua, FromLuaMulti, ToLua, Value},
 };
 
 /// Result type for Lua operations
@@ -42,11 +47,12 @@ pub trait UserDataMethods<'gc, T: UserData> {
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
 
     /// Add a method that can mutate the UserData
-    fn add_method_mut<F, V, R>(&mut self, name: &str, closure: F)
+    fn add_method_mut<V, F, R>(&mut self, name: &str, closure: F)
     where
         V: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
-        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'static;
+        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R>
+            + 'static;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<F, V>(&mut self, name: &str, closure: F)
@@ -212,7 +218,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
                 }
                 Err(SiltError::UDBadCast)
             };
-            let raw = NativeFunctionRaw::new::<Vec<Value<'gc>>,_,_>(native_fn);
+            let raw = NativeFunctionRaw::new::<Vec<Value<'gc>>, _, _>(native_fn);
             let r = Rc::new(raw);
             self.method_cache.push(r.clone());
             self.getters.insert(
@@ -396,7 +402,7 @@ impl<'gc> UserDataMap<'gc> {
 
 // <V as MyFromLuaMulti<'gc>>::Type<'e>
 
-impl< 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
+impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
@@ -414,7 +420,8 @@ impl< 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'
     where
         R: ToLua<'gc>,
         V: FromLuaMulti<'gc>,
-        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R> + 'static
+        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R>
+            + 'static,
     {
         self.methods.insert(
             name.to_string(),
@@ -428,7 +435,7 @@ impl< 'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'
     fn add_method<F, V>(&mut self, name: &str, closure: F)
     where
         V: FromLuaMulti<'gc>,
-        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static
+        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static,
     {
         self.methods.insert(
             name.to_string(),
@@ -728,20 +735,33 @@ impl UserData for TestEnt {
             Ok(Value::String(format!("[entity {}]", this.get_id())))
         });
 
-        methods.add_method_mut("pos", |_, _, this, args: Table| {
+        methods.add_method_mut::<&[Value<'gc>],_,_>("pos", |_, _, this, arg: &[Value<'gc>]| {
             // Example of parsing a table to set position
-            if let Some(Value::Table(t)) = args.first() {
-                let t_ref = (*t).borrow();
-                if let Some(x) = t_ref.get("x") {
+            if let Some(Value::Table(t)) = arg.first() {
+                let tbl=t.borrow();
+                if let Some(x) = tbl.get("x") {
                     this.x = x.into();
                 }
-                if let Some(y) = t_ref.get(Value::String("y".to_string())) {
+                if let Some(y) = tbl.get("y") {
                     this.y = y.into();
                 }
-                if let Some(z) = t_ref.get(Value::String("z".to_string())) {
+                if let Some(z) = tbl.get("z") {
                     this.z = z.into();
                 }
             }
+
+            // if let Some(Value::Table(t)) = args.first() {
+            //     let t_ref = (*t).borrow();
+            //     if let Some(x) = t_ref.get("x") {
+            //         this.x = x.into();
+            //     }
+            //     if let Some(y) = t_ref.get(Value::String("y".to_string())) {
+            //         this.y = y.into();
+            //     }
+            //     if let Some(z) = t_ref.get(Value::String("z".to_string())) {
+            //         this.z = z.into();
+            //     }
+            // }
             Ok(())
         });
 

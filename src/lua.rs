@@ -1,13 +1,4 @@
-use std::{
-    borrow::{Borrow, BorrowMut},
-    cell::RefCell,
-    collections::HashMap,
-    error::Error,
-    mem::take,
-    ops::DerefMut,
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
+use std::{borrow::BorrowMut, cell::RefCell, mem::take, ops::DerefMut, rc::Rc};
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
@@ -1877,21 +1868,19 @@ impl<'gc> VM<'gc> {
             vec![right],
         )
     }
-    pub fn testy<'a>(&mut self, mc: &'a Mutation<'gc>, name: &str) {}
+
+    pub fn testy<'a>(&mut self, _mc: &'a Mutation<'gc>, _name: &str) {}
 
     /** Register a native function on the global table  */
-    pub fn register_native_function<'a, T, F, R>(
+    pub fn register_native_function< T, F, R>(
         &mut self,
-        mc: &'a Mutation<'gc>,
+        mc: &Mutation<'gc>,
         name: &str,
         function: F,
     ) where
         R: ToLua<'gc>,
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, T) -> ToInnerResult<'gc, R> + 'gc,
-        T: FromLuaMulti<'gc>, // pub type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a> + 'a;
-
-                              // where
-                              //         N: for <'a, 'b> Fn(&'a mut VM<'gc>, &'b Mutation<'gc>, Vec<Value<'gc>>)-> Value<'gc>,
+        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, T::Args<'f>) -> ToInnerResult<'gc, R> +'gc,
+        T: FromLuaMulti<'gc>,
     {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
@@ -1899,18 +1888,6 @@ impl<'gc> VM<'gc> {
 
         let f = WrappedFn { f: Rc::new(raw) };
 
-        self.globals
-            .borrow_mut(mc)
-            .insert(name.into(), Value::NativeFunction(Gc::new(mc, f)));
-    }
-
-    /** Register a native function with automatic type inference */
-    pub fn register_native_fn<F>(&mut self, mc: &Mutation<'gc>, name: &str, function: F)
-    where
-        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, <() as FromLuaMulti<'gc>>::Args<'f>) -> ToInnerResult<'gc, ()> + 'gc,
-    {
-        let raw = NativeFunctionRaw::from_closure(function);
-        let f = WrappedFn { f: Rc::new(raw) };
         self.globals
             .borrow_mut(mc)
             .insert(name.into(), Value::NativeFunction(Gc::new(mc, f)));
@@ -1932,22 +1909,25 @@ impl<'gc> VM<'gc> {
     }
 
     /** Load standard library functions */
-    pub fn load_standard_library<'a>(&mut self, mc: &Mutation<'gc>) {
+    pub fn load_standard_library<'a>(&'a mut self, mc: &'a Mutation<'gc>) {
         // Helper macro to avoid turbofish syntax
-        macro_rules! register_fn {
+        macro_rules! register_native_fn {
+            ($name:expr, $func:expr) => {
+                self.register_native_function::<Vec<Value>, _, _>(mc, $name, $func)
+            };
+
             ($name:expr, $func:expr, $input_type:ty) => {
                 self.register_native_function::<$input_type, _, _>(mc, $name, $func)
             };
         }
 
-        register_fn!("clock", &crate::standard::clock, ());
-        register_fn!("print", &crate::standard::print, Vec<Value>);
-        
-        // For functions where type inference works
-        self.register_native_function(mc, "setmetatable", &crate::standard::setmetatable);
-        self.register_native_function(mc, "getmetatable", &crate::standard::getmetatable);
-        self.register_native_function(mc, "test_ent", &crate::standard::test_ent);
-        
+        self.register_native_function::<(), _, _>(mc, "clock", &crate::standard::clock);
+        // register_native_fn!("clock", &crate::standard::clock, ());
+        register_native_fn!("print", &crate::standard::print);
+        register_native_fn!("setmetatable", &crate::standard::setmetatable);
+        register_native_fn!("getmetatable", &crate::standard::getmetatable);
+        register_native_fn!("test_ent", &crate::standard::test_ent);
+
         // Example of closure without turbofish
         // let test = Box::new(5);
         // register_fn!("test_closure", move |_, _, _: ()| {
