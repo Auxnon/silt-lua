@@ -1879,8 +1879,8 @@ impl<'gc> VM<'gc> {
         function: F,
     ) where
         R: ToLua<'gc>,
-        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, T::Args<'f>) -> ToInnerResult<'gc, R> +'gc,
-        T: FromLuaMulti<'gc>,
+        F: for<'a,'f> Fn(&'a mut VM<'gc>, &Mutation<'gc>, T::Args<'f>) -> ToInnerResult<'gc, R> +'static,
+        T: FromLuaMulti<'gc>
     {
         // let fn_obj = NativeObject::new(name, function);
         // let g= Gc::new(mc, function);
@@ -1909,7 +1909,7 @@ impl<'gc> VM<'gc> {
     }
 
     /** Load standard library functions */
-    pub fn load_standard_library<'a>(&'a mut self, mc: &'a Mutation<'gc>) {
+    pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
         // Helper macro to avoid turbofish syntax
         macro_rules! register_native_fn {
             ($name:expr, $func:expr) => {
@@ -1923,10 +1923,10 @@ impl<'gc> VM<'gc> {
 
         self.register_native_function::<(), _, _>(mc, "clock", &crate::standard::clock);
         // register_native_fn!("clock", &crate::standard::clock, ());
-        register_native_fn!("print", &crate::standard::print);
-        register_native_fn!("setmetatable", &crate::standard::setmetatable);
-        register_native_fn!("getmetatable", &crate::standard::getmetatable);
-        register_native_fn!("test_ent", &crate::standard::test_ent);
+        // register_native_fn!("print", &crate::standard::print);
+        // register_native_fn!("setmetatable", &crate::standard::setmetatable);
+        // register_native_fn!("getmetatable", &crate::standard::getmetatable);
+        // register_native_fn!("test_ent", &crate::standard::test_ent);
 
         // Example of closure without turbofish
         // let test = Box::new(5);
