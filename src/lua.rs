@@ -1880,14 +1880,14 @@ impl<'gc> VM<'gc> {
     pub fn testy<'a>(&mut self, mc: &'a Mutation<'gc>, name: &str) {}
 
     /** Register a native function on the global table  */
-    pub fn register_native_function<'a, F, T, R>(
+    pub fn register_native_function<'a, T, F, R>(
         &mut self,
         mc: &'a Mutation<'gc>,
         name: &str,
         function: F,
     ) where
         R: ToLua<'gc>,
-        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, T::Args<'f>) -> ToInnerResult<'gc, R> + 'gc,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, T) -> ToInnerResult<'gc, R> + 'gc,
         T: FromLuaMulti<'gc>, // pub type NativeFunctionRaw<'a> = dyn Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> InnerResult<'a> + 'a;
 
                               // where
@@ -1923,8 +1923,12 @@ impl<'gc> VM<'gc> {
     pub fn load_standard_library<'a>(&mut self, mc: &Mutation<'gc>) {
         // <fn(VM,Mutation,Vec<Value>)>
         // // ::<'a, &'static fn(&VM,&Mutation,Vec<Value>)->InnerResult<'gc>>
-        self.register_native_function(mc, "clock", &crate::standard::clock);
-        self.register_native_function(mc, "print", &crate::standard::print);
+        self.register_native_function::<(),_,_>(
+            mc,
+            "clock",
+            &crate::standard::clock,
+        );
+        self.register_native_function::<Vec<Value>,_,_>(mc, "print", &crate::standard::print);
         self.register_native_function(mc, "setmetatable", &crate::standard::setmetatable);
         self.register_native_function(mc, "getmetatable", &crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", &crate::standard::test_ent);
