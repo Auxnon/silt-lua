@@ -734,6 +734,20 @@ impl From<&Value<'_>> for u8 {
     }
 }
 
+// ========== convert table ==========
+
+// TODO is this impossible?
+// impl FromLua<'_> for &Table<'_> {
+//     fn from_lua(val: &Value<'_>, vm: &VM<'_>, _: &Mutation<'_>) -> Result<Self, SiltError> {
+//         let v = match val {
+//             Value::Table(t) => t.borrow(),
+//             _ => vm.raw_table(),
+//         };
+//         Ok(v)
+//     }
+// }
+
+// ==========  ==========
 impl<'a> From<&Value<'a>> for Option<Value<'a>> {
     fn from(value: &Value<'a>) -> Self {
         match value {
@@ -1000,13 +1014,17 @@ where
 }
 
 pub trait FromLuaMulti<'gc>: Sized {
-    type Args<'a> where 'gc: 'a;
-    
+    type Args<'a>
+    where
+        'gc: 'a;
+
     fn from_lua_multi<'a>(
         args: &'a [Value<'gc>],
         lua: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a;
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a;
 }
 
 // TODO how to return... the same args again?
@@ -1021,17 +1039,63 @@ pub trait FromLuaMulti<'gc>: Sized {
 // }
 
 impl<'gc> FromLuaMulti<'gc> for Vec<Value<'gc>> {
-    type Args<'a> = &'a [Value<'gc>] where 'gc: 'a;
-    
-    fn from_lua_multi<'a>(args: &'a [Value<'gc>], _: &VM<'gc>, _: &Mutation<'gc>) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    type Args<'a>
+        = Self
+    where
+        'gc: 'a;
+
+    fn from_lua_multi<'a>(
+        args: &'a [Value<'gc>],
+        _: &VM<'gc>,
+        _: &Mutation<'gc>,
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
+        Ok(args.to_vec())
+    }
+}
+
+impl<'gc> FromLuaMulti<'gc> for &[Value<'gc>] {
+    type Args<'a>
+        = &'a [Value<'gc>]
+    where
+        'gc: 'a;
+
+    fn from_lua_multi<'a>(
+        args: &'a [Value<'gc>],
+        _: &VM<'gc>,
+        _: &Mutation<'gc>,
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok(args)
     }
 }
 
+// impl<'gc> FromLuaMulti<'gc> for () {
+//     type Args<'a> = Self where 'gc: 'a;
+//
+//     fn from_lua_multi<'a>(_: &'a [Value<'gc>], _: &VM<'gc>, _: &Mutation<'gc>) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+//         Ok(())
+//     }
+// }
+//
 impl<'gc> FromLuaMulti<'gc> for () {
-    type Args<'a> = () where 'gc: 'a;
-    
-    fn from_lua_multi<'a>(_: &'a [Value<'gc>], _: &VM<'gc>, _: &Mutation<'gc>) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    type Args<'a>
+        = Self
+    where
+        'gc: 'a;
+
+    fn from_lua_multi<'a>(
+        _: &'a [Value<'gc>],
+        _: &VM<'gc>,
+        _: &Mutation<'gc>,
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok(())
     }
 }
@@ -1040,13 +1104,19 @@ impl<'gc, T1> FromLuaMulti<'gc> for (T1,)
 where
     T1: FromLua<'gc>,
 {
-    type Args<'a> = (T1,) where 'gc: 'a;
-    
+    type Args<'a>
+        = (T1,)
+    where
+        'gc: 'a;
+
     fn from_lua_multi<'a>(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok((T1::from_lua(&args[0], vm, mc)?,))
     }
 }
@@ -1055,13 +1125,19 @@ impl<'gc, T> FromLuaMulti<'gc> for Variadic<'static, 'gc, T>
 where
     T: FromLua<'gc>,
 {
-    type Args<'a> = Variadic<'a, 'gc, T> where 'gc: 'a;
-    
+    type Args<'a>
+        = Variadic<'a, 'gc, T>
+    where
+        'gc: 'a;
+
     fn from_lua_multi<'a>(
         args: &'a [Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok(Variadic::new(args.iter()))
     }
 }
@@ -1071,13 +1147,19 @@ where
     A: FromLua<'gc>,
     B: FromLua<'gc>,
 {
-    type Args<'a> = (A, B) where 'gc: 'a;
-    
+    type Args<'a>
+        = (A, B)
+    where
+        'gc: 'a;
+
     fn from_lua_multi<'a>(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1091,13 +1173,19 @@ where
     B: FromLua<'gc>,
     C: FromLua<'gc>,
 {
-    type Args<'a> = (A, B, C) where 'gc: 'a;
-    
+    type Args<'a>
+        = (A, B, C)
+    where
+        'gc: 'a;
+
     fn from_lua_multi<'a>(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1113,13 +1201,19 @@ where
     C: FromLua<'gc>,
     D: FromLua<'gc>,
 {
-    type Args<'a> = (A, B, C, D) where 'gc: 'a;
-    
+    type Args<'a>
+        = (A, B, C, D)
+    where
+        'gc: 'a;
+
     fn from_lua_multi<'a>(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1137,13 +1231,19 @@ where
     D: FromLua<'gc>,
     E: FromLua<'gc>,
 {
-    type Args<'a> = (A, B, C, D, E) where 'gc: 'a;
-    
+    type Args<'a>
+        = (A, B, C, D, E)
+    where
+        'gc: 'a;
+
     fn from_lua_multi<'a>(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1163,13 +1263,19 @@ where
     E: FromLua<'gc>,
     F: FromLua<'gc>,
 {
-    type Args<'a> = (A, B, C, D, E, F) where 'gc: 'a;
-    
+    type Args<'a>
+        = (A, B, C, D, E, F)
+    where
+        'gc: 'a;
+
     fn from_lua_multi<'a>(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError> where 'gc: 'a {
+    ) -> Result<Self::Args<'a>, SiltError>
+    where
+        'gc: 'a,
+    {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1225,9 +1331,7 @@ where
 
     /// Get the next value as type T
     pub fn next(&mut self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Option<Result<T, SiltError>> {
-        self.values
-            .next()
-            .map(|value| T::from_lua(value, vm, mc))
+        self.values.next().map(|value| T::from_lua(value, vm, mc))
     }
 
     /// Peek at the next value without consuming it
@@ -1236,7 +1340,12 @@ where
     }
 
     /// Get a specific value by index as type T
-    pub fn get(&self, index: usize, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Option<Result<T, SiltError>> {
+    pub fn get(
+        &self,
+        index: usize,
+        vm: &VM<'gc>,
+        mc: &Mutation<'gc>,
+    ) -> Option<Result<T, SiltError>> {
         self.values
             .as_slice()
             .get(index)

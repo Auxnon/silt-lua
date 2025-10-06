@@ -199,7 +199,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
 
             let native_fn = move |vm: &mut VM<'gc>,
                                   mc: &Mutation<'gc>,
-                                  args: Vec<Value<'gc>>|
+                                  args: &[Value<'gc>]|
                   -> InnerResult<'gc> {
                 let method_args = args[1..].to_vec();
                 // First argument should be the UserData instance

@@ -1873,17 +1873,15 @@ impl<'gc> VM<'gc> {
 
     /** Register a native function on the global table  */
     pub fn register_native_function< T, F, R>(
-        &mut self,
+        &self,
         mc: &Mutation<'gc>,
         name: &str,
         function: F,
     ) where
         R: ToLua<'gc>,
-        F: for<'a,'f> Fn(&'a mut VM<'gc>, &Mutation<'gc>, T::Args<'f>) -> ToInnerResult<'gc, R> +'static,
+        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, T::Args<'f>) -> ToInnerResult<'gc, R> +'gc,
         T: FromLuaMulti<'gc>
     {
-        // let fn_obj = NativeObject::new(name, function);
-        // let g= Gc::new(mc, function);
         let raw = NativeFunctionRaw::new(function);
 
         let f = WrappedFn { f: Rc::new(raw) };
@@ -1910,18 +1908,21 @@ impl<'gc> VM<'gc> {
 
     /** Load standard library functions */
     pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
-        // Helper macro to avoid turbofish syntax
-        macro_rules! register_native_fn {
-            ($name:expr, $func:expr) => {
-                self.register_native_function::<Vec<Value>, _, _>(mc, $name, $func)
-            };
 
-            ($name:expr, $func:expr, $input_type:ty) => {
-                self.register_native_function::<$input_type, _, _>(mc, $name, $func)
-            };
-        }
+        // macro_rules! register_native_fn {
+        //     ($name:expr, $func:expr) => {
+        //         self.register_native_function::<Vec<Value>, _, _>(mc, $name, $func)
+        //     };
+        //
+        //     ($name:expr, $func:expr, $input_type:ty) => {
+        //         self.register_native_function::<$input_type, _, _>(mc, $name, $func)
+        //     };
+        // }
 
-        self.register_native_function::<(), _, _>(mc, "clock", crate::standard::clock);
+        self.register_native_function::<(f64,),fn(&mut VM<'gc>, &Mutation<'gc>, (f64,)) -> InnerResult<'gc> 
+
+
+            ,_>(mc, "clock", crate::standard::clock);
         // register_native_fn!("clock", crate::standard::clock, ());
         // register_native_fn!("print", crate::standard::print);
         // register_native_fn!("setmetatable", crate::standard::setmetatable);
