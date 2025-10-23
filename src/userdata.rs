@@ -14,10 +14,10 @@ use gc_arena::{Collect, Gc, Mutation};
 use crate::{
     code::OpCode,
     error::SiltError,
-    function::{NativeFunctionRaw, NativeFunctionRc, WrappedFn},
+    function::NativeFunctionRc,
     lua::VM,
     table::{ExTable, Table},
-    value::{FromLua, FromLuaMulti, ToLua, Value},
+    value::{FromLua, FromLuaMulti, ToLua, Value, Variadic},
 };
 
 /// Result type for Lua operations
@@ -49,16 +49,31 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a method that can mutate the UserData
     fn add_method_mut<V, F, R>(&mut self, name: &str, closure: F)
     where
-        V: FromLuaMulti<'gc>,
+        V: for<'f> FromLuaMulti<'f, 'gc>,
         R: ToLua<'gc>,
-        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R>
-            + 'static;
+        F: Fn(
+                &mut VM<'gc>,
+                &Mutation<'gc>,
+                &mut T,
+                V,
+                // FromLuaMulti<'f,'gc>,
+                // <(dyn FromLuaMulti<'f, 'gc>) as IntoIterator>::Item,
+            ) -> ToInnerResult<'gc, R>
+            + 'gc;
 
     /// Add a method that doesn't mutate the UserData
-    fn add_method<F, V>(&mut self, name: &str, closure: F)
+    fn add_method<V, F, R>(&mut self, name: &str, closure: F)
     where
-        V: FromLuaMulti<'gc>,
-        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static;
+        V: for<'f> FromLuaMulti<'f, 'gc> + 'gc,
+        R: ToLua<'gc> + 'gc,
+        F: Fn(
+                &VM<'gc>,
+                &Mutation<'gc>,
+                &T,
+                V,
+                // <V as FromLuaMulti<'_, 'gc>>::Item,
+            ) -> ToInnerResult<'gc, R>
+            + 'gc;
 }
 
 /// Trait for registering fields on UserData types
@@ -124,7 +139,7 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 }
 
 /// Stores methods and fields for a specific UserData type T
-pub struct UserDataTypedMap<'gc, T: UserData + 'static> {
+pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
     methods: HashMap<
         String,
         Box<
@@ -199,34 +214,35 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
 
             let native_fn = move |vm: &mut VM<'gc>,
                                   mc: &Mutation<'gc>,
-                                  args: &[Value<'gc>]|
-                  -> InnerResult<'gc> {
-                let method_args = args[1..].to_vec();
-                // First argument should be the UserData instance
-                if let Value::UserData(ud_ref) = args[0] {
-                    let ud_borrow = ud_ref.borrow();
-                    if let Ok(mut data_lock) = ud_borrow.data.lock() {
-                        if let Some(typed_data) = data_lock.downcast_mut::<T>() {
-                            // println!("we're here an dthen{:?}", method_fn);
-                            for ele in method_args.iter() {
-                                println!(" args {}", ele);
-                            }
-                            // Call the method with remaining arguments
-                            return method_fn(vm, mc, typed_data, method_args);
-                        }
-                    };
-                }
-                Err(SiltError::UDBadCast)
+                                  args: Variadic<Value<'gc>>|
+                  -> Value<'gc> {
+                // let method_args = args[1..].to_vec();
+                // // First argument should be the UserData instance
+                // if let Value::UserData(ud_ref) = args[0] {
+                //     let ud_borrow = ud_ref.borrow();
+                //     if let Ok(mut data_lock) = ud_borrow.data.lock() {
+                //         if let Some(typed_data) = data_lock.downcast_mut::<T>() {
+                //             // println!("we're here an dthen{:?}", method_fn);
+                //             for ele in method_args.iter() {
+                //                 println!(" args {}", ele);
+                //             }
+                //             // Call the method with remaining arguments
+                //             return method_fn(vm, mc, typed_data, method_args);
+                //         }
+                //     };
+                // }
+                // Err(SiltError::UDBadCast)
+                Value::Nil
             };
-            let raw = NativeFunctionRaw::new::<Vec<Value<'gc>>, _, _>(native_fn);
-            let r = Rc::new(raw);
-            self.method_cache.push(r.clone());
-            self.getters.insert(
-                st.to_string(),
-                Box::new(move |_, m, _| {
-                    Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
-                }),
-            );
+            // let raw = NativeFunctionRaw::new(native_fn);
+            // let r = Rc::new(raw);
+            // self.method_cache.push(r.clone());
+            // self.getters.insert(
+            //     st.to_string(),
+            //     Box::new(move |_, m, _| {
+            //         Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
+            //     }),
+            // );
         });
     }
 }
@@ -416,12 +432,18 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         self.meta_methods.insert(name.to_string(), func);
     }
 
-    fn add_method_mut<F, V, R>(&mut self, name: &str, closure: F)
+    fn add_method_mut<V, F, R>(&mut self, name: &str, closure: F)
     where
+        V: for<'f> FromLuaMulti<'f, 'gc> ,
         R: ToLua<'gc>,
-        V: FromLuaMulti<'gc>,
-        F: for<'a> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, V::Args<'a>) -> ToInnerResult<'gc, R>
-            + 'static,
+        F: for<'f> Fn(
+                &mut VM<'gc>,
+                &Mutation<'gc>,
+                &mut T,
+                V,
+                // <V as FromLuaMulti<'f, 'gc>>::Item,
+            ) -> ToInnerResult<'gc, R>
+            + 'gc,
     {
         self.methods.insert(
             name.to_string(),
@@ -432,16 +454,24 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         );
     }
 
-    fn add_method<F, V>(&mut self, name: &str, closure: F)
+    fn add_method<V, F, R>(&mut self, name: &str, closure: F)
     where
-        V: FromLuaMulti<'gc>,
-        F: for<'a> Fn(&VM<'gc>, &Mutation<'gc>, &T, V::Args<'a>) -> InnerResult<'gc> + 'static,
+        V: for<'f> FromLuaMulti<'f, 'gc>,
+        R: ToLua<'gc>,
+        F: Fn(
+                &VM<'gc>,
+                &Mutation<'gc>,
+                &T,
+                V,
+                // <V as FromLuaMulti<'_, 'gc>>::Item,
+            ) -> ToInnerResult<'gc, R>
+            + 'gc,
     {
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, ud, args| {
                 let r = V::from_lua_multi(&args, vm, mc)?;
-                closure(vm, mc, ud, r)
+                R::to_lua(closure(vm, mc, ud, r), vm, mc)
             }),
         );
     }
@@ -735,65 +765,73 @@ impl UserData for TestEnt {
             Ok(Value::String(format!("[entity {}]", this.get_id())))
         });
 
-        methods.add_method_mut::<&[Value<'gc>],_,_>("pos", |_, _, this, arg: &[Value<'gc>]| {
-            // Example of parsing a table to set position
-            if let Some(Value::Table(t)) = arg.first() {
-                let tbl=t.borrow();
-                if let Some(x) = tbl.get("x") {
-                    this.x = x.into();
-                }
-                if let Some(y) = tbl.get("y") {
-                    this.y = y.into();
-                }
-                if let Some(z) = tbl.get("z") {
-                    this.z = z.into();
-                }
-            }
+        // methods.add_method_mut::<VariadicMaker<Value<'gc>>, _, _>("pos", |_, _, this, arg: VariadicMaker<Value<'gc>>| {
+        //     // Example of parsing a table to set position
+        //     // if let Some(Value::Table(t)) = arg.first() {
+        //     //     let tbl = t.borrow();
+        //     //     if let Some(x) = tbl.get("x") {
+        //     //         this.x = x.into();
+        //     //     }
+        //     //     if let Some(y) = tbl.get("y") {
+        //     //         this.y = y.into();
+        //     //     }
+        //     //     if let Some(z) = tbl.get("z") {
+        //     //         this.z = z.into();
+        //     //     }
+        //     // }
+        //
+        //     // if let Some(Value::Table(t)) = args.first() {
+        //     //     let t_ref = (*t).borrow();
+        //     //     if let Some(x) = t_ref.get("x") {
+        //     //         this.x = x.into();
+        //     //     }
+        //     //     if let Some(y) = t_ref.get(Value::String("y".to_string())) {
+        //     //         this.y = y.into();
+        //     //     }
+        //     //     if let Some(z) = t_ref.get(Value::String("z".to_string())) {
+        //     //         this.z = z.into();
+        //     //     }
+        //     // }
+        //     Ok(())
+        // });
 
-            // if let Some(Value::Table(t)) = args.first() {
-            //     let t_ref = (*t).borrow();
-            //     if let Some(x) = t_ref.get("x") {
-            //         this.x = x.into();
+        // VariadicMaker<Value<'_>
+        // || {
+        //     r = convert
+        //     out= c(r)
+        //     convert_out(out)
+        // }
+        // Add a method that demonstrates multiple parameters
+        // methods.add_method_mut::<'f, Variadic<'f,'gc,Value<'gc>>, _, std::result::Result<(), SiltError>>("set_pos", |vm, mc, this, args: Variadic<Value<'gc>>| {
+        methods.add_method_mut("set_pos", |vm, mc, this, args: &Value<'gc>| {
+            Ok(())
+            // if args.len() >= 3 {
+            //     if let Value::Number(x) = args[0] {
+            //         this.x = x;
+            //     } else if let Value::Integer(x) = args[0] {
+            //         this.x = x as f64;
             //     }
-            //     if let Some(y) = t_ref.get(Value::String("y".to_string())) {
-            //         this.y = y.into();
+            //
+            //     if let Value::Number(y) = args[1] {
+            //         this.y = y;
+            //     } else if let Value::Integer(y) = args[1] {
+            //         this.y = y as f64;
             //     }
-            //     if let Some(z) = t_ref.get(Value::String("z".to_string())) {
-            //         this.z = z.into();
+            //
+            //     if let Value::Number(z) = args[2] {
+            //         this.z = z;
+            //     } else if let Value::Integer(z) = args[2] {
+            //         this.z = z as f64;
             //     }
             // }
-            Ok(())
-        });
-
-        // Add a method that demonstrates multiple parameters
-        methods.add_method_mut("set_pos", |vm, mc, this, args: Vec<Value>| {
-            if args.len() >= 3 {
-                if let Value::Number(x) = args[0] {
-                    this.x = x;
-                } else if let Value::Integer(x) = args[0] {
-                    this.x = x as f64;
-                }
-
-                if let Value::Number(y) = args[1] {
-                    this.y = y;
-                } else if let Value::Integer(y) = args[1] {
-                    this.y = y as f64;
-                }
-
-                if let Value::Number(z) = args[2] {
-                    this.z = z;
-                } else if let Value::Integer(z) = args[2] {
-                    this.z = z as f64;
-                }
-            }
-
-            // Return multiple values as an example
-            let mut vals = vm.raw_table();
-            vals.push(Value::Number(this.x));
-            vals.push(Value::Number(this.y));
-            vals.push(Value::Number(this.z));
-
-            Ok(vm.wrap_table(mc, vals))
+            //
+            // // Return multiple values as an example
+            // let mut vals = vm.raw_table();
+            // vals.push(Value::Number(this.x));
+            // vals.push(Value::Number(this.y));
+            // vals.push(Value::Number(this.z));
+            //
+            // Ok(vm.wrap_table(mc, vals))
             // Ok(Value::Nil)
         });
     }

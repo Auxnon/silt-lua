@@ -4,17 +4,12 @@ use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
     code::OpCode,
-    compiler::{self, Compiler},
+    compiler::Compiler,
     error::{ErrorTuple, SiltError, ValueTypes},
-    function::{
-        CallFrame, Closure, FunctionObject, NativeFunctionRaw, NativeFunctionRef, UpValue,
-        WrappedFn,
-    },
+    function::{CallFrame, Closure, FunctionObject, NativeFunctionRaw, UpValue, WrappedFn},
     prelude::UserData,
     table::{ExTable, Table},
-    userdata::{
-        InnerResult, MetaMethod, ToInnerResult, UserDataRegistry, UserDataWrapper, WeakWrapper,
-    },
+    userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
     value::{ExVal, FromLuaMulti, ToLua, ToLuaMulti, Value},
 };
 
@@ -1672,6 +1667,7 @@ impl<'gc> VM<'gc> {
 
     fn close_upvalue(&mut self, value: Value) {
         devout!("close_upvalue: {}", value);
+        todo!()
 
         // for up in
         // self.open_upvalues
@@ -1872,24 +1868,20 @@ impl<'gc> VM<'gc> {
     pub fn testy<'a>(&mut self, _mc: &'a Mutation<'gc>, _name: &str) {}
 
     /** Register a native function on the global table  */
-    pub fn register_native_function< T, F, R>(
-        &self,
-        mc: &Mutation<'gc>,
-        name: &str,
-        function: F,
-    ) where
-        R: ToLua<'gc>,
-        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, T::Args<'f>) -> ToInnerResult<'gc, R> +'gc,
-        T: FromLuaMulti<'gc>
-    {
-        let raw = NativeFunctionRaw::new(function);
-
-        let f = WrappedFn { f: Rc::new(raw) };
-
-        self.globals
-            .borrow_mut(mc)
-            .insert(name.into(), Value::NativeFunction(Gc::new(mc, f)));
-    }
+    // pub fn register_native_function<T, F, R>(&self, mc: &Mutation<'gc>, name: &str, function: F)
+    // where
+    //     R: ToLua<'gc>,
+    //     F: Fn(&mut VM<'gc>, &Mutation<'gc>, T) -> ToInnerResult<'gc, R> + 'gc,
+    //     T: for<'f> FromLuaMulti<'f, 'gc>,
+    // {
+    //     let raw = NativeFunctionRaw::new(function);
+    //
+    //     let f = WrappedFn { f: Rc::new(raw) };
+    //
+    //     self.globals
+    //         .borrow_mut(mc)
+    //         .insert(name.into(), Value::NativeFunction(Gc::new(mc, f)));
+    // }
 
     // /// Register a UserData type with the VM
     // pub fn register_userdata_type<T: UserData>(&mut self) {
@@ -1907,8 +1899,7 @@ impl<'gc> VM<'gc> {
     }
 
     /** Load standard library functions */
-    pub fn load_standard_library(&mut self, mc: &Mutation<'gc>) {
-
+    pub fn load_standard_library<'a>(&'a mut self, mc: &Mutation<'gc>) {
         // macro_rules! register_native_fn {
         //     ($name:expr, $func:expr) => {
         //         self.register_native_function::<Vec<Value>, _, _>(mc, $name, $func)
@@ -1919,10 +1910,13 @@ impl<'gc> VM<'gc> {
         //     };
         // }
 
-        self.register_native_function::<(f64,),fn(&mut VM<'gc>, &Mutation<'gc>, (f64,)) -> InnerResult<'gc> 
-
-
-            ,_>(mc, "clock", crate::standard::clock);
+        // let v=Self::register_native_function(mc,crate::standard::clock);
+        self.register_native_function::<(f64,), _, std::result::Result<Value<'gc>, SiltError>>(
+            mc,
+            "clock",
+            crate::standard::clock,
+        );
+        // self.inser( mc, "clock", v);
         // register_native_fn!("clock", crate::standard::clock, ());
         // register_native_fn!("print", crate::standard::print);
         // register_native_fn!("setmetatable", crate::standard::setmetatable);
@@ -1935,6 +1929,51 @@ impl<'gc> VM<'gc> {
         //     Ok((*test).into())
         // }, ());
     }
+    pub fn register_native_function3<T, F, R>(
+        // vm: &VM<'gc>,
+        function: F,
+    ) where
+        R: ToLua<'gc> + 'gc,
+        T: for<'a> FromLuaMulti<'a, 'gc> + 'gc,
+        F: for<'a> Fn(&'a mut VM<'gc>, T) -> R,
+    {
+        // Value::NativeFunction(Gc::new(mc, f))
+    }
+    pub fn register_native_function<T, F, R>(
+        &mut self,
+        // vm: &VM<'gc>,
+        mc: &Mutation<'gc>,
+        name: &str,
+        function: F,
+    ) where
+        R: ToLua<'gc> + 'gc,
+        T: for<'f> FromLuaMulti<'f, 'gc> + 'gc,
+        F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, T) -> R + 'gc,
+        // <T as FromLuaMulti<'_, 'gc>>::Item
+    {
+        let raw = NativeFunctionRaw::new(function);
+
+        let f = WrappedFn { f: Rc::new(raw) };
+        // Value::NativeFunction(Gc::new(mc, f))
+        let v = Value::NativeFunction(Gc::new(mc, f));
+        self.globals.borrow_mut(mc).insert(name.into(), v);
+    }
+    // pub fn register_native_function<T, R>(
+    //     &mut self,
+    //     mc: &Mutation<'gc>,
+    //     name: &str,
+    //     function:  fn(&mut VM<'gc>, &Mutation<'gc>, T) -> R,
+    // )
+    // where
+    //     R: ToLua<'gc> + 'gc,
+    //     T: for<'f> FromLuaMulti<'f, 'gc> + 'gc,
+    // {
+    //     let raw = NativeFunctionRaw::new(function);
+    //
+    //     let f = WrappedFn { f: Rc::new(raw) };
+    //     let v=Value::NativeFunction(Gc::new(mc, f));
+    //     self.globals.borrow_mut(mc).insert(name.into(), v);
+    // }
 
     /// Clean up dropped UserData references from the userdata_stack
     // pub fn cleanup_userdata(&self) {

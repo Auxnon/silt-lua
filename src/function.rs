@@ -1,4 +1,8 @@
-use std::{fmt::Display, ops::Deref, rc::Rc};
+use std::{
+    fmt::Display,
+    ops::{Deref, Index},
+    rc::Rc,
+};
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
@@ -270,15 +274,21 @@ pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
 // pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
 
 pub struct NativeFunctionRaw<'a> {
-    func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> InnerResult<'a> +'a >,
+    func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> InnerResult<'a> + 'a>,
 }
 
-impl<'a> NativeFunctionRaw<'a> {
+impl<'gc> NativeFunctionRaw<'gc> {
     pub fn new<T, F, R>(f: F) -> Self
     where
-        R: ToLua<'a>,
-        T: FromLuaMulti<'a>,
-        F: for<'n,'f> Fn(&'n mut VM<'a>, &'n Mutation<'a>, T::Args<'f>) -> ToInnerResult<'a, R> +'a ,
+        T: for<'f> FromLuaMulti<'f, 'gc>,
+        R: ToLua<'gc>,
+        F: for<'f> Fn(
+                &mut VM<'gc>,
+                &Mutation<'gc>,
+                T,
+                // <T as FromLuaMulti<'f, 'gc>>,
+            ) -> ToInnerResult<'gc, R>
+            + 'gc,
     {
         Self {
             func: Box::new(move |vm, mc, raw_args| {
@@ -300,10 +310,10 @@ impl<'a> NativeFunctionRaw<'a> {
 
     pub fn call(
         &self,
-        vm: &mut VM<'a>,
-        mutation: &Mutation<'a>,
-        args: &[Value<'a>],
-    ) -> InnerResult<'a> {
+        vm: &mut VM<'gc>,
+        mutation: &Mutation<'gc>,
+        args: &[Value<'gc>],
+    ) -> InnerResult<'gc> {
         (self.func)(vm, mutation, args)
     }
 }

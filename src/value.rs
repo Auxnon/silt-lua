@@ -11,7 +11,7 @@ use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 use crate::vec::{Vec2, Vec3};
 use crate::{
     error::{SiltError, ValueTypes},
-    function::{Closure, FunctionObject, NativeFunctionRc, NativeFunctionRef, WrappedFn},
+    function::{Closure, FunctionObject, WrappedFn},
     lua::VM,
     prelude::UserData,
     table::Table,
@@ -1013,18 +1013,15 @@ where
     }
 }
 
-pub trait FromLuaMulti<'gc>: Sized {
-    type Args<'a>
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+pub trait FromLuaMulti<'a, 'gc>: Sized {
+    // type Item;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         lua: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
+    ) -> Result<Self, SiltError>
     where
-        'gc: 'a;
+        Self: 'a;
 }
 
 // TODO how to return... the same args again?
@@ -1038,41 +1035,32 @@ pub trait FromLuaMulti<'gc>: Sized {
 //     }
 // }
 
-impl<'gc> FromLuaMulti<'gc> for Vec<Value<'gc>> {
-    type Args<'a>
-        = Self
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+impl<'a, 'gc> FromLuaMulti<'a, 'gc> for Vec<Value<'gc>> {
+    // type Item = Self;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         _: &VM<'gc>,
         _: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
+    ) -> Result<Self, SiltError>
     where
-        'gc: 'a,
+        Self: 'a,
     {
         Ok(args.to_vec())
     }
 }
 
-impl<'gc> FromLuaMulti<'gc> for &[Value<'gc>] {
-    type Args<'a>
-        = &'a [Value<'gc>]
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
-        args: &'a [Value<'gc>],
-        _: &VM<'gc>,
-        _: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
-    where
-        'gc: 'a,
-    {
-        Ok(args)
-    }
-}
+// impl<'gc> FromLuaMulti<'gc> for &'_ [Value<'gc>] {
+//     fn from_lua_multi<'a>(
+//         args: &'a [Value<'gc>],
+//         _: &VM<'gc>,
+//         _: &Mutation<'gc>,
+//     ) -> Result<Self, SiltError>
+//     where
+//         Self: 'a,
+//     {
+//         Ok(args)
+//     }
+// }
 
 // impl<'gc> FromLuaMulti<'gc> for () {
 //     type Args<'a> = Self where 'gc: 'a;
@@ -1082,84 +1070,72 @@ impl<'gc> FromLuaMulti<'gc> for &[Value<'gc>] {
 //     }
 // }
 //
-impl<'gc> FromLuaMulti<'gc> for () {
-    type Args<'a>
-        = Self
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
-        _: &'a [Value<'gc>],
-        _: &VM<'gc>,
-        _: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
-    where
-        'gc: 'a,
-    {
+impl<'a, 'gc> FromLuaMulti<'a, 'gc> for () {
+    // type Item = Self;
+    fn from_lua_multi(_: &[Value<'gc>], _: &VM<'gc>, _: &Mutation<'gc>) -> Result<Self, SiltError> {
         Ok(())
     }
 }
 
-impl<'gc, T1> FromLuaMulti<'gc> for (T1,)
+impl<'a, 'gc> FromLuaMulti<'a, 'gc> for &'a Value<'gc>
+{
+    // type Item = Self;
+    fn from_lua_multi(
+        args: &'a [Value<'gc>],
+        _vm: &VM<'gc>,
+        _mc: &Mutation<'gc>,
+    ) -> Result<Self, SiltError> {
+        Ok(&args[0] )
+    }
+}
+
+impl<'a, 'gc, T1> FromLuaMulti<'a, 'gc> for (T1,)
 where
     T1: FromLua<'gc>,
 {
-    type Args<'a>
-        = (T1,)
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+    // type Item = Self;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
-    where
-        'gc: 'a,
-    {
+    ) -> Result<Self, SiltError> {
         Ok((T1::from_lua(&args[0], vm, mc)?,))
     }
 }
 
-impl<'gc, T> FromLuaMulti<'gc> for Variadic<'static, 'gc, T>
+pub struct VariadicMaker<T> {
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<'a, 'gc, T> FromLuaMulti<'a, 'gc> for Variadic<'a, 'gc, T>
 where
+    'gc: 'a,
     T: FromLua<'gc>,
 {
-    type Args<'a>
-        = Variadic<'a, 'gc, T>
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+    // type Item = Variadic<'a, 'gc, T>;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
+    ) -> Result<Self, SiltError>
     where
-        'gc: 'a,
+        Self: 'a,
     {
         Ok(Variadic::new(args.iter()))
     }
 }
 
-impl<'gc, A, B> FromLuaMulti<'gc> for (A, B)
+impl<'a, 'gc, A, B> FromLuaMulti<'a, 'gc> for (A, B)
 where
     A: FromLua<'gc>,
     B: FromLua<'gc>,
 {
-    type Args<'a>
-        = (A, B)
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+    // type Item = Self;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
-    where
-        'gc: 'a,
-    {
+    ) -> Result<Self, SiltError> {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1167,25 +1143,18 @@ where
     }
 }
 
-impl<'gc, A, B, C> FromLuaMulti<'gc> for (A, B, C)
+impl<'a, 'gc, A, B, C> FromLuaMulti<'a, 'gc> for (A, B, C)
 where
     A: FromLua<'gc>,
     B: FromLua<'gc>,
     C: FromLua<'gc>,
 {
-    type Args<'a>
-        = (A, B, C)
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+    // type Item = Self;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
-    where
-        'gc: 'a,
-    {
+    ) -> Result<Self, SiltError> {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1194,26 +1163,19 @@ where
     }
 }
 
-impl<'gc, A, B, C, D> FromLuaMulti<'gc> for (A, B, C, D)
+impl<'a, 'gc, A, B, C, D> FromLuaMulti<'a, 'gc> for (A, B, C, D)
 where
     A: FromLua<'gc>,
     B: FromLua<'gc>,
     C: FromLua<'gc>,
     D: FromLua<'gc>,
 {
-    type Args<'a>
-        = (A, B, C, D)
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+    // type Item = Self;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
-    where
-        'gc: 'a,
-    {
+    ) -> Result<Self, SiltError> {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1223,7 +1185,7 @@ where
     }
 }
 
-impl<'gc, A, B, C, D, E> FromLuaMulti<'gc> for (A, B, C, D, E)
+impl<'a, 'gc, A, B, C, D, E> FromLuaMulti<'a, 'gc> for (A, B, C, D, E)
 where
     A: FromLua<'gc>,
     B: FromLua<'gc>,
@@ -1231,19 +1193,12 @@ where
     D: FromLua<'gc>,
     E: FromLua<'gc>,
 {
-    type Args<'a>
-        = (A, B, C, D, E)
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+    // type Item = Self;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
-    where
-        'gc: 'a,
-    {
+    ) -> Result<Self, SiltError> {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
@@ -1254,7 +1209,7 @@ where
     }
 }
 
-impl<'gc, A, B, C, D, E, F> FromLuaMulti<'gc> for (A, B, C, D, E, F)
+impl<'a, 'gc, A, B, C, D, E, F> FromLuaMulti<'a, 'gc> for (A, B, C, D, E, F)
 where
     A: FromLua<'gc>,
     B: FromLua<'gc>,
@@ -1263,19 +1218,12 @@ where
     E: FromLua<'gc>,
     F: FromLua<'gc>,
 {
-    type Args<'a>
-        = (A, B, C, D, E, F)
-    where
-        'gc: 'a;
-
-    fn from_lua_multi<'a>(
+    // type Item = Self;
+    fn from_lua_multi(
         args: &'a [Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Args<'a>, SiltError>
-    where
-        'gc: 'a,
-    {
+    ) -> Result<Self, SiltError> {
         Ok((
             A::from_lua(&args[0], vm, mc)?,
             B::from_lua(&args[1], vm, mc)?,
