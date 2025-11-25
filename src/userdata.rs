@@ -57,14 +57,14 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a method that can mutate the UserData
     fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: for<'a> FromLuaMulti<'a, 'gc>,
+        A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
         F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: for<'a> FromLuaMulti<'a, 'gc>,
+        A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc;
 }
@@ -428,7 +428,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
 
     fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: for<'a> FromLuaMulti<'a, 'gc>,
+        A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
         F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc,
     {
@@ -456,7 +456,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
 
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: for<'a> FromLuaMulti<'a, 'gc>,
+        A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc,
     {
@@ -815,7 +815,7 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut::<&Value<'gc>, (), _>(
+        methods.add_method_mut::<Value<'gc>, (), _>(
             "test",
             |vm, mc, this, args| Ok(()),
         );
