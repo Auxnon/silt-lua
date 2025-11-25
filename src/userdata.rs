@@ -42,128 +42,10 @@ trait MethodClosure<'gc> {
     fn call_closure();
 }
 
-pub trait Callable<'gc, T, A, R> {
-    fn call<'f>(
-        &self,
-        vm: &mut VM<'gc>,
-        mc: &Mutation<'gc>,
-        ud: &mut T,
-        args: &'f [Value<'gc>],
-        closure: fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A::Output<'f>) -> ToInnerResult<'gc, R>,
-    ) -> InnerResult<'gc>
-    where
-        A: FromLuaMulti<'f, 'gc> + 'f,
-        R: ToLua<'gc>;
-}
-
-impl<'gc, T, A, R> Callable<'gc, T, A, R> for () {
-    // where
-    //     A: for<'f> FromLuaMulti<'f, 'gc>,
-    //     R: ToLua<'gc>,
-    //     F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> ToInnerResult<'gc, R> + 'gc,
-
-    fn call<'f>(
-        &self,
-        vm: &mut VM<'gc>,
-        mc: &Mutation<'gc>,
-        ud: &mut T,
-        args: &'f [Value<'gc>],
-        closure: fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A::Output<'f>) -> ToInnerResult<'gc, R>,
-    ) -> InnerResult<'gc>
-    where
-        A: FromLuaMulti<'f, 'gc>,
-        R: ToLua<'gc>,
-    {
-        // Box::new(move |vm, mc, ud, args| {
-        let r = A::from_lua_multi(args, vm, mc)?;
-        //     R::to_lua(closure(vm, mc, ud, r), vm, mc)
-        // }),
-        let cr = closure(vm, mc, ud, r);
-        let t = R::to_lua(cr, vm, mc);
-        t
-    }
-}
-
-struct Callable2<'gc, T, A, R> {
-    f: fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> R,
-}
-
-impl<'gc, T, A, R> Callable2<'gc, T, A, R> {
-    // where
-    //     A: for<'f> FromLuaMulti<'f, 'gc>,
-    //     R: ToLua<'gc>,
-    //     F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> ToInnerResult<'gc, R> + 'gc,
-
-    fn call<'f>(
-        &self,
-        vm: &mut VM<'gc>,
-        mc: &Mutation<'gc>,
-        ud: &mut T,
-        args: &'f [Value<'gc>],
-        closure: fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A::Output<'f>) -> ToInnerResult<'gc, R>,
-    ) -> InnerResult<'gc>
-    where
-        A: FromLuaMulti<'f, 'gc> + 'f,
-        R: ToLua<'gc>,
-    {
-        // Box::new(move |vm, mc, ud, args| {
-        let r = A::from_lua_multi(args, vm, mc)?;
-        //     R::to_lua(closure(vm, mc, ud, r), vm, mc)
-        // }),
-        let cr = closure(vm, mc, ud, r);
-        let t = R::to_lua(cr, vm, mc);
-        t
-    }
-}
-
-// This trait hides the ugly for<'f> syntax from the main function
-trait LuaCallback<'gc, V, R> 
-where
-    for<'f> V: FromLuaMulti<'f, 'gc>{
-    fn call<'f>(
-        &self,
-        vm: &'f mut VM<'gc>,
-        mc: &'f Mutation<'gc>,
-        args: <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
-    ) -> R
-    where
-        V: FromLuaMulti<'f, 'gc> + 'gc;
-}
-
-fn invoke_callback<'gc, 'f, V, R, F>(
-    func: &F, 
-    vm: &'f mut VM<'gc>, 
-    mc: &'f Mutation<'gc>, 
-    args: <V as FromLuaMulti<'f, 'gc>>::Output<'f>
-) -> R
-where
-    V: FromLuaMulti<'f, 'gc>,
-    F: Fn(&'f mut VM<'gc>, &'f Mutation<'gc>, <V as FromLuaMulti<'f, 'gc>>::Output<'f>) -> R,
-{
-    func(vm, mc, args)
-}
-
-impl<'gc, V, R, F> LuaCallback<'gc, V, R> for F
-where
-    for<'f> V: FromLuaMulti<'f, 'gc>,
-    // F must be callable with those specific args
-    F: for<'f> Fn(
-        &'f mut VM<'gc>,
-        &'f Mutation<'gc>,
-        <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
-    ) -> R,
-{
-    fn call<'f>(
-        &self,
-        vm: &'f mut VM<'gc>,
-        mc: &'f Mutation<'gc>,
-        args: <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
-    ) -> R {
-        // Just forward the call to the closure
-        // self(vm, mc, args)
-            invoke_callback::<'gc, 'f, V, R, F>(self, vm, mc, args)
-    }
-}
+// Simplified method signature that avoids complex lifetime issues
+type UserDataMethodClosure<'gc> = Box<
+    dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> InnerResult<'gc> + 'gc
+>;
 
 /// Trait for registering methods on UserData types
 pub trait UserDataMethods<'gc, T: UserData> {
@@ -173,37 +55,18 @@ pub trait UserDataMethods<'gc, T: UserData> {
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
 
     /// Add a method that can mutate the UserData
-    fn add_method_mut<V, R>(
-        &mut self,
-        name: &str,
-        closure: impl for<'f> Fn(
-                &'f mut VM<'gc>,
-                &'f Mutation<'gc>,
-                // &mut T,
-                <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
-            ) -> ToInnerResult<'gc, R>
-            + 'gc,
-    ) where
-        for<'f> V: FromLuaMulti<'f, 'gc> + 'gc,
-        for<'f> R: ToLua<'gc> + 'gc;
+    fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
+    where
+        A: for<'a> FromLuaMulti<'a, 'gc>,
+        R: ToLua<'gc>,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc;
 
     /// Add a method that doesn't mutate the UserData
-    fn add_method<V, R>(
-        &mut self,
-        name: &str,
-        closure: for<'f> fn(
-            &VM<'gc>,
-            &Mutation<'gc>,
-            &T,
-            // <V as FromLuaMulti<'f, 'gc> >::Output
-            // V,
-            <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
-            // <V as FromLuaMulti<'_, 'gc>>::Item,
-        ) -> ToInnerResult<'gc, R>,
-    ) where
-        for<'f> V: FromLuaMulti<'f, 'gc> + 'f,
-        // V: for<'f> FromLuaMulti<'f, 'gc> + 'gc,
-        R: ToLua<'gc> + 'gc;
+    fn add_method<A, R, F>(&mut self, name: &str, closure: F)
+    where
+        A: for<'a> FromLuaMulti<'a, 'gc>,
+        R: ToLua<'gc>,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc;
 }
 
 /// Trait for registering fields on UserData types
@@ -270,19 +133,7 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 
 /// Stores methods and fields for a specific UserData type T
 pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
-    methods: HashMap<
-        String,
-        Box<
-            dyn for<'f> Fn(
-                    &'f mut VM<'gc>,
-                    &'f Mutation<'gc>,
-                    &'f mut T,
-                    &'f [Value<'gc>],
-                ) -> InnerResult<'gc>
-                + 'gc,
-        >,
-        // Box< for<'f> fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, <&Value<'gc> as FromLuaMulti>::Output<'f>) -> InnerResult<'gc> >,
-    >,
+    methods: HashMap<String, UserDataMethodClosure<'gc>>,
     method_cache: Vec<NativeFunctionRc<'gc>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
     getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
@@ -393,14 +244,11 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         name: &str,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
-        //     if let Some(&method_fn) = self.methods.get(name) {
-        //         if let Ok(mut d) = ud.data.lock() {
-        //             return match d.downcast_mut() {
-        //                 Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
-        //                 None => Err(SiltError::UDBadCast),
-        //             };
-        //         }
-        //     }
+        if let Some(method_fn) = self.methods.get(name) {
+            // Create a mutable VM reference for the method call
+            let vm_mut = unsafe { &mut *(vm as *const VM<'gc> as *mut VM<'gc>) };
+            return method_fn(vm_mut, mc, &args);
+        }
         Err(SiltError::UDNoMethodRef)
     }
 
@@ -578,55 +426,58 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         self.meta_methods.insert(name.to_string(), func);
     }
 
-    fn add_method_mut<V, R>(
-        &mut self,
-        name: &str,
-        closure: impl for<'f> Fn(
-                &'f mut VM<'gc>,
-                &'f Mutation<'gc>,
-                // &mut T,
-                <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
-                // V::Output<'f>,
-            ) -> R
-            + 'gc,
-    ) where
-        for<'f> V: FromLuaMulti<'f, 'gc> + 'gc,
-        R: ToLua<'gc> + 'gc,
+    fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
+    where
+        A: for<'a> FromLuaMulti<'a, 'gc>,
+        R: ToLua<'gc>,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc,
     {
+        let type_id = self.type_id;
         self.methods.insert(
             name.to_string(),
-            Box::new(move |vm, mc, ud, args| {
-                let to_lua_result = V::from_lua_multi(args, vm, mc)?;
-                let closure_output = closure(vm, mc, to_lua_result);
-                R::to_lua(closure_output, vm, mc)
+            Box::new(move |vm, mc, args| {
+                // First argument should be the UserData instance
+                if let Some(Value::UserData(ud_ref)) = args.get(0) {
+                    let mut ud_borrow = ud_ref.borrow_mut(mc);
+                    if let Ok(mut data_lock) = ud_borrow.data.lock() {
+                        if let Some(typed_data) = data_lock.downcast_mut::<T>() {
+                            // Convert remaining arguments using FromLuaMulti
+                            let method_args = &args[1..];
+                            let converted_args = A::from_lua_multi(method_args, vm, mc)?;
+                            let result = closure(vm, mc, typed_data, converted_args)?;
+                            return R::to_lua(result, vm, mc);
+                        }
+                    }
+                }
+                Err(SiltError::UDBadCast)
             }),
         );
     }
 
-    // let t = NativeFunctionRaw::new(closure);
-
-    fn add_method<V, R>(
-        &mut self,
-        name: &str,
-        closure: for<'f> fn(
-            &VM<'gc>,
-            &Mutation<'gc>,
-            &T,
-            // <V as FromLuaMulti<'f, 'gc> >::Output
-            <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
-            // V::Output<'f>,
-            // <V as FromLuaMulti<'_, 'gc>>::Item,
-        ) -> ToInnerResult<'gc, R>,
-    ) where
-        for<'f> V: FromLuaMulti<'f, 'gc> + 'f,
-        // V: FromLuaMulti<'gc, 'gc> ,
-        R: ToLua<'gc> + 'gc,
+    fn add_method<A, R, F>(&mut self, name: &str, closure: F)
+    where
+        A: for<'a> FromLuaMulti<'a, 'gc>,
+        R: ToLua<'gc>,
+        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc,
     {
+        let type_id = self.type_id;
         self.methods.insert(
             name.to_string(),
-            Box::new(move |vm, mc, ud, args| {
-                let r = V::from_lua_multi(&args, vm, mc)?;
-                R::to_lua(closure(vm, mc, ud, r), vm, mc)
+            Box::new(move |vm, mc, args| {
+                // First argument should be the UserData instance
+                if let Some(Value::UserData(ud_ref)) = args.get(0) {
+                    let ud_borrow = ud_ref.borrow();
+                    if let Ok(data_lock) = ud_borrow.data.lock() {
+                        if let Some(typed_data) = data_lock.downcast_ref::<T>() {
+                            // Convert remaining arguments using FromLuaMulti
+                            let method_args = &args[1..];
+                            let converted_args = A::from_lua_multi(method_args, vm, mc)?;
+                            let result = closure(vm, mc, typed_data, converted_args)?;
+                            return R::to_lua(result, vm, mc);
+                        }
+                    }
+                }
+                Err(SiltError::UDBadCast)
             }),
         );
     }
@@ -964,9 +815,9 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut::<&Value<'gc>, Result<(), SiltError>>(
+        methods.add_method_mut::<&Value<'gc>, (), _>(
             "test",
-            move |vm: &mut VM<'gc>, mc, args| Ok(()),
+            |vm, mc, this, args| Ok(()),
         );
         // methods.add_method_mut("set_pos", |vm, mc, args: &Value<'gc>| {
         //     Ok(())
