@@ -278,21 +278,21 @@ pub struct NativeFunctionRaw<'a> {
 }
 
 impl<'gc> NativeFunctionRaw<'gc> {
-    pub fn new<T, F, R>(f: F) -> Self
+    pub fn new<V, F, R>(f: F) -> Self
     where
-        T: for<'f> FromLuaMulti<'f, 'gc>,
+        V: for<'f> FromLuaMulti<'f, 'gc>,
         R: ToLua<'gc>,
         F: for<'f> Fn(
                 &mut VM<'gc>,
                 &Mutation<'gc>,
-                T,
+                V,
                 // <T as FromLuaMulti<'f, 'gc>>,
             ) -> ToInnerResult<'gc, R>
             + 'gc,
     {
         Self {
             func: Box::new(move |vm, mc, raw_args| {
-                let args = T::from_lua_multi(raw_args, vm, mc)?;
+                let args = V::from_lua_multi(raw_args, vm, mc)?;
                 R::to_lua(f(vm, mc, args), vm, mc)
             }),
         }

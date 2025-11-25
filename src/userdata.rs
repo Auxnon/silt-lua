@@ -4,7 +4,6 @@ use std::{
     collections::HashMap,
     error::Error,
     marker::PhantomData,
-    rc::Rc,
     sync::{Arc, Mutex, Weak},
 };
 
@@ -16,7 +15,6 @@ use crate::{
     error::SiltError,
     function::NativeFunctionRc,
     lua::VM,
-    table::{ExTable, Table},
     value::{FromLua, FromLuaMulti, ToLua, Value, Variadic},
 };
 
@@ -39,6 +37,134 @@ pub trait UserData: Sized + 'static {
     fn get_id(&self) -> usize;
 }
 
+trait MethodClosure<'gc> {
+    type Input<'f>: FromLuaMulti<'f, 'gc>;
+    fn call_closure();
+}
+
+pub trait Callable<'gc, T, A, R> {
+    fn call<'f>(
+        &self,
+        vm: &mut VM<'gc>,
+        mc: &Mutation<'gc>,
+        ud: &mut T,
+        args: &'f [Value<'gc>],
+        closure: fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A::Output<'f>) -> ToInnerResult<'gc, R>,
+    ) -> InnerResult<'gc>
+    where
+        A: FromLuaMulti<'f, 'gc> + 'f,
+        R: ToLua<'gc>;
+}
+
+impl<'gc, T, A, R> Callable<'gc, T, A, R> for () {
+    // where
+    //     A: for<'f> FromLuaMulti<'f, 'gc>,
+    //     R: ToLua<'gc>,
+    //     F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> ToInnerResult<'gc, R> + 'gc,
+
+    fn call<'f>(
+        &self,
+        vm: &mut VM<'gc>,
+        mc: &Mutation<'gc>,
+        ud: &mut T,
+        args: &'f [Value<'gc>],
+        closure: fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A::Output<'f>) -> ToInnerResult<'gc, R>,
+    ) -> InnerResult<'gc>
+    where
+        A: FromLuaMulti<'f, 'gc>,
+        R: ToLua<'gc>,
+    {
+        // Box::new(move |vm, mc, ud, args| {
+        let r = A::from_lua_multi(args, vm, mc)?;
+        //     R::to_lua(closure(vm, mc, ud, r), vm, mc)
+        // }),
+        let cr = closure(vm, mc, ud, r);
+        let t = R::to_lua(cr, vm, mc);
+        t
+    }
+}
+
+struct Callable2<'gc, T, A, R> {
+    f: fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> R,
+}
+
+impl<'gc, T, A, R> Callable2<'gc, T, A, R> {
+    // where
+    //     A: for<'f> FromLuaMulti<'f, 'gc>,
+    //     R: ToLua<'gc>,
+    //     F: for<'f> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> ToInnerResult<'gc, R> + 'gc,
+
+    fn call<'f>(
+        &self,
+        vm: &mut VM<'gc>,
+        mc: &Mutation<'gc>,
+        ud: &mut T,
+        args: &'f [Value<'gc>],
+        closure: fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A::Output<'f>) -> ToInnerResult<'gc, R>,
+    ) -> InnerResult<'gc>
+    where
+        A: FromLuaMulti<'f, 'gc> + 'f,
+        R: ToLua<'gc>,
+    {
+        // Box::new(move |vm, mc, ud, args| {
+        let r = A::from_lua_multi(args, vm, mc)?;
+        //     R::to_lua(closure(vm, mc, ud, r), vm, mc)
+        // }),
+        let cr = closure(vm, mc, ud, r);
+        let t = R::to_lua(cr, vm, mc);
+        t
+    }
+}
+
+// This trait hides the ugly for<'f> syntax from the main function
+trait LuaCallback<'gc, V, R> 
+where
+    for<'f> V: FromLuaMulti<'f, 'gc>{
+    fn call<'f>(
+        &self,
+        vm: &'f mut VM<'gc>,
+        mc: &'f Mutation<'gc>,
+        args: <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
+    ) -> R
+    where
+        V: FromLuaMulti<'f, 'gc> + 'gc;
+}
+
+fn invoke_callback<'gc, 'f, V, R, F>(
+    func: &F, 
+    vm: &'f mut VM<'gc>, 
+    mc: &'f Mutation<'gc>, 
+    args: <V as FromLuaMulti<'f, 'gc>>::Output<'f>
+) -> R
+where
+    V: FromLuaMulti<'f, 'gc>,
+    F: Fn(&'f mut VM<'gc>, &'f Mutation<'gc>, <V as FromLuaMulti<'f, 'gc>>::Output<'f>) -> R,
+{
+    func(vm, mc, args)
+}
+
+impl<'gc, V, R, F> LuaCallback<'gc, V, R> for F
+where
+    for<'f> V: FromLuaMulti<'f, 'gc>,
+    // F must be callable with those specific args
+    F: for<'f> Fn(
+        &'f mut VM<'gc>,
+        &'f Mutation<'gc>,
+        <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
+    ) -> R,
+{
+    fn call<'f>(
+        &self,
+        vm: &'f mut VM<'gc>,
+        mc: &'f Mutation<'gc>,
+        args: <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
+    ) -> R {
+        // Just forward the call to the closure
+        // self(vm, mc, args)
+            invoke_callback::<'gc, 'f, V, R, F>(self, vm, mc, args)
+    }
+}
+
 /// Trait for registering methods on UserData types
 pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a metamethod to this UserData type
@@ -47,33 +173,37 @@ pub trait UserDataMethods<'gc, T: UserData> {
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
 
     /// Add a method that can mutate the UserData
-    fn add_method_mut<V, F, R>(&mut self, name: &str, closure: F)
-    where
-        V: for<'f> FromLuaMulti<'f, 'gc>,
-        R: ToLua<'gc>,
-        F: Fn(
-                &mut VM<'gc>,
-                &Mutation<'gc>,
-                &mut T,
-                V,
-                // FromLuaMulti<'f,'gc>,
-                // <(dyn FromLuaMulti<'f, 'gc>) as IntoIterator>::Item,
+    fn add_method_mut<V, R>(
+        &mut self,
+        name: &str,
+        closure: impl for<'f> Fn(
+                &'f mut VM<'gc>,
+                &'f Mutation<'gc>,
+                // &mut T,
+                <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
             ) -> ToInnerResult<'gc, R>
-            + 'gc;
+            + 'gc,
+    ) where
+        for<'f> V: FromLuaMulti<'f, 'gc> + 'gc,
+        for<'f> R: ToLua<'gc> + 'gc;
 
     /// Add a method that doesn't mutate the UserData
-    fn add_method<V, F, R>(&mut self, name: &str, closure: F)
-    where
-        V: for<'f> FromLuaMulti<'f, 'gc> + 'gc,
-        R: ToLua<'gc> + 'gc,
-        F: Fn(
-                &VM<'gc>,
-                &Mutation<'gc>,
-                &T,
-                V,
-                // <V as FromLuaMulti<'_, 'gc>>::Item,
-            ) -> ToInnerResult<'gc, R>
-            + 'gc;
+    fn add_method<V, R>(
+        &mut self,
+        name: &str,
+        closure: for<'f> fn(
+            &VM<'gc>,
+            &Mutation<'gc>,
+            &T,
+            // <V as FromLuaMulti<'f, 'gc> >::Output
+            // V,
+            <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
+            // <V as FromLuaMulti<'_, 'gc>>::Item,
+        ) -> ToInnerResult<'gc, R>,
+    ) where
+        for<'f> V: FromLuaMulti<'f, 'gc> + 'f,
+        // V: for<'f> FromLuaMulti<'f, 'gc> + 'gc,
+        R: ToLua<'gc> + 'gc;
 }
 
 /// Trait for registering fields on UserData types
@@ -143,8 +273,15 @@ pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
     methods: HashMap<
         String,
         Box<
-            dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'gc,
+            dyn for<'f> Fn(
+                    &'f mut VM<'gc>,
+                    &'f Mutation<'gc>,
+                    &'f mut T,
+                    &'f [Value<'gc>],
+                ) -> InnerResult<'gc>
+                + 'gc,
         >,
+        // Box< for<'f> fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, <&Value<'gc> as FromLuaMulti>::Output<'f>) -> InnerResult<'gc> >,
     >,
     method_cache: Vec<NativeFunctionRc<'gc>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
@@ -418,6 +555,15 @@ impl<'gc> UserDataMap<'gc> {
 
 // <V as MyFromLuaMulti<'gc>>::Type<'e>
 
+// type Boo<'gc, T,V,R> = for<'f> fn(
+//             &mut VM<'gc>,
+//             &Mutation<'gc>,
+//             &mut T,
+// // <V as FromLuaMulti<'f, 'gc> >::Output
+//             V,
+//             // <V as FromLuaMulti<'f, 'gc>>::Item,
+//         ) -> R where R: ToLua<'gc>;
+
 impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_meta_method<F>(&mut self, name: &str, closure: F)
     where
@@ -432,40 +578,49 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         self.meta_methods.insert(name.to_string(), func);
     }
 
-    fn add_method_mut<V, F, R>(&mut self, name: &str, closure: F)
-    where
-        V: for<'f> FromLuaMulti<'f, 'gc> ,
-        R: ToLua<'gc>,
-        F: for<'f> Fn(
-                &mut VM<'gc>,
-                &Mutation<'gc>,
-                &mut T,
-                V,
-                // <V as FromLuaMulti<'f, 'gc>>::Item,
-            ) -> ToInnerResult<'gc, R>
+    fn add_method_mut<V, R>(
+        &mut self,
+        name: &str,
+        closure: impl for<'f> Fn(
+                &'f mut VM<'gc>,
+                &'f Mutation<'gc>,
+                // &mut T,
+                <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
+                // V::Output<'f>,
+            ) -> R
             + 'gc,
+    ) where
+        for<'f> V: FromLuaMulti<'f, 'gc> + 'gc,
+        R: ToLua<'gc> + 'gc,
     {
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, ud, args| {
-                let r = V::from_lua_multi(&args, vm, mc)?;
-                R::to_lua(closure(vm, mc, ud, r), vm, mc)
+                let to_lua_result = V::from_lua_multi(args, vm, mc)?;
+                let closure_output = closure(vm, mc, to_lua_result);
+                R::to_lua(closure_output, vm, mc)
             }),
         );
     }
 
-    fn add_method<V, F, R>(&mut self, name: &str, closure: F)
-    where
-        V: for<'f> FromLuaMulti<'f, 'gc>,
-        R: ToLua<'gc>,
-        F: Fn(
-                &VM<'gc>,
-                &Mutation<'gc>,
-                &T,
-                V,
-                // <V as FromLuaMulti<'_, 'gc>>::Item,
-            ) -> ToInnerResult<'gc, R>
-            + 'gc,
+    // let t = NativeFunctionRaw::new(closure);
+
+    fn add_method<V, R>(
+        &mut self,
+        name: &str,
+        closure: for<'f> fn(
+            &VM<'gc>,
+            &Mutation<'gc>,
+            &T,
+            // <V as FromLuaMulti<'f, 'gc> >::Output
+            <V as FromLuaMulti<'f, 'gc>>::Output<'f>,
+            // V::Output<'f>,
+            // <V as FromLuaMulti<'_, 'gc>>::Item,
+        ) -> ToInnerResult<'gc, R>,
+    ) where
+        for<'f> V: FromLuaMulti<'f, 'gc> + 'f,
+        // V: FromLuaMulti<'gc, 'gc> ,
+        R: ToLua<'gc> + 'gc,
     {
         self.methods.insert(
             name.to_string(),
@@ -803,37 +958,47 @@ impl UserData for TestEnt {
         // }
         // Add a method that demonstrates multiple parameters
         // methods.add_method_mut::<'f, Variadic<'f,'gc,Value<'gc>>, _, std::result::Result<(), SiltError>>("set_pos", |vm, mc, this, args: Variadic<Value<'gc>>| {
-        methods.add_method_mut("set_pos", |vm, mc, this, args: &Value<'gc>| {
-            Ok(())
-            // if args.len() >= 3 {
-            //     if let Value::Number(x) = args[0] {
-            //         this.x = x;
-            //     } else if let Value::Integer(x) = args[0] {
-            //         this.x = x as f64;
-            //     }
-            //
-            //     if let Value::Number(y) = args[1] {
-            //         this.y = y;
-            //     } else if let Value::Integer(y) = args[1] {
-            //         this.y = y as f64;
-            //     }
-            //
-            //     if let Value::Number(z) = args[2] {
-            //         this.z = z;
-            //     } else if let Value::Integer(z) = args[2] {
-            //         this.z = z as f64;
-            //     }
-            // }
-            //
-            // // Return multiple values as an example
-            // let mut vals = vm.raw_table();
-            // vals.push(Value::Number(this.x));
-            // vals.push(Value::Number(this.y));
-            // vals.push(Value::Number(this.z));
-            //
-            // Ok(vm.wrap_table(mc, vals))
-            // Ok(Value::Nil)
-        });
+        // let test: for<'f> fn(
+        //     &'f mut VM<'gc>,
+        //     &'f Mutation<'gc>,
+        //     // &mut T,
+        //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
+
+        methods.add_method_mut::<&Value<'gc>, Result<(), SiltError>>(
+            "test",
+            move |vm: &mut VM<'gc>, mc, args| Ok(()),
+        );
+        // methods.add_method_mut("set_pos", |vm, mc, args: &Value<'gc>| {
+        //     Ok(())
+        //     // if args.len() >= 3 {
+        //     //     if let Value::Number(x) = args[0] {
+        //     //         this.x = x;
+        //     //     } else if let Value::Integer(x) = args[0] {
+        //     //         this.x = x as f64;
+        //     //     }
+        //     //
+        //     //     if let Value::Number(y) = args[1] {
+        //     //         this.y = y;
+        //     //     } else if let Value::Integer(y) = args[1] {
+        //     //         this.y = y as f64;
+        //     //     }
+        //     //
+        //     //     if let Value::Number(z) = args[2] {
+        //     //         this.z = z;
+        //     //     } else if let Value::Integer(z) = args[2] {
+        //     //         this.z = z as f64;
+        //     //     }
+        //     // }
+        //     //
+        //     // // Return multiple values as an example
+        //     // let mut vals = vm.raw_table();
+        //     // vals.push(Value::Number(this.x));
+        //     // vals.push(Value::Number(this.y));
+        //     // vals.push(Value::Number(this.z));
+        //     //
+        //     // Ok(vm.wrap_table(mc, vals))
+        //     // Ok(Value::Nil)
+        // });
     }
 
     fn add_fields<'gc, F: UserDataFields<'gc, Self>>(fields: &mut F) {
