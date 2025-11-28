@@ -1023,6 +1023,15 @@ pub trait FromLuaMulti<'gc>: Sized {
     ) -> Result<Self, SiltError>;
 }
 
+/// Trait for types that can borrow from the input slice with the same lifetime
+pub trait FromLuaMultiBorrow<'args, 'gc>: Sized {
+    fn from_lua_multi_borrow(
+        args: &'args [Value<'gc>],
+        lua: &VM<'gc>,
+        mc: &Mutation<'gc>,
+    ) -> Result<Self, SiltError>;
+}
+
 // TODO how to return... the same args again?
 // impl<'a,'c> FromLuaMulti<'a> for &'c [Value<'a>]{
 //     fn from_lua_multi<'b>(
@@ -1081,6 +1090,16 @@ impl<'gc> FromLuaMulti<'gc> for Value<'gc> {
     }
 }
 
+impl<'args, 'gc> FromLuaMultiBorrow<'args, 'gc> for &'args Value<'gc> {
+    fn from_lua_multi_borrow(
+        args: &'args [Value<'gc>],
+        _vm: &VM<'gc>,
+        _mc: &Mutation<'gc>,
+    ) -> Result<Self, SiltError> {
+        Ok(args.first().unwrap_or(&Value::Nil))
+    }
+}
+
 // impl<'gc> FromLuaMulti<'gc> for &Value<'gc> {
 //     fn from_lua_multi<'a>(
 //         args: &'a [Value<'gc>],
@@ -1105,6 +1124,19 @@ where
         mc: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
         Ok((T1::from_lua(args.get(0).unwrap_or(&Value::Nil), vm, mc)?,))
+    }
+}
+
+impl<'args, 'gc, T1> FromLuaMultiBorrow<'args, 'gc> for (T1,)
+where
+    T1: FromLuaMultiBorrow<'args, 'gc>,
+{
+    fn from_lua_multi_borrow(
+        args: &'args [Value<'gc>],
+        vm: &VM<'gc>,
+        mc: &Mutation<'gc>,
+    ) -> Result<Self, SiltError> {
+        Ok((T1::from_lua_multi_borrow(args, vm, mc)?,))
     }
 }
 

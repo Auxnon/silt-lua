@@ -15,7 +15,7 @@ use crate::{
     error::SiltError,
     function::NativeFunctionRc,
     lua::VM,
-    value::{FromLua, FromLuaMulti, ToLua, Value, Variadic},
+    value::{FromLua, FromLuaMulti, FromLuaMultiBorrow, ToLua, Value, Variadic},
 };
 
 /// Result type for Lua operations
@@ -56,16 +56,16 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a method that can mutate the UserData
     fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: FromLuaMulti<'gc>,
+        A: for<'args> FromLuaMultiBorrow<'args, 'gc>,
         R: ToLua<'gc>,
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc;
+        F: for<'args> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: FromLuaMulti<'gc>,
+        A: for<'args> FromLuaMultiBorrow<'args, 'gc>,
         R: ToLua<'gc>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc;
+        F: for<'args> Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc;
 }
 
 /// Trait for registering fields on UserData types
@@ -850,7 +850,7 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut::<Value<'gc>, (), _>("test", |vm, mc, this, args| Ok(()));
+        methods.add_method_mut::<&Value<'gc>, (), _>("test", |vm, mc, this, args| Ok(()));
         // methods.add_method_mut("set_pos", |vm, mc, args: &Value<'gc>| {
         //     Ok(())
         //     // if args.len() >= 3 {
