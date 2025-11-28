@@ -1934,7 +1934,7 @@ impl<'gc> VM<'gc> {
         function: F,
     ) where
         R: ToLua<'gc> + 'gc,
-        T: for<'a> FromLuaMulti<'a, 'gc> + 'gc,
+        T: for<'a> FromLuaMulti<'gc> + 'gc,
         F:  Fn(&mut VM<'gc>, T) -> R,
     {
         // Value::NativeFunction(Gc::new(mc, f))
@@ -1947,7 +1947,7 @@ impl<'gc> VM<'gc> {
         function: F,
     ) where
         R: ToLua<'gc> + 'gc,
-        T: for<'f> FromLuaMulti<'f, 'gc> + 'gc,
+        T: for<'f> FromLuaMulti<'gc> + 'gc,
         F: Fn(&mut VM<'gc>, &Mutation<'gc>, T) -> R + 'gc,
         // <T as FromLuaMulti<'_, 'gc>>::Item
     {

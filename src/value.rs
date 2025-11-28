@@ -335,16 +335,14 @@ impl<'v> Value<'v> {
         // Ok(())
     }
 
-    pub fn apply_userdata<T>(
-        &mut self,
-        mc: &Mutation<'v>,
-        apply: impl FnMut(&T) -> Result<(), SiltError>,
-    ) -> Result<(), SiltError>
+    pub fn apply_userdata<T: UserData, F,R>(&self, mc: &Mutation<'v>, apply: F) -> Result<R, SiltError>
     where
-        T: UserData,
+        F: FnMut(&mut T) -> Result<R, SiltError>,
+        R: ToLua<'v>,
     {
         if let Value::UserData(udw) = self {
-            return udw.borrow_mut(mc).downcast_mut(apply);
+            let mut borrowed = udw.borrow_mut(mc);
+            return borrowed.downcast_mut(apply);
         }
         Err(SiltError::UDBadCast)
     }
@@ -1036,15 +1034,15 @@ pub trait FromLuaMulti<'gc>: Sized {
 //     }
 // }
 
-impl<'gc> FromLuaMulti<'gc> for Vec<Value<'gc>> {
-    fn from_lua_multi(
-        args: &[Value<'gc>],
-        _: &VM<'gc>,
-        _: &Mutation<'gc>,
-    ) -> Result<Self, SiltError> {
-        Ok(args.to_vec())
-    }
-}
+// impl<'gc> FromLuaMulti<'gc> for Vec<Value<'gc>> {
+//     fn from_lua_multi(
+//         args: &[Value<'gc>],
+//         _: &VM<'gc>,
+//         _: &Mutation<'gc>,
+//     ) -> Result<Self, SiltError> {
+//         Ok(args.to_vec())
+//     }
+// }
 
 // impl<'gc> FromLuaMulti<'gc> for &'_ [Value<'gc>] {
 //     fn from_lua_multi<'a>(
@@ -1068,11 +1066,7 @@ impl<'gc> FromLuaMulti<'gc> for Vec<Value<'gc>> {
 // }
 //
 impl<'gc> FromLuaMulti<'gc> for () {
-    fn from_lua_multi(
-        _: &[Value<'gc>],
-        _: &VM<'gc>,
-        _: &Mutation<'gc>,
-    ) -> Result<Self, SiltError> {
+    fn from_lua_multi(_: &[Value<'gc>], _: &VM<'gc>, _: &Mutation<'gc>) -> Result<Self, SiltError> {
         Ok(())
     }
 }
@@ -1083,9 +1077,19 @@ impl<'gc> FromLuaMulti<'gc> for Value<'gc> {
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
-        Ok(args.get(0).unwrap_or(&Value::Nil).clone())
+        Ok(args.first().unwrap_or(&Value::Nil).clone())
     }
 }
+
+// impl<'gc> FromLuaMulti<'gc> for &Value<'gc> {
+//     fn from_lua_multi<'a>(
+//         args: &'a [Value<'gc>],
+//         _vm: &VM<'gc>,
+//         _mc: &Mutation<'gc>,
+//     ) -> Result<Self, SiltError> {
+//         Ok(args.get(0).unwrap_or(&Value::Nil))
+//     }
+// }
 
 impl<'a, 'gc> Hkt for &'_ Value<'gc> {
     type This<'b> = Self;

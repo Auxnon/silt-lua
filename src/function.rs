@@ -280,7 +280,7 @@ pub struct NativeFunctionRaw<'a> {
 impl<'gc> NativeFunctionRaw<'gc> {
     pub fn new<V, F, R>(f: F) -> Self
     where
-        V: for<'f> FromLuaMulti<'f, 'gc>,
+        V: for<'f> FromLuaMulti<'gc>,
         R: ToLua<'gc>,
         F: for<'f> Fn(
                 &mut VM<'gc>,

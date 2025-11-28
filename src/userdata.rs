@@ -38,14 +38,13 @@ pub trait UserData: Sized + 'static {
 }
 
 trait MethodClosure<'gc> {
-    type Input<'f>: FromLuaMulti<'f, 'gc>;
+    type Input<'f>: FromLuaMulti<'gc>;
     fn call_closure();
 }
 
 // Simplified method signature that avoids complex lifetime issues
-type UserDataMethodClosure<'gc> = Box<
-    dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> InnerResult<'gc> + 'gc
->;
+type UserDataMethodClosure<'gc> =
+    Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> InnerResult<'gc> + 'gc>;
 
 /// Trait for registering methods on UserData types
 pub trait UserDataMethods<'gc, T: UserData> {
@@ -244,11 +243,12 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         name: &str,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
-        if let Some(method_fn) = self.methods.get(name) {
-            // Create a mutable VM reference for the method call
-            let vm_mut = unsafe { &mut *(vm as *const VM<'gc> as *mut VM<'gc>) };
-            return method_fn(vm_mut, mc, &args);
-        }
+        // TODO use old commit change b0f21fa5
+        // if let Some(method_fn) = self.methods.get(name) {
+        //     // Create a mutable VM reference for the method call
+        //     let vm_mut = unsafe { &mut *(vm as *const VM<'gc> as *mut VM<'gc>) };
+        //     return method_fn(vm_mut, mc, &args);
+        // }
         Err(SiltError::UDNoMethodRef)
     }
 
@@ -436,22 +436,35 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, args| {
-                // First argument should be the UserData instance
-                if let Some(Value::UserData(ud_ref)) = args.get(0) {
-                    let mut ud_borrow = ud_ref.borrow_mut(mc);
-                    if let Ok(mut data_lock) = ud_borrow.data.lock() {
-                        if let Some(typed_data) = data_lock.downcast_mut::<T>() {
-                            // Convert remaining arguments using FromLuaMulti
-                            let method_args = &args[1..];
-                            let converted_args = A::from_lua_multi(method_args, vm, mc)?;
-                            let result = closure(vm, mc, typed_data, converted_args)?;
-                            return R::to_lua(result, vm, mc);
-                        }
-                    }
+                if let Some(ud_val) = args.first() {
+                    let r = ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                        let method_args = &args[1..];
+                        let converted = A::from_lua_multi(method_args, vm, mc)?;
+                        closure(vm, mc, ud, converted)
+                        // Ok(Value::Nil)
+                    })?;
+                    R::to_lua(r, vm, mc)
+                } else {
+                    //first value not userdata, should fail? or only if REQUIRED? TODO
+                    Err(SiltError::UDBadCast)
                 }
-                Err(SiltError::UDBadCast)
             }),
         );
+        //     if let Some(Value::UserData(ud_ref)) = args.get(0) {
+        //         ud_ref.borrow_mut(mc).downcast_mut(apply)
+        //         let mut ud_borrow = ud_ref.borrow_mut(mc).downcast_mut(apply);
+        //         if let Ok(mut data_lock) = ud_borrow.
+        //             if let Some(typed_data) = data_lock.downcast_mut::<T>() {
+        //                 // Convert remaining arguments using FromLuaMulti
+        //                 let method_args = &args[1..];
+        //                 let converted_args = A::from_lua_multi(method_args, vm, mc)?;
+        //                 let result = closure(vm, mc, typed_data, converted_args)?;
+        //                 return R::to_lua(result, vm, mc);
+        //             }
+        //         }
+        //     }
+        //     Err(SiltError::UDBadCast)
+        // }),
     }
 
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
@@ -461,23 +474,39 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc,
     {
         let type_id = self.type_id;
+        // self.methods.insert(
+        //     name.to_string(),
+        //     Box::new(move |vm, mc, args| {
+        //         // First argument should be the UserData instance
+        //         if let Some(Value::UserData(ud_ref)) = args.get(0) {
+        //             let ud_borrow = ud_ref.borrow();
+        //             if let Ok(data_lock) = ud_borrow.data.lock() {
+        //                 if let Some(typed_data) = data_lock.downcast_ref::<T>() {
+        //                     // Convert remaining arguments using FromLuaMulti
+        //                     let method_args = &args[1..];
+        //                     let converted_args = A::from_lua_multi(method_args, vm, mc)?;
+        //                     let result = closure(vm, mc, typed_data, converted_args)?;
+        //                     return R::to_lua(result, vm, mc);
+        //                 }
+        //             }
+        //         }
+        //         Err(SiltError::UDBadCast)
+        //     }),
+        // );
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, args| {
-                // First argument should be the UserData instance
-                if let Some(Value::UserData(ud_ref)) = args.get(0) {
-                    let ud_borrow = ud_ref.borrow();
-                    if let Ok(data_lock) = ud_borrow.data.lock() {
-                        if let Some(typed_data) = data_lock.downcast_ref::<T>() {
-                            // Convert remaining arguments using FromLuaMulti
-                            let method_args = &args[1..];
-                            let converted_args = A::from_lua_multi(method_args, vm, mc)?;
-                            let result = closure(vm, mc, typed_data, converted_args)?;
-                            return R::to_lua(result, vm, mc);
-                        }
-                    }
+                if let Some(ud_val) = args.first() {
+                    let r = ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                        let method_args = &args[1..];
+                        let converted = A::from_lua_multi(method_args, vm, mc)?;
+                        closure(vm, mc, ud, converted)
+                    })?;
+                    R::to_lua(r, vm, mc)
+                } else {
+                    //first value not userdata, should fail? or only if REQUIRED? TODO
+                    Err(SiltError::UDBadCast)
                 }
-                Err(SiltError::UDBadCast)
             }),
         );
     }
@@ -693,13 +722,19 @@ impl UserDataWrapper {
     //     //.downcast_mut::<T>()
     // }
     // pub fn
-    pub fn downcast_mut<'a, 'b: 'a, T: 'static>(
-        &mut self,
-        mut apply: impl FnMut(&T) -> Result<(), SiltError>,
-    ) -> Result<(), SiltError> {
+    pub fn downcast_mut<'a, 'b: 'a, T: UserData, F, R>(
+        &'a mut self,
+        mut apply: F,
+    ) -> Result<R, SiltError>
+    where
+        F: FnMut(&mut T) -> Result<R, SiltError>,
+        R: ToLua<'b>,
+    {
         let mut i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
-        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::Unknown)?;
+        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCast)?;
         apply(ud)
+
+        // Ok(Value::Nil)
         //.downcast_mut::<T>()
     }
 }
@@ -815,10 +850,7 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut::<Value<'gc>, (), _>(
-            "test",
-            |vm, mc, this, args| Ok(()),
-        );
+        methods.add_method_mut::<Value<'gc>, (), _>("test", |vm, mc, this, args| Ok(()));
         // methods.add_method_mut("set_pos", |vm, mc, args: &Value<'gc>| {
         //     Ok(())
         //     // if args.len() >= 3 {
