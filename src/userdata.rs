@@ -428,9 +428,9 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
 
     fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: FromLuaMulti<'gc>,
+        A: for<'args> FromLuaMultiBorrow<'args, 'gc>,
         R: ToLua<'gc>,
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc,
+        F: for<'args> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc,
     {
         let type_id = self.type_id;
         self.methods.insert(
@@ -439,9 +439,8 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
                 if let Some(ud_val) = args.first() {
                     let r = ud_val.apply_userdata::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
-                        let converted = A::from_lua_multi(method_args, vm, mc)?;
+                        let converted = A::from_lua_multi_borrow(method_args, vm, mc)?;
                         closure(vm, mc, ud, converted)
-                        // Ok(Value::Nil)
                     })?;
                     R::to_lua(r, vm, mc)
                 } else {
@@ -469,37 +468,18 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
 
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: FromLuaMulti<'gc>,
+        A: for<'args> FromLuaMultiBorrow<'args, 'gc>,
         R: ToLua<'gc>,
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc,
+        F: for<'args> Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc,
     {
         let type_id = self.type_id;
-        // self.methods.insert(
-        //     name.to_string(),
-        //     Box::new(move |vm, mc, args| {
-        //         // First argument should be the UserData instance
-        //         if let Some(Value::UserData(ud_ref)) = args.get(0) {
-        //             let ud_borrow = ud_ref.borrow();
-        //             if let Ok(data_lock) = ud_borrow.data.lock() {
-        //                 if let Some(typed_data) = data_lock.downcast_ref::<T>() {
-        //                     // Convert remaining arguments using FromLuaMulti
-        //                     let method_args = &args[1..];
-        //                     let converted_args = A::from_lua_multi(method_args, vm, mc)?;
-        //                     let result = closure(vm, mc, typed_data, converted_args)?;
-        //                     return R::to_lua(result, vm, mc);
-        //                 }
-        //             }
-        //         }
-        //         Err(SiltError::UDBadCast)
-        //     }),
-        // );
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, args| {
                 if let Some(ud_val) = args.first() {
                     let r = ud_val.apply_userdata::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
-                        let converted = A::from_lua_multi(method_args, vm, mc)?;
+                        let converted = A::from_lua_multi_borrow(method_args, vm, mc)?;
                         closure(vm, mc, ud, converted)
                     })?;
                     R::to_lua(r, vm, mc)
