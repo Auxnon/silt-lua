@@ -1077,11 +1077,15 @@ fn declaration<'a, 'c: 'a>(
 ) -> Catch {
     devout!("----------------------------");
     devnote!(this it "declaration");
+    let t = this.peek(it)?;
+    if t == &Token::Comment {
+        this.eat(it);
+        return Ok(());
+    }
 
     // Reset expression tracking for each declaration
     this.last_was_expression = false;
 
-    let t = this.peek(it)?;
     match t {
         Token::Local => declaration_keyword(this, mc, f, it, true, false)?,
         Token::Global => declaration_keyword(this, mc, f, it, false, false)?,
