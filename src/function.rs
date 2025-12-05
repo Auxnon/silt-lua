@@ -285,8 +285,8 @@ impl<'gc> NativeFunctionRaw<'gc> {
         F: Fn(
                 &mut VM<'gc>,
                 &Mutation<'gc>,
-                // V,
-                <A as FromLuaMulti<'gc>>::Output,
+                A,
+                // <A as FromLuaMulti<'gc>>::Output,
             ) -> ToInnerResult<'gc, R>
             + 'gc,
     {
