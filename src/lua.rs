@@ -1935,23 +1935,23 @@ impl<'gc> VM<'gc> {
     ) where
         R: ToLua<'gc> + 'gc,
         T: for<'a> FromLuaMulti<'gc> + 'gc,
-        F:  Fn(&mut VM<'gc>, T) -> R,
+        F: Fn(&mut VM<'gc>, T) -> R,
     {
         // Value::NativeFunction(Gc::new(mc, f))
     }
-    pub fn register_native_function<T, F, R>(
+    pub fn register_native_function<A, F, R>(
         &mut self,
         // vm: &VM<'gc>,
         mc: &Mutation<'gc>,
         name: &str,
         function: F,
     ) where
+        A: FromLuaMulti<'gc>,
+        // <T as FromLuaMulti<'gc>>::Output
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, <A as FromLuaMulti<'gc>>::Output) -> R + 'gc,
         R: ToLua<'gc> + 'gc,
-        T: for<'f> FromLuaMulti<'gc> + 'gc,
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, T) -> R + 'gc,
-        // <T as FromLuaMulti<'_, 'gc>>::Item
     {
-        let raw = NativeFunctionRaw::new(function);
+        let raw = NativeFunctionRaw::new::<A,_,_>(function);
 
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))

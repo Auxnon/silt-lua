@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     error::Error,
     marker::PhantomData,
+    ops::Deref,
     sync::{Arc, Mutex, Weak},
 };
 
@@ -15,7 +16,7 @@ use crate::{
     error::SiltError,
     function::NativeFunctionRc,
     lua::VM,
-    value::{FromLua, FromLuaMulti, FromLuaMultiBorrow, ToLua, Value, Variadic},
+    value::{FromLua, FromLuaMulti, FromLuaMultiBorrow, LuaRef, ToLua, Value, Variadic},
 };
 
 /// Result type for Lua operations
@@ -46,6 +47,49 @@ trait MethodClosure<'gc> {
 type UserDataMethodClosure<'gc> =
     Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> InnerResult<'gc> + 'gc>;
 
+pub trait MethodHandler<'gc, T, A, R> {
+    fn call_method<'a>(
+        &self,
+        vm: &mut VM<'gc>,
+        mc: &Mutation<'gc>,
+        userdata: &mut T,
+        args: &'a [Value<'gc>],
+    ) -> Result<R, SiltError>;
+}
+
+impl<'gc, T, A, R, F> MethodHandler<'gc, T, A, R> for F
+where
+    A: FromLuaMulti<'gc>,
+    R: ToLua<'gc>,
+    // We bind the closure here.
+    // Note: If you still get static errors here, see step 4 below.
+    F: Fn(
+            &mut VM<'gc>,
+            &Mutation<'gc>,
+            &mut T,
+            <A as FromLuaMulti<'gc>>::Output, // Use <'_> to let inference help
+        ) -> Result<R, SiltError>
+        + 'gc,
+{
+    fn call_method<'a>(
+        &self,
+        vm: &mut VM<'gc>,
+        mc: &Mutation<'gc>,
+        userdata: &mut T,
+        args: &'a [Value<'gc>],
+    ) -> Result<R, SiltError> {
+        // 1. Perform conversion using the lifetime 'a from the arguments
+        let converted_args = A::from_lua_multi(args, vm, mc)?;
+
+        // 2. Call the closure
+        (self)(vm, mc, userdata, converted_args)
+    }
+}
+
+struct TestFn<'a> {
+    store: UserDataMethodClosure<'a>,
+}
+
 /// Trait for registering methods on UserData types
 pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a metamethod to this UserData type
@@ -56,16 +100,29 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a method that can mutate the UserData
     fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: for<'args> FromLuaMultiBorrow<'args, 'gc>,
+        A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
-        F: for<'args> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc;
+        F: Fn(
+                &mut VM<'gc>,
+                &Mutation<'gc>,
+                &mut T,
+                <A as FromLuaMulti<'gc>>::Output,
+            ) -> Result<R, SiltError>
+            + 'gc;
+    // F: MethodHandler<'gc, T, A, R> + 'gc;
 
     /// Add a method that doesn't mutate the UserData
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: for<'args> FromLuaMultiBorrow<'args, 'gc>,
+        A: FromLuaMultiBorrow<'gc>,
         R: ToLua<'gc>,
-        F: for<'args> Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc;
+        F: Fn(
+                &VM<'gc>,
+                &Mutation<'gc>,
+                &T,
+                <A as FromLuaMultiBorrow<'gc>>::Output,
+            ) -> Result<R, SiltError>
+            + 'gc;
 }
 
 /// Trait for registering fields on UserData types
@@ -231,6 +288,9 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
             //     }),
             // );
         });
+impl<'gc, T: UserData + 'static> Default for UserDataTypedMap<'gc, T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -428,9 +488,16 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
 
     fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: for<'args> FromLuaMultiBorrow<'args, 'gc>,
+        A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
-        F: for<'args> Fn(&mut VM<'gc>, &Mutation<'gc>, &mut T, A) -> Result<R, SiltError> + 'gc,
+        // for<'a> F: Fn(
+        //         &mut VM<'gc>,
+        //         &Mutation<'gc>,
+        //         &mut T,
+        //         <A as FromLuaMultiBorrow<'gc>>::Output<'a>,
+        //     ) -> Result<R, SiltError>
+        //     + 'gc,
+        F: MethodHandler<'gc, T, A, R> + 'gc,
     {
         let type_id = self.type_id;
         self.methods.insert(
@@ -439,8 +506,8 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
                 if let Some(ud_val) = args.first() {
                     let r = ud_val.apply_userdata::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
-                        let converted = A::from_lua_multi_borrow(method_args, vm, mc)?;
-                        closure(vm, mc, ud, converted)
+                        // let converted = A::from_lua_multi_borrow(method_args, vm, mc)?;
+                        closure.call_method(vm, mc, ud, method_args)
                     })?;
                     R::to_lua(r, vm, mc)
                 } else {
@@ -468,9 +535,15 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
 
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: for<'args> FromLuaMultiBorrow<'args, 'gc>,
+        A: FromLuaMultiBorrow<'gc>,
         R: ToLua<'gc>,
-        F: for<'args> Fn(&VM<'gc>, &Mutation<'gc>, &T, A) -> Result<R, SiltError> + 'gc,
+        F: Fn(
+                &VM<'gc>,
+                &Mutation<'gc>,
+                &T,
+                <A as FromLuaMultiBorrow<'gc>>::Output,
+            ) -> Result<R, SiltError>
+            + 'gc,
     {
         let type_id = self.type_id;
         self.methods.insert(
@@ -830,7 +903,10 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut::<&Value<'gc>, (), _>("test", |vm, mc, this, args| Ok(()));
+        methods.add_method_mut::<&Value, _, _>("test", |vm, mc, this, args| {
+            let v = args.deref();
+            Ok(())
+        });
         // methods.add_method_mut("set_pos", |vm, mc, args: &Value<'gc>| {
         //     Ok(())
         //     // if args.len() >= 3 {

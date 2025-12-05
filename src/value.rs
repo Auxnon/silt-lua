@@ -1,8 +1,5 @@
 use std::{
-    hash::{Hash, Hasher},
-    ops::Deref,
-    rc::Rc,
-    slice::Iter,
+    env::args, hash::{Hash, Hasher}, marker::PhantomData, ops::Deref, rc::Rc, slice::Iter
 };
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
@@ -335,7 +332,11 @@ impl<'v> Value<'v> {
         // Ok(())
     }
 
-    pub fn apply_userdata<T: UserData, F,R>(&self, mc: &Mutation<'v>, apply: F) -> Result<R, SiltError>
+    pub fn apply_userdata<T: UserData, F, R>(
+        &self,
+        mc: &Mutation<'v>,
+        apply: F,
+    ) -> Result<R, SiltError>
     where
         F: FnMut(&mut T) -> Result<R, SiltError>,
         R: ToLua<'v>,
@@ -1016,20 +1017,22 @@ pub trait Hkt {
 }
 
 pub trait FromLuaMulti<'gc>: Sized {
+    type Output;
     fn from_lua_multi(
         args: &[Value<'gc>],
         lua: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self, SiltError>;
+    ) -> Result<Self::Output, SiltError>;
 }
 
 /// Trait for types that can borrow from the input slice with the same lifetime
-pub trait FromLuaMultiBorrow<'args, 'gc>: Sized {
-    fn from_lua_multi_borrow(
-        args: &'args [Value<'gc>],
+pub trait FromLuaMultiBorrow<'gc>: Sized {
+    type Output;
+    fn from_lua_multi_borrow<'a>(
+        args: &'a [Value<'gc>],
         lua: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self, SiltError>;
+    ) -> Result<Self::Output, SiltError>;
 }
 
 // TODO how to return... the same args again?
@@ -1074,13 +1077,16 @@ pub trait FromLuaMultiBorrow<'args, 'gc>: Sized {
 //     }
 // }
 //
+
 impl<'gc> FromLuaMulti<'gc> for () {
+    type Output = Self;
     fn from_lua_multi(_: &[Value<'gc>], _: &VM<'gc>, _: &Mutation<'gc>) -> Result<Self, SiltError> {
         Ok(())
     }
 }
 
 impl<'gc> FromLuaMulti<'gc> for Value<'gc> {
+    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         _vm: &VM<'gc>,
@@ -1090,13 +1096,185 @@ impl<'gc> FromLuaMulti<'gc> for Value<'gc> {
     }
 }
 
-impl<'args, 'gc> FromLuaMultiBorrow<'args, 'gc> for &'args Value<'gc> {
-    fn from_lua_multi_borrow(
-        args: &'args [Value<'gc>],
+pub struct LuaRef<'gc> {
+    ptr: *const Value<'gc>,
+    _marker: PhantomData<&'gc Value<'gc>>,
+}
+
+impl<'gc> Deref for LuaRef<'gc> {
+    type Target = Value<'gc>;
+    // Offered at your own
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.ptr }
+    }
+}
+
+impl<'gc> FromLuaMulti<'gc> for &Value<'gc> {
+    type Output = LuaRef<'gc>;
+    fn from_lua_multi(
+        args: &[Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
-    ) -> Result<Self, SiltError> {
-        Ok(args.first().unwrap_or(&Value::Nil))
+    ) -> Result<Self::Output, SiltError> {
+        let val = args.first().unwrap_or(&Value::Nil);
+        Ok(LuaRef {
+            ptr: val as *const _,
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl<'gc> FromLuaMulti<'gc> for LuaRef<'gc> {
+    type Output = LuaRef<'gc>;
+    fn from_lua_multi(
+        args: &[Value<'gc>],
+        _vm: &VM<'gc>,
+        _mc: &Mutation<'gc>,
+    ) -> Result<Self::Output, SiltError> {
+        let val = args.first().unwrap_or(&Value::Nil);
+        Ok(LuaRef {
+            ptr: val as *const _,
+            _marker: PhantomData,
+        })
+    }
+}
+
+
+// // The struct to hold the slice pointers
+// pub struct VariadicRaw<'a, 'gc> {
+//     start: *const Value<'gc>,
+//     len: usize,
+//     // ensuring the wrapper itself is temporary.
+//     _marker: PhantomData<&'a [Value<'gc>]>, 
+// }
+//
+//
+// impl<'a, 'gc> Deref for VariadicRaw<'a, 'gc> {
+//     type Target = [Value<'gc>];
+//
+//     fn deref(&self) -> &Self::Target {
+//         // SAFETY: 
+//         // 1. The memory is valid for the duration of 'a, guaranteed by the caller 
+//         //    (the 'a lifetime comes from the input slice, which requires 'gc >= 'a).
+//         // 2. The pointer is non-null and the length is correct as set during creation.
+//         unsafe {
+//             std::slice::from_raw_parts(self.start, self.len)
+//         }
+//     }
+// }
+
+pub struct VariadicRaw< 'gc> {
+    start: *const Value<'gc>,
+    len: usize,
+    _marker: PhantomData<&'gc [Value<'gc>]>, 
+}
+
+
+impl< 'gc> Deref for VariadicRaw< 'gc> {
+    type Target = [Value<'gc>];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe {
+            std::slice::from_raw_parts(self.start, self.len)
+        }
+    }
+}
+
+impl<'gc> FromLuaMulti<'gc> for VariadicRaw<'gc> {
+    type Output = Self;
+    fn from_lua_multi(
+        args: &[Value<'gc>],
+        _vm: &VM<'gc>,
+        _mc: &Mutation<'gc>,
+    ) -> Result<Self::Output, SiltError> {
+        Ok(VariadicRaw {
+            start: args.as_ptr(),
+            len: args.len(),
+            _marker: PhantomData,
+        })
+    }
+}
+
+// TODO iteraor for variadic
+// // The actual iterator over the arguments
+// pub struct VariadicIter<'a, 'gc> {
+//     current: *const Value<'gc>,
+//     end: *const Value<'gc>,
+//     _marker: PhantomData<&'a Value<'gc>>,
+// }
+//
+// impl<'a, 'gc> Iterator for VariadicIter<'a, 'gc> {
+//     type Item = &'a Value<'gc>;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         if self.current == self.end {
+//             return None;
+//         }
+//         
+//         // SAFETY:
+//         // We know the current pointer is within the bounds [start, end) and valid 
+//         // for the lifetime 'a (inherited from the slice).
+//         let item = unsafe {
+//             let item = &*self.current;
+//             // Advance the pointer by one Value (safe because the data is a contiguous slice)
+//             self.current = self.current.add(1); 
+//             item
+//         };
+//
+//         Some(item)
+//     }
+//     
+//     fn size_hint(&self) -> (usize, Option<usize>) {
+//         let count = (self.end as usize - self.current as usize) / std::mem::size_of::<Value<'gc>>();
+//         (count, Some(count))
+//     }
+// }
+//
+// // Implement IntoIterator for the wrapper
+// impl<'a, 'gc> IntoIterator for VariadicArgs<'a, 'gc> {
+//     type Item = &'a Value<'gc>;
+//     type IntoIter = VariadicIter<'a, 'gc>;
+//
+//     fn into_iter(self) -> Self::IntoIter {
+//         let slice = self.deref();
+//         VariadicIter {
+//             current: slice.as_ptr(),
+//             // Calculate the pointer to one past the end for termination
+//             end: unsafe { slice.as_ptr().add(slice.len()) }, 
+//             _marker: PhantomData,
+//         }
+//     }
+// }
+
+
+
+impl<'gc> FromLuaMultiBorrow<'gc> for &Value<'gc> {
+    type Output = LuaRef<'gc>;
+    fn from_lua_multi_borrow<'a>(
+        args: &'a [Value<'gc>],
+        _vm: &VM<'gc>,
+        _mc: &Mutation<'gc>,
+    ) -> Result<Self::Output, SiltError> {
+        let val = args.first().unwrap_or(&Value::Nil);
+        Ok(LuaRef {
+            ptr: val as *const _,
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl<'gc> FromLuaMultiBorrow<'gc> for LuaRef<'gc> {
+    type Output = LuaRef<'gc>;
+    fn from_lua_multi_borrow<'a>(
+        args: &'a [Value<'gc>],
+        _vm: &VM<'gc>,
+        _mc: &Mutation<'gc>,
+    ) -> Result<Self::Output, SiltError> {
+        let val = args.first().unwrap_or(&Value::Nil);
+        Ok(LuaRef {
+            ptr: val as *const _,
+            _marker: PhantomData,
+        })
     }
 }
 
@@ -1118,28 +1296,30 @@ impl<'gc, T1> FromLuaMulti<'gc> for (T1,)
 where
     T1: FromLua<'gc>,
 {
+    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
-        Ok((T1::from_lua(args.get(0).unwrap_or(&Value::Nil), vm, mc)?,))
+        Ok((T1::from_lua(args.first().unwrap_or(&Value::Nil), vm, mc)?,))
     }
 }
 
-impl<'args, 'gc, T1> FromLuaMultiBorrow<'args, 'gc> for (T1,)
-where
-    T1: FromLuaMultiBorrow<'args, 'gc>,
-{
-    fn from_lua_multi_borrow(
-        args: &'args [Value<'gc>],
-        vm: &VM<'gc>,
-        mc: &Mutation<'gc>,
-    ) -> Result<Self, SiltError> {
-        Ok((T1::from_lua_multi_borrow(args, vm, mc)?,))
-    }
-}
-
+// impl<'gc, T1> FromLuaMultiBorrow<'gc> for (T1,)
+// where
+//     T1: FromLuaMultiBorrow<'gc>,
+// {
+//     type Output<'a> = (T1,);
+//     fn from_lua_multi_borrow<'a>(
+//         args: &'a [Value<'gc>],
+//         vm: &VM<'gc>,
+//         mc: &Mutation<'gc>,
+//     ) -> Result<Self::Output<'a>, SiltError> {
+//         Ok((T1::from_lua_multi_borrow(args, vm, mc)?,))
+//     }
+// }
+//
 pub struct VariadicMaker<T> {
     _phantom: std::marker::PhantomData<T>,
 }
@@ -1148,6 +1328,7 @@ impl<'gc, T> FromLuaMulti<'gc> for Vec<T>
 where
     T: FromLua<'gc>,
 {
+    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1166,6 +1347,7 @@ where
     A: FromLua<'gc>,
     B: FromLua<'gc>,
 {
+    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1184,6 +1366,7 @@ where
     B: FromLua<'gc>,
     C: FromLua<'gc>,
 {
+    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1204,6 +1387,7 @@ where
     C: FromLua<'gc>,
     D: FromLua<'gc>,
 {
+    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1226,6 +1410,7 @@ where
     D: FromLua<'gc>,
     E: FromLua<'gc>,
 {
+    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1250,6 +1435,7 @@ where
     E: FromLua<'gc>,
     F: FromLua<'gc>,
 {
+    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
