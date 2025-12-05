@@ -1017,12 +1017,12 @@ pub trait Hkt {
 }
 
 pub trait FromLuaMulti<'gc>: Sized {
-    type Output;
+    // type Output;
     fn from_lua_multi(
         args: &[Value<'gc>],
         lua: &VM<'gc>,
         mc: &Mutation<'gc>,
-    ) -> Result<Self::Output, SiltError>;
+    ) -> Result<Self, SiltError>; //Self::Output
 }
 
 /// Trait for types that can borrow from the input slice with the same lifetime
@@ -1079,14 +1079,12 @@ pub trait FromLuaMultiBorrow<'gc>: Sized {
 //
 
 impl<'gc> FromLuaMulti<'gc> for () {
-    type Output = Self;
     fn from_lua_multi(_: &[Value<'gc>], _: &VM<'gc>, _: &Mutation<'gc>) -> Result<Self, SiltError> {
         Ok(())
     }
 }
 
 impl<'gc> FromLuaMulti<'gc> for Value<'gc> {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         _vm: &VM<'gc>,
@@ -1096,12 +1094,12 @@ impl<'gc> FromLuaMulti<'gc> for Value<'gc> {
     }
 }
 
-pub struct LuaRef<'gc> {
+pub struct ValueRef<'gc> {
     ptr: *const Value<'gc>,
     _marker: PhantomData<&'gc Value<'gc>>,
 }
 
-impl<'gc> Deref for LuaRef<'gc> {
+impl<'gc> Deref for ValueRef<'gc> {
     type Target = Value<'gc>;
     // Offered at your own
     fn deref(&self) -> &Self::Target {
@@ -1109,36 +1107,19 @@ impl<'gc> Deref for LuaRef<'gc> {
     }
 }
 
-impl<'gc> FromLuaMulti<'gc> for &Value<'gc> {
-    type Output = LuaRef<'gc>;
+impl<'gc> FromLuaMulti<'gc> for ValueRef<'gc> {
     fn from_lua_multi(
         args: &[Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
-    ) -> Result<Self::Output, SiltError> {
+    ) -> Result<Self, SiltError> {
         let val = args.first().unwrap_or(&Value::Nil);
-        Ok(LuaRef {
+        Ok(ValueRef {
             ptr: val as *const _,
             _marker: PhantomData,
         })
     }
 }
-
-impl<'gc> FromLuaMulti<'gc> for LuaRef<'gc> {
-    type Output = LuaRef<'gc>;
-    fn from_lua_multi(
-        args: &[Value<'gc>],
-        _vm: &VM<'gc>,
-        _mc: &Mutation<'gc>,
-    ) -> Result<Self::Output, SiltError> {
-        let val = args.first().unwrap_or(&Value::Nil);
-        Ok(LuaRef {
-            ptr: val as *const _,
-            _marker: PhantomData,
-        })
-    }
-}
-
 
 // // The struct to hold the slice pointers
 // pub struct VariadicRaw<'a, 'gc> {
@@ -1181,12 +1162,11 @@ impl< 'gc> Deref for VariadicRaw< 'gc> {
 }
 
 impl<'gc> FromLuaMulti<'gc> for VariadicRaw<'gc> {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
-    ) -> Result<Self::Output, SiltError> {
+    ) -> Result<Self, SiltError> {
         Ok(VariadicRaw {
             start: args.as_ptr(),
             len: args.len(),
@@ -1249,29 +1229,29 @@ impl<'gc> FromLuaMulti<'gc> for VariadicRaw<'gc> {
 
 
 impl<'gc> FromLuaMultiBorrow<'gc> for &Value<'gc> {
-    type Output = LuaRef<'gc>;
+    type Output = ValueRef<'gc>;
     fn from_lua_multi_borrow<'a>(
         args: &'a [Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self::Output, SiltError> {
         let val = args.first().unwrap_or(&Value::Nil);
-        Ok(LuaRef {
+        Ok(ValueRef {
             ptr: val as *const _,
             _marker: PhantomData,
         })
     }
 }
 
-impl<'gc> FromLuaMultiBorrow<'gc> for LuaRef<'gc> {
-    type Output = LuaRef<'gc>;
+impl<'gc> FromLuaMultiBorrow<'gc> for ValueRef<'gc> {
+    type Output = ValueRef<'gc>;
     fn from_lua_multi_borrow<'a>(
         args: &'a [Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self::Output, SiltError> {
         let val = args.first().unwrap_or(&Value::Nil);
-        Ok(LuaRef {
+        Ok(ValueRef {
             ptr: val as *const _,
             _marker: PhantomData,
         })
@@ -1296,7 +1276,6 @@ impl<'gc, T1> FromLuaMulti<'gc> for (T1,)
 where
     T1: FromLua<'gc>,
 {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1328,7 +1307,6 @@ impl<'gc, T> FromLuaMulti<'gc> for Vec<T>
 where
     T: FromLua<'gc>,
 {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1347,7 +1325,6 @@ where
     A: FromLua<'gc>,
     B: FromLua<'gc>,
 {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1366,7 +1343,6 @@ where
     B: FromLua<'gc>,
     C: FromLua<'gc>,
 {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1387,7 +1363,6 @@ where
     C: FromLua<'gc>,
     D: FromLua<'gc>,
 {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1410,7 +1385,6 @@ where
     D: FromLua<'gc>,
     E: FromLua<'gc>,
 {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,
@@ -1435,7 +1409,6 @@ where
     E: FromLua<'gc>,
     F: FromLua<'gc>,
 {
-    type Output = Self;
     fn from_lua_multi(
         args: &[Value<'gc>],
         vm: &VM<'gc>,

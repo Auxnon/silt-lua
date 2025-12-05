@@ -1911,14 +1911,14 @@ impl<'gc> VM<'gc> {
         // }
 
         // let v=Self::register_native_function(mc,crate::standard::clock);
-        self.register_native_function::<(f64,), _, std::result::Result<Value<'gc>, SiltError>>(
+        self.register_native_function(
             mc,
             "clock",
             crate::standard::clock,
         );
         // self.inser( mc, "clock", v);
         // register_native_fn!("clock", crate::standard::clock, ());
-        // register_native_fn!("print", crate::standard::print);
+        self.register_native_function(mc,"print", crate::standard::print);
         // register_native_fn!("setmetatable", crate::standard::setmetatable);
         // register_native_fn!("getmetatable", crate::standard::getmetatable);
         // register_native_fn!("test_ent", crate::standard::test_ent);
@@ -1948,10 +1948,10 @@ impl<'gc> VM<'gc> {
     ) where
         A: FromLuaMulti<'gc>,
         // <T as FromLuaMulti<'gc>>::Output
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, <A as FromLuaMulti<'gc>>::Output) -> R + 'gc,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, A) -> R + 'gc,
         R: ToLua<'gc> + 'gc,
     {
-        let raw = NativeFunctionRaw::new::<A,_,_>(function);
+        let raw = NativeFunctionRaw::new::<A, _, _>(function);
 
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))

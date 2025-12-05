@@ -14,9 +14,8 @@ use gc_arena::{Collect, Gc, Mutation};
 use crate::{
     code::OpCode,
     error::SiltError,
-    function::NativeFunctionRc,
     lua::VM,
-    value::{FromLua, FromLuaMulti, FromLuaMultiBorrow, LuaRef, ToLua, Value, Variadic},
+    value::{FromLua, FromLuaMulti, FromLuaMultiBorrow, ToLua, Value, ValueRef},
 };
 
 /// Result type for Lua operations
@@ -36,11 +35,6 @@ pub trait UserData: Sized + 'static {
 
     /// Get a unique identifier for this UserData instance
     fn get_id(&self) -> usize;
-}
-
-trait MethodClosure<'gc> {
-    type Input<'f>: FromLuaMulti<'gc>;
-    fn call_closure();
 }
 
 // Simplified method signature that avoids complex lifetime issues
@@ -67,7 +61,8 @@ where
             &mut VM<'gc>,
             &Mutation<'gc>,
             &mut T,
-            <A as FromLuaMulti<'gc>>::Output, // Use <'_> to let inference help
+            A,
+            // <A as FromLuaMulti<'gc>>::Output, 
         ) -> Result<R, SiltError>
         + 'gc,
 {
@@ -86,10 +81,6 @@ where
     }
 }
 
-struct TestFn<'a> {
-    store: UserDataMethodClosure<'a>,
-}
-
 /// Trait for registering methods on UserData types
 pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a metamethod to this UserData type
@@ -106,7 +97,8 @@ pub trait UserDataMethods<'gc, T: UserData> {
                 &mut VM<'gc>,
                 &Mutation<'gc>,
                 &mut T,
-                <A as FromLuaMulti<'gc>>::Output,
+                A
+                // <A as FromLuaMulti<'gc>>::Output,
             ) -> Result<R, SiltError>
             + 'gc;
     // F: MethodHandler<'gc, T, A, R> + 'gc;
@@ -903,7 +895,7 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut::<&Value, _, _>("test", |vm, mc, this, args| {
+        methods.add_method_mut("test", |vm, mc, this, args:ValueRef| {
             let v = args.deref();
             Ok(())
         });

@@ -6,7 +6,7 @@ use crate::{
     value::{Value, FromLuaMulti},
 };
 
-pub fn clock<'lua>(_: &mut VM<'lua>, _: &Mutation<'lua>, _: (f64,)) -> InnerResult<'lua> {
+pub fn clock<'lua>(_: &mut VM<'lua>, _: &Mutation<'lua>, _: ()) -> InnerResult<'lua> {
     Ok(Value::Number(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
