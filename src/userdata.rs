@@ -5,6 +5,7 @@ use std::{
     error::Error,
     marker::PhantomData,
     ops::Deref,
+    rc::Rc,
     sync::{Arc, Mutex, Weak},
 };
 
@@ -14,6 +15,7 @@ use gc_arena::{Collect, Gc, Mutation};
 use crate::{
     code::OpCode,
     error::SiltError,
+    function::{NativeFunctionRaw, WrappedFn},
     lua::VM,
     value::{FromLua, FromLuaMulti, FromLuaMultiBorrow, ToLua, Value, ValueRef},
 };
@@ -62,7 +64,7 @@ where
             &Mutation<'gc>,
             &mut T,
             A,
-            // <A as FromLuaMulti<'gc>>::Output, 
+            // <A as FromLuaMulti<'gc>>::Output,
         ) -> Result<R, SiltError>
         + 'gc,
 {
@@ -97,8 +99,7 @@ pub trait UserDataMethods<'gc, T: UserData> {
                 &mut VM<'gc>,
                 &Mutation<'gc>,
                 &mut T,
-                A
-                // <A as FromLuaMulti<'gc>>::Output,
+                A, // <A as FromLuaMulti<'gc>>::Output,
             ) -> Result<R, SiltError>
             + 'gc;
     // F: MethodHandler<'gc, T, A, R> + 'gc;
@@ -182,7 +183,8 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 /// Stores methods and fields for a specific UserData type T
 pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
     methods: HashMap<String, UserDataMethodClosure<'gc>>,
-    method_cache: Vec<NativeFunctionRc<'gc>>,
+    // methods2: HashMap<String, dyn MethodHandler<'gc,T,_,_>>,
+    // method_cache: Vec<NativeFunctionRc<'gc>>,
     meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
     getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
     setters: HashMap<String, Box<UserDataSetterFn<'gc, T>>>,
@@ -194,7 +196,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     pub fn new() -> Self {
         Self {
             methods: HashMap::new(),
-            method_cache: Vec::new(),
+            // method_cache: Vec::new(),
             meta_methods: HashMap::new(),
             getters: HashMap::new(),
             setters: HashMap::new(),
@@ -214,7 +216,6 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     // Create a NativeFunction that calls a UserData method
     // pub fn create_method_function<'a>(&mut self, mc: &Mutation<'gc>) {
     //     if let Some(&method_fn) = self.methods.get("t") {
-    //
     //         let native_fn = move |vm: &mut VM<'gc>,
     //                               mc: &Mutation<'gc>,
     //                               args: Vec<Value<'gc>>|
@@ -232,6 +233,12 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     //         };
     //         let r = Rc::new(native_fn);
     //         self.method_cache.push(r.clone());
+    //         elf.getters.insert(
+    //             st.to_string(),
+    //             Box::new(move |_, m, _| {
+    //                 Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
+    //             }),
+    //         );
     //         // Some(Value::NativeFunction(Gc::new(mc, WrappedFn::new(r))))
     //     }
     // }
@@ -242,43 +249,44 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     //     let rr=Box::leak(b);
     // }
 
-    /// Create a NativeFunction that calls a UserData method
+    // Create a NativeFunction that calls a UserData method
     pub fn create_method_function(&mut self) {
         self.methods.drain().for_each(|(st, method_fn)| {
             // let type_id = self.type_id;
             // let method_name = method_name.to_string();
 
-            let native_fn = move |vm: &mut VM<'gc>,
-                                  mc: &Mutation<'gc>,
-                                  args: Variadic<Value<'gc>>|
-                  -> Value<'gc> {
-                // let method_args = args[1..].to_vec();
-                // // First argument should be the UserData instance
-                // if let Value::UserData(ud_ref) = args[0] {
-                //     let ud_borrow = ud_ref.borrow();
-                //     if let Ok(mut data_lock) = ud_borrow.data.lock() {
-                //         if let Some(typed_data) = data_lock.downcast_mut::<T>() {
-                //             // println!("we're here an dthen{:?}", method_fn);
-                //             for ele in method_args.iter() {
-                //                 println!(" args {}", ele);
-                //             }
-                //             // Call the method with remaining arguments
-                //             return method_fn(vm, mc, typed_data, method_args);
-                //         }
-                //     };
-                // }
-                // Err(SiltError::UDBadCast)
-                Value::Nil
-            };
-            // let raw = NativeFunctionRaw::new(native_fn);
-            // let r = Rc::new(raw);
+            // let native_fn = move |vm: &mut VM<'gc>,
+            //                       mc: &Mutation<'gc>,
+            //                       args: &[Value<'gc>]|
+            //       -> Value<'gc> {
+            //     let method_args = args[1..].to_vec();
+            //     // First argument should be the UserData instance
+            //     if let Value::UserData(ud_ref) = args[0] {
+            //         let ud_borrow = ud_ref.borrow();
+            //         if let Ok(mut data_lock) = ud_borrow.data.lock() {
+            //             if let Some(typed_data) = data_lock.downcast_mut::<T>() {
+            //                 // println!("we're here an dthen{:?}", method_fn);
+            //                 for ele in method_args.iter() {
+            //                     println!(" args {}", ele);
+            //                 }
+            //                 // Call the method with remaining arguments
+            //                 return method_fn(vm, mc, typed_data, method_args)?;
+            //             }
+            //         };
+            //     }
+            //     Err(SiltError::UDBadCast)
+            //     // Value::Nil
+            // };
+            let native_fn = method_fn;
+            let raw = NativeFunctionRaw { func: native_fn };
+            let r = Rc::new(raw);
             // self.method_cache.push(r.clone());
-            // self.getters.insert(
-            //     st.to_string(),
-            //     Box::new(move |_, m, _| {
-            //         Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
-            //     }),
-            // );
+            self.getters.insert(
+                st.to_string(),
+                Box::new(move |_, m, _| {
+                    Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
+                }),
+            );
         });
 impl<'gc, T: UserData + 'static> Default for UserDataTypedMap<'gc, T> {
     fn default() -> Self {
@@ -330,9 +338,9 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         ud: &UserDataWrapper,
         name: &str,
     ) -> InnerResult<'gc> {
-        println!("name {}", name);
+        // println!("name {}", name);
         if let Some(getter_fn) = self.getters.get(name) {
-            println!("yeah we exist {}", name);
+            // println!("yeah we exist {}", name);
             if let Ok(d) = ud.data.lock() {
                 return match d.downcast_ref() {
                     Some(typed_ud) => getter_fn(vm, mc, typed_ud),
@@ -598,7 +606,7 @@ impl<'gc> UserDataRegistry<'gc> {
     }
 
     /// Register a UserData type
-    pub fn register<T: UserData>(&mut self, _: &Mutation<'gc>) {
+    pub fn register<T: UserData>(&mut self, _mc: &Mutation<'gc>) {
         let type_name = T::type_name();
         // Only register if not already registered
         if !self.maps.contains_key(type_name) {
@@ -895,9 +903,9 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut("test", |vm, mc, this, args:ValueRef| {
+        methods.add_method_mut("test", |vm, mc, this, args: ValueRef| {
             let v = args.deref();
-            Ok(())
+            Ok(Value::Integer(3))
         });
         // methods.add_method_mut("set_pos", |vm, mc, args: &Value<'gc>| {
         //     Ok(())

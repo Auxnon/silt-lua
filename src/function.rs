@@ -274,7 +274,7 @@ pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
 // pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
 
 pub struct NativeFunctionRaw<'a> {
-    func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> InnerResult<'a> + 'a>,
+    pub func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> InnerResult<'a> + 'a>,
 }
 
 impl<'gc> NativeFunctionRaw<'gc> {

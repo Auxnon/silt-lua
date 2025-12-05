@@ -1,4 +1,3 @@
-use core::fmt;
 use std::{
     cmp::Ordering,
     fmt::{Display, Formatter},
@@ -13,7 +12,7 @@ use crate::{
     code::OpCode,
     error::{ErrorTuple, SiltError, TokenCell, TokenTriple},
     function::FunctionObject,
-    lexer::{Lexer, TokenTripleResult},
+    lexer::Lexer,
     token::{Operator, Token},
     value::Value,
 };
@@ -235,7 +234,9 @@ struct ParseRule {
     precedence: Precedence,
 }
 
-const WORD_MAP: [&str; 7] = ["keyword", "op", "number", "bool", "nil", "string", "comment"];
+const WORD_MAP: [&str; 7] = [
+    "keyword", "op", "number", "bool", "nil", "string", "comment",
+];
 
 // type LSPIndent =(usize, usize);
 // start, length, type
