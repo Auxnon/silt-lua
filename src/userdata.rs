@@ -48,7 +48,7 @@ pub trait MethodHandler<'gc, T, A, R> {
         &self,
         vm: &mut VM<'gc>,
         mc: &Mutation<'gc>,
-        userdata: &mut T,
+        userdata: Option<&mut T>,
         args: &'a [Value<'gc>],
     ) -> Result<R, SiltError>;
 }
@@ -62,7 +62,7 @@ where
     F: Fn(
             &mut VM<'gc>,
             &Mutation<'gc>,
-            &mut T,
+            Option<&mut T>,
             A,
             // <A as FromLuaMulti<'gc>>::Output,
         ) -> Result<R, SiltError>
@@ -72,7 +72,7 @@ where
         &self,
         vm: &mut VM<'gc>,
         mc: &Mutation<'gc>,
-        userdata: &mut T,
+        userdata: Option<&mut T>,
         args: &'a [Value<'gc>],
     ) -> Result<R, SiltError> {
         // 1. Perform conversion using the lifetime 'a from the arguments
@@ -98,7 +98,7 @@ pub trait UserDataMethods<'gc, T: UserData> {
         F: Fn(
                 &mut VM<'gc>,
                 &Mutation<'gc>,
-                &mut T,
+                Option<&mut T>,
                 A, // <A as FromLuaMulti<'gc>>::Output,
             ) -> Result<R, SiltError>
             + 'gc;
@@ -107,15 +107,16 @@ pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a method that doesn't mutate the UserData
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: FromLuaMultiBorrow<'gc>,
+        A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
-        F: Fn(
-                &VM<'gc>,
-                &Mutation<'gc>,
-                &T,
-                <A as FromLuaMultiBorrow<'gc>>::Output,
-            ) -> Result<R, SiltError>
-            + 'gc;
+        // F: Fn(
+        //         &VM<'gc>,
+        //         &Mutation<'gc>,
+        //         Option<&T>,
+        //         <A as FromLuaMultiBorrow<'gc>>::Output,
+        //     ) -> Result<R, SiltError>
+        //     + 'gc;
+        F: MethodHandler<'gc, T, A, R> + 'gc;
 }
 
 /// Trait for registering fields on UserData types
@@ -288,6 +289,9 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
                 }),
             );
         });
+    }
+}
+
 impl<'gc, T: UserData + 'static> Default for UserDataTypedMap<'gc, T> {
     fn default() -> Self {
         Self::new()
@@ -503,17 +507,20 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, args| {
-                if let Some(ud_val) = args.first() {
-                    let r = ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                let res = if let Some(ud_val) = args.first() {
+                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
-                        // let converted = A::from_lua_multi_borrow(method_args, vm, mc)?;
-                        closure.call_method(vm, mc, ud, method_args)
-                    })?;
-                    R::to_lua(r, vm, mc)
+                        closure.call_method(vm, mc, Some(ud), method_args)
+                    }) {
+                        Ok(rr) => rr,
+                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(e) => return Err(e),
+                    }
                 } else {
                     //first value not userdata, should fail? or only if REQUIRED? TODO
-                    Err(SiltError::UDBadCast)
-                }
+                    closure.call_method(vm, mc, None, args)?
+                };
+                R::to_lua(res, vm, mc)
             }),
         );
         //     if let Some(Value::UserData(ud_ref)) = args.get(0) {
@@ -535,31 +542,35 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
 
     fn add_method<A, R, F>(&mut self, name: &str, closure: F)
     where
-        A: FromLuaMultiBorrow<'gc>,
+        A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
-        F: Fn(
-                &VM<'gc>,
-                &Mutation<'gc>,
-                &T,
-                <A as FromLuaMultiBorrow<'gc>>::Output,
-            ) -> Result<R, SiltError>
-            + 'gc,
+        // F: Fn(
+        //         &VM<'gc>,
+        //         &Mutation<'gc>,
+        //         Option<&T>,
+        //         <A as FromLuaMultiBorrow<'gc>>::Output,
+        //     ) -> Result<R, SiltError>
+        //     + 'gc,
+        F: MethodHandler<'gc, T, A, R> + 'gc,
     {
         let type_id = self.type_id;
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, args| {
-                if let Some(ud_val) = args.first() {
-                    let r = ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                let res = if let Some(ud_val) = args.first() {
+                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
-                        let converted = A::from_lua_multi_borrow(method_args, vm, mc)?;
-                        closure(vm, mc, ud, converted)
-                    })?;
-                    R::to_lua(r, vm, mc)
+                        closure.call_method(vm, mc, Some(ud), method_args)
+                    }) {
+                        Ok(rr) => rr,
+                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(e) => return Err(e),
+                    }
                 } else {
                     //first value not userdata, should fail? or only if REQUIRED? TODO
-                    Err(SiltError::UDBadCast)
-                }
+                    closure.call_method(vm, mc, None, args)?
+                };
+                R::to_lua(res, vm, mc)
             }),
         );
     }
@@ -905,8 +916,33 @@ impl UserData for TestEnt {
 
         methods.add_method_mut("test", |vm, mc, this, args: ValueRef| {
             let v = args.deref();
+            println!(
+                "internal userdata method heehehehe (is self param userdata? {}!)",
+                if this.is_some() { true } else { false }
+            );
             Ok(Value::Integer(3))
         });
+
+        // let closure = |vm, mc, this, args: (f64,)| Ok(());
+        //
+        //     let bx = Box::new(move |vm, mc, args: &[Value]| {
+        //         if let Some(ud_val) = args.first() {
+        //             let r = ud_val.apply_userdata::<TestEnt, _, Value>(mc, |ud| {
+        //                 let method_args = &args[1..];
+        //                 // let converted = A::from_lua_multi_borrow(method_args, vm, mc)?;
+        //                 closure.call_method(vm, mc, ud, method_args)
+        //             })?;
+        //             // R::to_lua(r, vm, mc)
+        //             Ok(Value::Nil)
+        //         } else {
+        //             //first value not userdata, should fail? or only if REQUIRED? TODO
+        //             Err(SiltError::UDBadCast)
+        //         }
+        //     });
+        //
+        // let f: TestFn= TestFn{
+        //     store: bx};
+
         // methods.add_method_mut("set_pos", |vm, mc, args: &Value<'gc>| {
         //     Ok(())
         //     // if args.len() >= 3 {

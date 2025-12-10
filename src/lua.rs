@@ -1294,6 +1294,7 @@ impl<'gc> VM<'gc> {
                             // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
                             // TODO get a reference instead of the a-pop-olypse
                             let mut args = self.popn(ep, *arity + 1);
+                            // todo!("Hi there! we need to set arity of userdata functions to include self! At least this is hirting our abstraction, we could force it but that's dangerous! Let's perhas make userdata methods Option<Self>");
 
                             if let Value::NativeFunction(f) = args.remove(0) {
                                 let res = f.f.call(self, ep.mc, &args);
@@ -1911,17 +1912,13 @@ impl<'gc> VM<'gc> {
         // }
 
         // let v=Self::register_native_function(mc,crate::standard::clock);
-        self.register_native_function(
-            mc,
-            "clock",
-            crate::standard::clock,
-        );
+        self.register_native_function(mc, "clock", crate::standard::clock);
         // self.inser( mc, "clock", v);
         // register_native_fn!("clock", crate::standard::clock, ());
-        self.register_native_function(mc,"print", crate::standard::print);
-        self.register_native_function(mc,"setmetatable", crate::standard::setmetatable);
-        self.register_native_function(mc,"getmetatable", crate::standard::getmetatable);
-        self.register_native_function(mc,"test_ent", crate::standard::test_ent);
+        self.register_native_function(mc, "print", crate::standard::print);
+        self.register_native_function(mc, "setmetatable", crate::standard::setmetatable);
+        self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
+        self.register_native_function(mc, "test_ent", crate::standard::test_ent);
 
         // Example of closure without turbofish
         // let test = Box::new(5);
