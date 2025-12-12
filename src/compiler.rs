@@ -324,6 +324,11 @@ pub struct Compiler {
     var_stack: Vec<(OpCode, OpCode)>,
     /// men will do anything to not have to allocate a new vec
     var_set_stack: Vec<(OpCode, OpCode)>,
+    // TODO this is a decent stopgap to fix our multivar headaches BUT this will definitely break
+    // in our implicit returns as they're treated as setters and wouldnt collapse expressions
+    // correctly. If we walk our setters all the way to find an assignment (:=) 
+    /// can we gather multivars for setters? multivar return or gets must skip this
+    can_multivar_set: bool,
 }
 
 impl Compiler {
@@ -361,6 +366,7 @@ impl Compiler {
             expression_count: 0,
             var_stack: Vec::with_capacity(4),
             var_set_stack: Vec::with_capacity(4),
+            can_multivar_set: true,
         }
     }
 
@@ -548,6 +554,7 @@ impl Compiler {
     }
 
     fn drain_getters(&mut self, f: FnRef) {
+        devout!("{}", "drain getters".green());
         for v in self.var_stack.drain(..) {
             f.chunk.write_code(v.1, self.current_location);
         }
@@ -1558,6 +1565,8 @@ fn statement<'c>(
     // Most statements are not expressions, so reset the flag
     this.last_was_expression = false;
     this.expression_count = 1;
+    // we can now set multivars again, x,y=...
+    this.can_multivar_set=true;
 
     match this.peek(it)? {
         Token::Print => print(this, f, it)?,
@@ -1791,6 +1800,7 @@ fn for_statement<'c>(
 fn generic_for_statement() {}
 
 fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    this.can_multivar_set=false;
     devnote!(this it "return_statement");
     devout!("{} {}", "HERE".on_red(), this.expression_count);
     this.eat(it);
@@ -1802,6 +1812,7 @@ fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> 
         expression(this, f, it, false)?;
         // expression() will set this.expression_count to the number of comma-separated expressions
     }
+    this.can_multivar_set=true;
 
     // For multiple return values, all expressions are already on the stack
     this.emit_at(f, OpCode::RETURN(this.expression_count));
@@ -1944,7 +1955,7 @@ fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step
 
     while let Token::Comma = this.peek(it)? {
         add!(this);
-        println!("COMMAS");
+        devout!("{}", "COMMAS".on_red());
         this.eat(it);
         println!("===================exp count {}", this.expression_count);
         this.parse_precedence(f, it, Precedence::Assignment, false)?;
@@ -2112,45 +2123,52 @@ fn named_variable(
     };
 
     this.var_stack.push(ops);
-    // Check for additional variables in multi-variable context
-    while let Token::Comma = this.peek(it)? {
-        add!(this);
-        this.eat(it);
-        if let Token::Identifier(_) = this.peek(it)? {
-            let t = this.pop(it);
-            this.current_location = t.1;
+    if this.can_multivar_set {
+        // These commas are intended for multivar setting aka what to assign to. x,y= ...
+        // Check for additional variables in multi-variable context
+        while let Token::Comma = this.peek(it)? {
+            devnote!(this it "-> multi_var comma walk");
+            add!(this);
+            this.eat(it);
+            if let Token::Identifier(_) = this.peek(it)? {
+                let t = this.pop(it);
+                this.current_location = t.1;
 
-            let ops = if let Token::Identifier(ident) = t.0? {
-                resolve_etters(this, f, it, ident)
+                let ops = if let Token::Identifier(ident) = t.0? {
+                    resolve_etters(this, f, it, ident)
+                } else {
+                    unreachable!()
+                };
+                this.var_stack.push(ops);
             } else {
-                unreachable!()
-            };
-            this.var_stack.push(ops);
-        } else {
-            // We encountered a non-identifier after comma
-            // This means we have a mixed expression like "a, 5" or "a, func()"
-            // For assignment, this is invalid. For retrieval, we need to handle it differently.
-            let t = this.peek(it)?;
+                // We encountered a non-identifier after comma
+                // This means we have a mixed expression like "a, 5" or "a, func()"
+                // For assignment, this is invalid. For retrieval, we need to handle it differently.
+                let t = this.peek(it)?;
 
-            if can_assign && matches!(t, Token::Assign) {
-                // This would be invalid assignment like "a, 5 = ..."
-                return Err(this.error_at(SiltError::InvalidAssignment(t.clone())));
+                if can_assign && matches!(t, Token::Assign) {
+                    // This would be invalid assignment like "a, 5 = ..."
+                    return Err(this.error_at(SiltError::InvalidAssignment(t.clone())));
+                }
+                // we at least know multivar setting has ended
+                this.can_multivar_set=false;
+
+                // For retrieval context, we need to drain the getters we've collected so far
+                // and then continue parsing as a regular expression
+                // this.return_count = this.var_stack.len() as u8;
+                println!("multivar drain 1");
+                this.drain_getters(f);
+
+                // Now parse the remaining expression starting from current position
+                // We need to handle this as part of a larger comma-separated expression
+                // this.return_count += 1;
+                this.parse_precedence(f, it, Precedence::Assignment, false)?;
+
+                return Ok(());
             }
-
-            // For retrieval context, we need to drain the getters we've collected so far
-            // and then continue parsing as a regular expression
-            // this.return_count = this.var_stack.len() as u8;
-            this.drain_getters(f);
-
-            // Now parse the remaining expression starting from current position
-            // We need to handle this as part of a larger comma-separated expression
-            // this.return_count += 1;
-            this.parse_precedence(f, it, Precedence::Assignment, false)?;
-
-            return Ok(());
         }
+        print_var_stack(&this.var_stack);
     }
-    print_var_stack(&this.var_stack);
     // loop {
     //     //normal assigment
     //
@@ -2189,7 +2207,9 @@ fn named_variable(
                 // println!("=============== pre setters {}", this.peek(it)?);
                 std::mem::swap(&mut this.var_stack, &mut this.var_set_stack);
                 this.override_pop = true;
+                this.can_multivar_set = false;
                 expression(this, f, it, false)?;
+                this.can_multivar_set = true;
                 // println!("=============== setters? {}", this.var_stack.len());
                 print_var_stack(&this.var_set_stack);
                 print_var_stack(&this.var_stack);
@@ -2212,7 +2232,7 @@ fn named_variable(
                             OpCode::CALL(u, _) => {
                                 // the remainder is how much MORE we would need, at least 1 is
                                 // already assumed so we add 1+remainder
-                                // println!("{} {}", "modify call to ".red(), remainder + 1);
+                                // devout!("{} {}", "modify call to ".red(), remainder + 1);
                                 f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8));
                             }
                             _ => this.emit_at(f, OpCode::NILS(remainder as u8)),
@@ -2228,13 +2248,16 @@ fn named_variable(
                 //     this.emit_at(f, OpCode::NIL);
                 // }
 
+                println!("multivar drain 2");
                 this.drain_setters(f);
             } else {
                 // this.return_count = this.var_stack.len() as u8;
+                println!("multivar drain 3");
                 this.drain_getters(f);
             }
         }
         Token::OpenBracket | Token::Dot => {
+            println!("drain 4");
             this.drain_getters(f); // TODO we should probably error if this is higher then 1
             let count = table_indexer(this, f, it)? as u8;
             if let Token::Assign = this.peek(it)? {
@@ -2260,6 +2283,8 @@ fn named_variable(
         }
         _ => {
             // this.return_count = this.var_stack.len() as u8;
+            devnote!(this it "drain 5");
+
             this.drain_getters(f);
         }
     }
@@ -2579,7 +2604,7 @@ fn call(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bo
 
     // println!("{} ", "TIME TO COUNT".on_cyan());
     let arg_count = arguments(this, f, it, start)?;
-    // println!("{} {}", "ARG COUNT".on_cyan(), arg_count);
+    devout!("{} {}", "ARG COUNT".on_cyan(), arg_count);
     this.emit(f, OpCode::CALL(arg_count, 0), start);
     Ok(())
 }
@@ -2606,6 +2631,7 @@ fn arguments(
     start: TokenCell,
 ) -> Result<u8, ErrorTuple> {
     devnote!(this it "arguments");
+    this.can_multivar_set = false;
     // self was pushed on the stack recently, include it and turn off
     let mut args = if this.self_arg {
         this.self_arg = false;
@@ -2613,9 +2639,11 @@ fn arguments(
     } else {
         0
     };
+    devout!("{} {}", "start with ".red(), args);
     if !matches!(this.peek(it)?, &Token::CloseParen) {
         while {
             expression_single(this, f, it, false)?;
+            devout!("{}", "yeah ADD 1".red());
             args += 1;
             if let &Token::Comma = this.peek(it)? {
                 this.eat(it);
@@ -2624,11 +2652,13 @@ fn arguments(
                 false
             }
         } {
+            devout!("{} {}", "yeah done ading".red(), args);
             if args == 255 {
                 return Err(this.error_at(SiltError::TooManyParameters));
             }
         }
     }
+    this.can_multivar_set = true;
 
     expect_token!(
         this,

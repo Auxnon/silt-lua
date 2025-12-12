@@ -1239,7 +1239,7 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::CALL(arity, multi) => {
-                    let value = self.peekn(ep, *arity);
+                    let value = self.peekn(ep, *arity );
                     devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
@@ -1261,6 +1261,7 @@ impl<'gc> VM<'gc> {
                             // frame = frames.last_mut().unwrap();
                             // frame.local_stack = frame_top;
                             let arity = *arity as usize;
+                            println!("arity {}",arity);
 
                             let frame_top = unsafe { ep.ip.sub(arity + 1) };
                             let new_frame =
