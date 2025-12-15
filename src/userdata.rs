@@ -284,8 +284,11 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
             // self.method_cache.push(r.clone());
             self.getters.insert(
                 st.to_string(),
-                Box::new(move |_, m, _| {
-                    Ok(Value::NativeFunction(Gc::new(m, WrappedFn::new(r.clone()))))
+                Box::new(move |_, mc, _| {
+                    Ok(Value::NativeFunction(Gc::new(
+                        mc,
+                        WrappedFn::new(r.clone()),
+                    )))
                 }),
             );
         });
