@@ -17,7 +17,7 @@ use crate::{
     error::SiltError,
     function::{NativeFunctionRaw, WrappedFn},
     lua::VM,
-    value::{FromLua, FromLuaMulti, FromLuaMultiBorrow, ToLua, Value, ValueRef},
+    value::{FromLua, FromLuaMulti, ToLua, Value, ValueRef},
 };
 
 /// Result type for Lua operations
@@ -144,20 +144,20 @@ pub type UserDataSetterFn<'gc, T> =
 
 /// Trait object for type-erased UserData methods
 pub trait UserDataMapTraitObj<'gc>: 'gc {
-    fn call_method(
-        &self,
-        vm: &VM<'gc>,
-        mc: &Mutation<'gc>,
-        ud: &mut UserDataWrapper,
-        name: &str,
-        args: Vec<Value<'gc>>,
-    ) -> InnerResult<'gc>;
+    // fn call_method(
+    //     &self,
+    //     vm: &VM<'gc>,
+    //     mc: &Mutation<'gc>,
+    //     ud: &mut UserDataWrapper,
+    //     name: &str,
+    //     args: Vec<Value<'gc>>,
+    // ) -> InnerResult<'gc>;
     fn call_meta_method(
         &self,
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
         ud: &mut UserDataWrapper,
-        name: &str,
+        index:usize,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc>;
     fn get_field(
@@ -185,7 +185,7 @@ pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
     meta_methods: Vec<UserDataMethodClosure<'gc>>,
     getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
     setters: HashMap<String, Box<UserDataSetterFn<'gc, T>>>,
-    type_id: std::any::TypeId,
+    // type_id: std::any::TypeId,
     _phantom: PhantomData<T>,
 }
 
@@ -197,7 +197,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
             meta_methods: Vec::new(),
             getters: HashMap::new(),
             setters: HashMap::new(),
-            type_id: std::any::TypeId::of::<T>(),
+            // type_id: std::any::TypeId::of::<T>(),
             _phantom: PhantomData,
         }
     }
@@ -298,39 +298,42 @@ impl<'gc, T: UserData + 'static> Default for UserDataTypedMap<'gc, T> {
 }
 
 impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'gc, T> {
-    fn call_method(
-        &self,
-        vm: &VM<'gc>,
-        mc: &Mutation<'gc>,
-        ud: &mut UserDataWrapper,
-        name: &str,
-        args: Vec<Value<'gc>>,
-    ) -> InnerResult<'gc> {
-        // TODO use old commit change b0f21fa5
-        // if let Some(method_fn) = self.methods.get(name) {
-        //     // Create a mutable VM reference for the method call
-        //     let vm_mut = unsafe { &mut *(vm as *const VM<'gc> as *mut VM<'gc>) };
-        //     return method_fn(vm_mut, mc, &args);
-        // }
-        Err(SiltError::UDNoMethodRef)
-    }
+    // fn call_method(
+    //     &self,
+    //     vm: &VM<'gc>,
+    //     mc: &Mutation<'gc>,
+    //     ud: &mut UserDataWrapper,
+    //     name: &str,
+    //     args: Vec<Value<'gc>>,
+    // ) -> InnerResult<'gc> {
+    //     // TODO use old commit change b0f21fa5
+    //     // if let Some(method_fn) = self.methods.get(name) {
+    //     //     // Create a mutable VM reference for the method call
+    //     //     let vm_mut = unsafe { &mut *(vm as *const VM<'gc> as *mut VM<'gc>) };
+    //     //     return method_fn(vm_mut, mc, &args);
+    //     // }
+    //     Err(SiltError::UDNoMethodRef)
+    // }
 
     fn call_meta_method(
         &self,
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
         ud: &mut UserDataWrapper,
-        name: &str,
+        index: usize,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
-        //     if let Some(&method_fn) = self.meta_methods.get(name) {
-        //         if let Ok(mut d) = ud.data.lock() {
-        //             return match d.downcast_mut() {
-        //                 Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
-        //                 None => Err(SiltError::UDBadCast),
-        //             };
-        //         }
-        //     }
+        // TODO man this is broken, we can downcast but it wont work with our normal method
+        // closure, we need a new thing??
+            // if let Some(&method_fn) = self.meta_methods.get(index) {
+            //     if let Ok(mut d) = ud.data.lock() {
+            //        
+            //         return match d.downcast_mut() {
+            //             Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
+            //             None => Err(SiltError::UDBadCast),
+            //         };
+            //     }
+            // }
         Err(SiltError::UDNoMethodRef)
     }
 
@@ -386,26 +389,26 @@ impl<'gc> UserDataMap<'gc> {
         }
     }
 
-    pub fn call_method(
-        &self,
-        vm: &VM<'gc>,
-        mc: &Mutation<'gc>,
-        ud: &mut UserDataWrapper,
-        name: &str,
-        args: Vec<Value<'gc>>,
-    ) -> InnerResult<'gc> {
-        self.data.call_method(vm, mc, ud, name, args)
-    }
+    // pub fn call_method(
+    //     &self,
+    //     vm: &VM<'gc>,
+    //     mc: &Mutation<'gc>,
+    //     ud: &mut UserDataWrapper,
+    //     name: &str,
+    //     args: Vec<Value<'gc>>,
+    // ) -> InnerResult<'gc> {
+    //     self.data.call_method(vm, mc, ud, name, args)
+    // }
 
     pub fn call_meta_method(
         &self,
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
         ud: &mut UserDataWrapper,
-        name: &str,
+        index: usize,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
-        self.data.call_meta_method(vm, mc, ud, name, args)
+        self.data.call_meta_method(vm, mc, ud, index, args)
     }
 
     pub fn get_field(
@@ -595,7 +598,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
         R: ToLua<'gc>,
         F: Fn(&VM<'gc>, &Mutation<'gc>, &T) -> ToInnerResult<'gc, R> + 'gc,
     {
-        println!("add getter {}", name);
+        // println!("add getter {}", name);
         let func: Box<UserDataGetterFn<T>> =
             Box::new(move |vm, mc, ud| R::to_lua(closure(vm, mc, ud), vm, mc));
         self.getters.insert(name.to_string(), func);
@@ -607,7 +610,7 @@ impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap
         R: ToLua<'gc>,
         F: Fn(&VM<'gc>, &Mutation<'gc>, &mut T, V) -> ToInnerResult<'gc, R> + 'gc,
     {
-        println!("add setter {}", name);
+        // println!("add setter {}", name);
         let func: Box<UserDataSetterFn<T>> = Box::new(move |vm, mc, ud, arg| {
             R::to_lua(closure(vm, mc, ud, V::from_lua(&arg, vm, mc)?), vm, mc)
         });
@@ -641,7 +644,7 @@ impl<'gc> UserDataRegistry<'gc> {
 
             // Register fields
             T::add_fields(&mut typed_map);
-            println!("TypedMap {}", typed_map.to_string());
+            // println!("TypedMap {}", typed_map.to_string());
             typed_map.create_method_function();
             let map = UserDataMap::new(typed_map);
 
@@ -1255,7 +1258,7 @@ pub mod vm_integration {
         // Register the type if it hasn't been registered yet
         let type_name = T::type_name();
         if !reg.maps.contains_key(type_name) {
-            println!(" register userdata");
+            // println!(" register userdata");
             reg.register::<T>(mc);
         }
 
@@ -1283,23 +1286,23 @@ pub mod vm_integration {
     }
 
     /// Call a method on a UserData value
-    pub fn call_method<'gc>(
-        vm: &VM<'gc>,
-        reg: &UserDataRegistry<'gc>,
-        mc: &Mutation<'gc>,
-        userdata: &mut UserDataWrapper,
-        method_name: &str,
-        args: Vec<Value<'gc>>,
-    ) -> Result<Value<'gc>, SiltError> {
-        let type_name = userdata.type_name();
-
-        // Look up the method in the registry
-        if let Some(map) = reg.get_map(type_name) {
-            return map.call_method(vm, mc, userdata, method_name, args);
-        }
-
-        Err(SiltError::UDNoMap)
-    }
+    // pub fn call_method<'gc>(
+    //     vm: &VM<'gc>,
+    //     reg: &UserDataRegistry<'gc>,
+    //     mc: &Mutation<'gc>,
+    //     userdata: &mut UserDataWrapper,
+    //     method_name: &str,
+    //     args: Vec<Value<'gc>>,
+    // ) -> Result<Value<'gc>, SiltError> {
+    //     let type_name = userdata.type_name();
+    //
+    //     // Look up the method in the registry
+    //     if let Some(map) = reg.get_map(type_name) {
+    //         return map.call_method(vm, mc, userdata, method_name, args);
+    //     }
+    //
+    //     Err(SiltError::UDNoMap)
+    // }
 
     /// Call a metamethod on a UserData value
     pub fn call_meta_method<'gc>(
@@ -1311,7 +1314,7 @@ pub mod vm_integration {
         args: Vec<Value<'gc>>,
     ) -> Result<Value<'gc>, SiltError> {
         let type_name = userdata.type_name();
-        let meta_key = meta_method.as_table_key();
+        let meta_key = meta_method.as_ind();
 
         // Look up the metamethod in the registry
         if let Some(map) = reg.get_map(type_name) {

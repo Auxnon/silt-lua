@@ -168,7 +168,7 @@ impl<'v> Table<'v> {
     pub fn by_meta_method(&self, method: MetaMethod) -> Result<Value<'v>, SiltError> {
         // println!("meta: {}", self.meta.clone().unwrap_or(Value::Nil));
         if let Some(Value::Table(t)) = &self.meta {
-            let s = method.as_table_key().to_string();
+            // let s = method.as_table_key().to_string();
             // println!("looking for meta method: {}", s);
             if let Some(func) = t
                 .borrow()

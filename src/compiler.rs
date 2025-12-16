@@ -870,7 +870,7 @@ impl Compiler {
                         let between = &source[last_pos..start];
                         // indented.push_str(between);
 
-                        println!(">>{}<<", between);
+                        devout!(">>{}<<", between);
                         // Track if we're at the start of a new line
                         if between.contains('\n') {
                             let squash: String = between
@@ -1953,7 +1953,7 @@ fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step
         add!(this);
         devout!("{}", "COMMAS".on_red());
         this.eat(it);
-        println!("===================exp count {}", this.expression_count);
+        devout!("===================exp count {}", this.expression_count);
         this.parse_precedence(f, it, Precedence::Assignment, false)?;
     }
 
@@ -2244,16 +2244,16 @@ fn named_variable(
                 //     this.emit_at(f, OpCode::NIL);
                 // }
 
-                println!("multivar drain 2");
+                // println!("multivar drain 2");
                 this.drain_setters(f);
             } else {
                 // this.return_count = this.var_stack.len() as u8;
-                println!("multivar drain 3");
+                // println!("multivar drain 3");
                 this.drain_getters(f);
             }
         }
         Token::OpenBracket | Token::Dot => {
-            println!("drain 4");
+            // println!("drain 4");
             this.drain_getters(f); // TODO we should probably error if this is higher then 1
             let count = table_indexer(this, f, it)? as u8;
             if let Token::Assign = this.peek(it)? {
@@ -2279,7 +2279,7 @@ fn named_variable(
         }
         _ => {
             // this.return_count = this.var_stack.len() as u8;
-            devnote!(this it "drain 5");
+            // devnote!(this it "drain 5");
 
             this.drain_getters(f);
         }

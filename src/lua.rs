@@ -137,6 +137,7 @@ macro_rules! num_op_str{
 
 macro_rules! binary_op_push {
     ($src:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $op:tt, $opp:tt) => {{
+        #[cfg(feature = "dev-out")]
         $src.body.chunk.print_constants();
         // TODO test speed of this vs 1 pop and a mutate
         let r = $src.pop($ep);
@@ -644,9 +645,9 @@ impl<'gc> VM<'gc> {
         need: usize,
     ) {
         devout!(" | push_n: values x {}, need {}", values.len(), need);
-        for v in values.iter() {
-            println!("we have {}", v);
-        }
+        // for v in values.iter() {
+        //     println!("we have {}", v);
+        // }
         let n = values.len();
         let c = need;
         let mut vv = values.into_iter();
@@ -658,7 +659,7 @@ impl<'gc> VM<'gc> {
             // }
 
             if let Some(v) = vv.next() {
-                println!("pushn -> {}", v);
+                devout!("pushn -> {}", v);
                 unsafe { ep.ip.write(v) };
             };
             ep.ip = unsafe { ep.ip.add(1) };
@@ -804,9 +805,9 @@ impl<'gc> VM<'gc> {
         unsafe { &*ep.ip.sub(n) }
     }
 
-    fn grab_mut(&self, ep: &mut Ephemeral<'_, 'gc>, n: usize) -> &mut Value<'gc> {
-        unsafe { &mut *ep.ip.sub(n) }
-    }
+    // fn grab_mut(&self, ep: &mut Ephemeral<'_, 'gc>, n: usize) -> &mut Value<'gc> {
+    //     unsafe { &mut *ep.ip.sub(n) }
+    // }
 
     /** Look down N amount of stack and return immutable reference */
     fn peekn(&self, ep: &mut Ephemeral<'_, 'gc>, n: u8) -> &Value<'gc> {
@@ -1239,7 +1240,7 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::CALL(arity, multi) => {
-                    let value = self.peekn(ep, *arity );
+                    let value = self.peekn(ep, *arity);
                     devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
@@ -1261,7 +1262,7 @@ impl<'gc> VM<'gc> {
                             // frame = frames.last_mut().unwrap();
                             // frame.local_stack = frame_top;
                             let arity = *arity as usize;
-                            println!("arity {}",arity);
+                            // println!("arity {}",arity);
 
                             let frame_top = unsafe { ep.ip.sub(arity + 1) };
                             let new_frame =

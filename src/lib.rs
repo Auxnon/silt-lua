@@ -23,7 +23,6 @@ pub use self::{
 #[cfg(feature = "vectors")]
 pub mod vec;
 
-
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 
@@ -75,7 +74,7 @@ pub fn run(source: &str) -> String {
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub fn lsp(source: &str, format: Option<bool> ) -> Result<JsValue, JsError> {
+pub fn lsp(source: &str, format: Option<bool>) -> Result<JsValue, JsError> {
     let mut compiler = Compiler::new();
     let obj = compiler.lsp(source, format.unwrap_or(false));
     Ok(serde_wasm_bindgen::to_value(&obj)?)
@@ -260,6 +259,8 @@ mod tests {
         c.write_code(OpCode::NEGATE, (1, 1));
         c.write_code(OpCode::RETURN(0), (1, 3));
         c.print_chunk(&None);
+
+        #[cfg(feature = "dev-out")]
         println!("-----------------");
         // let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
