@@ -86,10 +86,12 @@ where
 /// Trait for registering methods on UserData types
 pub trait UserDataMethods<'gc, T: UserData> {
     /// Add a metamethod to this UserData type
-    fn add_meta_method<F>(&mut self, name: &str, closure: F)
+    fn add_meta_method<M, A, R, F>(&mut self, name: M, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static;
-
+        M: Into<MetaMethod>,
+        A: FromLuaMulti<'gc>,
+        R: ToLua<'gc>,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, Option<&mut T>, A) -> Result<R, SiltError> + 'gc;
     /// Add a method that can mutate the UserData
     fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
     where
@@ -109,14 +111,8 @@ pub trait UserDataMethods<'gc, T: UserData> {
     where
         A: FromLuaMulti<'gc>,
         R: ToLua<'gc>,
-        // F: Fn(
-        //         &VM<'gc>,
-        //         &Mutation<'gc>,
-        //         Option<&T>,
-        //         <A as FromLuaMultiBorrow<'gc>>::Output,
-        //     ) -> Result<R, SiltError>
-        //     + 'gc;
-        F: MethodHandler<'gc, T, A, R> + 'gc;
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, Option<&mut T>, A) -> Result<R, SiltError> + 'gc;
+    // F: MethodHandler<'gc, T, A, R> + 'gc;
 }
 
 /// Trait for registering fields on UserData types
@@ -480,17 +476,33 @@ impl<'gc> UserDataMap<'gc> {
 //         ) -> R where R: ToLua<'gc>;
 
 impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'gc, T> {
-    fn add_meta_method<F>(&mut self, name: &str, closure: F)
+    fn add_meta_method<M, A, R, F>(&mut self, name: M, closure: F)
     where
-        F: Fn(&VM<'gc>, &Mutation<'gc>, &T, Vec<Value<'gc>>) -> InnerResult<'gc> + 'static,
+        M: Into<MetaMethod>,
+        A: FromLuaMulti<'gc>,
+        R: ToLua<'gc>,
+        F: MethodHandler<'gc, T, A, R> + 'gc,
     {
-        // Convert closure to function pointer by creating a wrapper function
-        let func: UserDataMethodFn<T> = |vm, mc, ud, args| {
-            // This is a placeholder - we need to store the closure somewhere
-            // and call it here. For now, we'll use a simpler approach.
-            Err(SiltError::Unknown)
-        };
-        self.meta_methods.insert(name.to_string(), func);
+        let metamethod: MetaMethod = name.into();
+        self.methods.insert(
+            metamethod.to_string(),
+            Box::new(move |vm, mc, args| {
+                let res = if let Some(ud_val) = args.first() {
+                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                        let method_args = &args[1..];
+                        closure.call_method(vm, mc, Some(ud), method_args)
+                    }) {
+                        Ok(rr) => rr,
+                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    //first value not userdata, should fail? or only if REQUIRED? TODO
+                    closure.call_method(vm, mc, None, args)?
+                };
+                R::to_lua(res, vm, mc)
+            }),
+        );
     }
 
     fn add_method_mut<A, R, F>(&mut self, name: &str, closure: F)
@@ -506,7 +518,6 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         //     + 'gc,
         F: MethodHandler<'gc, T, A, R> + 'gc,
     {
-        let type_id = self.type_id;
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, args| {
@@ -556,7 +567,6 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         //     + 'gc,
         F: MethodHandler<'gc, T, A, R> + 'gc,
     {
-        let type_id = self.type_id;
         self.methods.insert(
             name.to_string(),
             Box::new(move |vm, mc, args| {
@@ -748,12 +758,12 @@ impl UserDataWrapper {
         self.type_name
     }
 
-    /// Get a reference to the wrapped data as Any
+    // Get a reference to the wrapped data as Any
     // pub fn as_any(&self) -> &dyn Any {
     //     self.data.as_ref()
     // }
 
-    /// Get a mutable reference to the wrapped data as Any
+    // Get a mutable reference to the wrapped data as Any
     // pub fn as_any_mut<'a: 'static>(&mut self) -> &'a mut dyn Any {
     //     &mut self.data.borrow_mut()
     // }
@@ -865,12 +875,22 @@ impl UserData for TestEnt {
     }
 
     fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {
-        methods.add_meta_method("__tostring", |_, _, this, _| {
-            Ok(Value::String(format!("[entity {}]", this.get_id())))
+        methods.add_meta_method("__tostring", |vm, mc, this: Option<&mut TestEnt>, _: ()| {
+            let id = if let Some(ud) = this {
+                ud.get_id()
+            } else {
+                0
+            };
+            Ok(Value::String(format!("[entity {}]", id)))
         });
 
-        methods.add_meta_method("__concat", |_, _, this, _| {
-            Ok(Value::String(format!("[entity {}]", this.get_id())))
+        methods.add_meta_method("__concat", |vm, mc, this, _: ()| {
+            let id = if let Some(ud) = this {
+                ud.get_id()
+            } else {
+                0
+            };
+            Ok(Value::String(format!("[entity {}]", id)))
         });
 
         // methods.add_method_mut::<VariadicMaker<Value<'gc>>, _, _>("pos", |_, _, this, arg: VariadicMaker<Value<'gc>>| {
@@ -1101,6 +1121,41 @@ impl std::fmt::Display for MetaMethod {
             MetaMethod::ToString => write!(f, "tostring"),
             MetaMethod::Pairs => write!(f, "pairs"),
             MetaMethod::IPairs => write!(f, "ipairs"),
+        }
+    }
+}
+
+impl<'a> Into<MetaMethod> for &'a str {
+    fn into(self) -> MetaMethod {
+        match self {
+            "__add" => MetaMethod::Add,
+            "__sub" => MetaMethod::Sub,
+            "__mul" => MetaMethod::Mul,
+            "__div" => MetaMethod::Div,
+            "__mod" => MetaMethod::Mod,
+            "__pow" => MetaMethod::Pow,
+            "__unm" => MetaMethod::Unm,
+            "__idiv" => MetaMethod::IDiv,
+            "__band" => MetaMethod::BAnd,
+            "__bor" => MetaMethod::BOr,
+            "__bxor" => MetaMethod::BXor,
+            "__bnot" => MetaMethod::BNot,
+            "__shl" => MetaMethod::Shl,
+            "__shr" => MetaMethod::Shr,
+            "__concat" => MetaMethod::Concat,
+            "__len" => MetaMethod::Len,
+            "__eq" => MetaMethod::Eq,
+            "__lt" => MetaMethod::Lt,
+            "__le" => MetaMethod::Le,
+            "__gt" => MetaMethod::Gt,
+            "__ge" => MetaMethod::Ge,
+            "__index" => MetaMethod::Index,
+            "__newindex" => MetaMethod::NewIndex,
+            "__call" => MetaMethod::Call,
+            "__tostring" => MetaMethod::ToString,
+            "__pairs" => MetaMethod::Pairs,
+            "__ipairs" => MetaMethod::IPairs,
+            _ => panic!("Unknown metamethod: {}", self),
         }
     }
 }
