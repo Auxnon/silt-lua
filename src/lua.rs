@@ -333,11 +333,10 @@ impl<'gc> Lua {
     where
         T: for<'e> ToLuaMulti<'e>,
     {
-        self.arena.mutate_root(|mc, vm| {
-            vm.call_fn(mc, index, params);
-        });
+        self.arena
+            .mutate_root(|mc, vm| vm.call_fn(mc, index, params))
         // rr
-        Ok(ExVal::Nil)
+        // Ok(ExVal::Nil)
     }
 
     //     pub fn register<N>(&mut self, name: &str, function: N)
