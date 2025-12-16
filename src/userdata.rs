@@ -182,7 +182,7 @@ pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
     methods: HashMap<String, UserDataMethodClosure<'gc>>,
     // methods2: HashMap<String, dyn MethodHandler<'gc,T,_,_>>,
     // method_cache: Vec<NativeFunctionRc<'gc>>,
-    meta_methods: HashMap<String, UserDataMethodFn<'gc, T>>,
+    meta_methods: Vec<UserDataMethodClosure<'gc>>,
     getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
     setters: HashMap<String, Box<UserDataSetterFn<'gc, T>>>,
     type_id: std::any::TypeId,
@@ -194,7 +194,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
         Self {
             methods: HashMap::new(),
             // method_cache: Vec::new(),
-            meta_methods: HashMap::new(),
+            meta_methods: Vec::new(),
             getters: HashMap::new(),
             setters: HashMap::new(),
             type_id: std::any::TypeId::of::<T>(),
@@ -484,8 +484,8 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         F: MethodHandler<'gc, T, A, R> + 'gc,
     {
         let metamethod: MetaMethod = name.into();
-        self.methods.insert(
-            metamethod.to_string(),
+        self.meta_methods.insert(
+            metamethod.as_ind(),
             Box::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
                     match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
@@ -875,21 +875,16 @@ impl UserData for TestEnt {
     }
 
     fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {
-        methods.add_meta_method("__tostring", |vm, mc, this: Option<&mut TestEnt>, _: ()| {
-            let id = if let Some(ud) = this {
-                ud.get_id()
-            } else {
-                0
-            };
-            Ok(Value::String(format!("[entity {}]", id)))
-        });
+        methods.add_meta_method(
+            MetaMethod::ToString,
+            |vm, mc, this: Option<&mut TestEnt>, _: ()| {
+                let id = if let Some(ud) = this { ud.get_id() } else { 0 };
+                Ok(Value::String(format!("[entity {}]", id)))
+            },
+        );
 
         methods.add_meta_method("__concat", |vm, mc, this, _: ()| {
-            let id = if let Some(ud) = this {
-                ud.get_id()
-            } else {
-                0
-            };
+            let id = if let Some(ud) = this { ud.get_id() } else { 0 };
             Ok(Value::String(format!("[entity {}]", id)))
         });
 
@@ -1037,8 +1032,10 @@ impl UserData for TestEnt {
 }
 
 /// Metamethods that can be implemented by UserData types
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub enum MetaMethod {
+    #[default]
+    None,
     /// +
     Add,
     /// -
@@ -1094,6 +1091,7 @@ pub enum MetaMethod {
 impl std::fmt::Display for MetaMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            MetaMethod::None => write!(f, "!!"),
             MetaMethod::Add => write!(f, "+"),
             MetaMethod::Sub => write!(f, "-"),
             MetaMethod::Mul => write!(f, "*"),
@@ -1176,6 +1174,7 @@ impl From<OpCode> for MetaMethod {
 impl MetaMethod {
     pub fn as_table_key(&self) -> &'static str {
         match self {
+            MetaMethod::None => "__",
             MetaMethod::Add => "__add",
             MetaMethod::Sub => "__sub",
             MetaMethod::Mul => "__mul",
@@ -1203,6 +1202,38 @@ impl MetaMethod {
             MetaMethod::ToString => "__tostring",
             MetaMethod::Pairs => "__pairs",
             MetaMethod::IPairs => "__ipairs",
+        }
+    }
+    fn as_ind(&self) -> usize {
+        match self {
+            MetaMethod::None => 0,
+            MetaMethod::Add => 1,
+            MetaMethod::Sub => 2,
+            MetaMethod::Mul => 3,
+            MetaMethod::Div => 4,
+            MetaMethod::Mod => 5,
+            MetaMethod::Pow => 6,
+            MetaMethod::Unm => 7,
+            MetaMethod::IDiv => 8,
+            MetaMethod::BAnd => 9,
+            MetaMethod::BOr => 10,
+            MetaMethod::BXor => 11,
+            MetaMethod::BNot => 12,
+            MetaMethod::Shl => 13,
+            MetaMethod::Shr => 14,
+            MetaMethod::Concat => 15,
+            MetaMethod::Len => 16,
+            MetaMethod::Eq => 17,
+            MetaMethod::Lt => 18,
+            MetaMethod::Le => 19,
+            MetaMethod::Gt => 20,
+            MetaMethod::Ge => 21,
+            MetaMethod::Index => 22,
+            MetaMethod::NewIndex => 23,
+            MetaMethod::Call => 24,
+            MetaMethod::ToString => 25,
+            MetaMethod::Pairs => 26,
+            MetaMethod::IPairs => 27,
         }
     }
 }

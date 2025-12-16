@@ -1,12 +1,8 @@
 use std::{
-    cmp::Ordering,
-    fmt::{Display, Formatter},
-    iter::Peekable,
-    println, vec,
+    cmp::Ordering, collections::HashMap, fmt::{Display, Formatter}, iter::Peekable, println, vec
 };
 
 use gc_arena::{Gc, Mutation};
-use hashbrown::HashMap;
 
 use crate::{
     code::OpCode,
