@@ -1,5 +1,10 @@
 use std::{
-    env::args, hash::{Hash, Hasher}, marker::PhantomData, ops::Deref, rc::Rc, slice::Iter
+    env::args,
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+    ops::Deref,
+    rc::Rc,
+    slice::Iter,
 };
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
@@ -523,6 +528,12 @@ impl From<ExVal> for i64 {
 // ========== convert u32 ==========
 impl From<u32> for Value<'_> {
     fn from(value: u32) -> Self {
+        Value::Integer(value.into())
+    }
+}
+
+impl From<u8> for Value<'_> {
+    fn from(value: u8) -> Self {
         Value::Integer(value.into())
     }
 }
@@ -1113,6 +1124,8 @@ impl<'gc> FromLuaMulti<'gc> for ValueRef<'gc> {
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
+        // TODO this means a nil ref will be passed, since this is unsafe will it panic with a
+        // function without params passed?
         let val = args.first().unwrap_or(&Value::Nil);
         Ok(ValueRef {
             ptr: val as *const _,
@@ -1126,7 +1139,7 @@ impl<'gc> FromLuaMulti<'gc> for ValueRef<'gc> {
 //     start: *const Value<'gc>,
 //     len: usize,
 //     // ensuring the wrapper itself is temporary.
-//     _marker: PhantomData<&'a [Value<'gc>]>, 
+//     _marker: PhantomData<&'a [Value<'gc>]>,
 // }
 //
 //
@@ -1134,8 +1147,8 @@ impl<'gc> FromLuaMulti<'gc> for ValueRef<'gc> {
 //     type Target = [Value<'gc>];
 //
 //     fn deref(&self) -> &Self::Target {
-//         // SAFETY: 
-//         // 1. The memory is valid for the duration of 'a, guaranteed by the caller 
+//         // SAFETY:
+//         // 1. The memory is valid for the duration of 'a, guaranteed by the caller
 //         //    (the 'a lifetime comes from the input slice, which requires 'gc >= 'a).
 //         // 2. The pointer is non-null and the length is correct as set during creation.
 //         unsafe {
@@ -1144,30 +1157,75 @@ impl<'gc> FromLuaMulti<'gc> for ValueRef<'gc> {
 //     }
 // }
 
-pub struct VariadicRaw< 'gc> {
+pub struct Variadic<'a, 'gc> {
     start: *const Value<'gc>,
     len: usize,
-    _marker: PhantomData<&'gc [Value<'gc>]>, 
+    _marker: PhantomData<&'a [Value<'gc>]>,
 }
 
-
-impl< 'gc> Deref for VariadicRaw< 'gc> {
+impl<'a, 'gc> Deref for Variadic<'a, 'gc> {
     type Target = [Value<'gc>];
 
     fn deref(&self) -> &Self::Target {
-        unsafe {
-            std::slice::from_raw_parts(self.start, self.len)
+        unsafe { std::slice::from_raw_parts(self.start, self.len) }
+    }
+}
+
+pub struct VariadicIter<'a, 'gc> {
+    current: *const Value<'gc>,
+    end: *const Value<'gc>,
+    _marker: PhantomData<&'a Value<'gc>>,
+}
+
+impl<'a, 'gc> IntoIterator for Variadic<'a, 'gc> {
+    type Item = &'a Value<'gc>;
+    type IntoIter = VariadicIter<'a, 'gc>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        VariadicIter {
+            current: self.start,
+            end: unsafe { self.start.add(self.len) },
+            _marker: PhantomData,
         }
     }
 }
 
-impl<'gc> FromLuaMulti<'gc> for VariadicRaw<'gc> {
+impl<'a, 'gc> Iterator for VariadicIter<'a, 'gc> {
+    type Item = &'a Value<'gc>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current == self.end {
+            return None;
+        }
+
+        let item = unsafe {
+            let item = &*self.current;
+            self.current = self.current.add(1);
+            item
+        };
+
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let count = (self.end as usize - self.current as usize) / std::mem::size_of::<Value<'gc>>();
+        (count, Some(count))
+    }
+}
+
+impl<'a, 'gc> ExactSizeIterator for VariadicIter<'a, 'gc> {
+    fn len(&self) -> usize {
+        (self.end as usize - self.current as usize) / std::mem::size_of::<Value<'gc>>()
+    }
+}
+
+impl<'a, 'gc> FromLuaMulti<'gc> for Variadic<'a, 'gc> {
     fn from_lua_multi(
         args: &[Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
-        Ok(VariadicRaw {
+        Ok(Variadic {
             start: args.as_ptr(),
             len: args.len(),
             _marker: PhantomData,
@@ -1175,40 +1233,8 @@ impl<'gc> FromLuaMulti<'gc> for VariadicRaw<'gc> {
     }
 }
 
-// TODO iteraor for variadic
-// // The actual iterator over the arguments
-// pub struct VariadicIter<'a, 'gc> {
-//     current: *const Value<'gc>,
-//     end: *const Value<'gc>,
-//     _marker: PhantomData<&'a Value<'gc>>,
-// }
-//
-// impl<'a, 'gc> Iterator for VariadicIter<'a, 'gc> {
-//     type Item = &'a Value<'gc>;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.current == self.end {
-//             return None;
-//         }
-//         
-//         // SAFETY:
-//         // We know the current pointer is within the bounds [start, end) and valid 
-//         // for the lifetime 'a (inherited from the slice).
-//         let item = unsafe {
-//             let item = &*self.current;
-//             // Advance the pointer by one Value (safe because the data is a contiguous slice)
-//             self.current = self.current.add(1); 
-//             item
-//         };
-//
-//         Some(item)
-//     }
-//     
-//     fn size_hint(&self) -> (usize, Option<usize>) {
-//         let count = (self.end as usize - self.current as usize) / std::mem::size_of::<Value<'gc>>();
-//         (count, Some(count))
-//     }
-// }
+
+
 //
 // // Implement IntoIterator for the wrapper
 // impl<'a, 'gc> IntoIterator for VariadicArgs<'a, 'gc> {
@@ -1220,13 +1246,11 @@ impl<'gc> FromLuaMulti<'gc> for VariadicRaw<'gc> {
 //         VariadicIter {
 //             current: slice.as_ptr(),
 //             // Calculate the pointer to one past the end for termination
-//             end: unsafe { slice.as_ptr().add(slice.len()) }, 
+//             end: unsafe { slice.as_ptr().add(slice.len()) },
 //             _marker: PhantomData,
 //         }
 //     }
 // }
-
-
 
 impl<'gc> FromLuaMultiBorrow<'gc> for &Value<'gc> {
     type Output = ValueRef<'gc>;
@@ -1299,10 +1323,6 @@ where
 //     }
 // }
 //
-pub struct VariadicMaker<T> {
-    _phantom: std::marker::PhantomData<T>,
-}
-
 impl<'gc, T> FromLuaMulti<'gc> for Vec<T>
 where
     T: FromLua<'gc>,
@@ -1432,93 +1452,93 @@ where
 // pub trait FromValue: Sized {
 //     fn from_value(value: Value) -> Result<Self, SiltError>;
 // }
-pub struct Variadic<'a, 'gc, T> {
-    values: Iter<'a, Value<'gc>>,
-    _phantom: std::marker::PhantomData<T>,
-}
+// pub struct Variadic<'a, 'gc, T> {
+//     values: Iter<'a, Value<'gc>>,
+//     _phantom: std::marker::PhantomData<T>,
+// }
+//
+// impl<'a, 'gc, T> Variadic<'a, 'gc, T>
+// where
+//     T: FromLua<'gc>,
+// {
+//     pub fn new(iter: Iter<'a, Value<'gc>>) -> Self {
+//         Variadic {
+//             values: iter,
+//             _phantom: std::marker::PhantomData,
+//         }
+//     }
+//
+//     /// Get the number of remaining values
+//     pub fn len(&self) -> usize {
+//         self.values.len()
+//     }
+//
+//     /// Check if there are no remaining values
+//     pub fn is_empty(&self) -> bool {
+//         self.values.len() == 0
+//     }
+//
+//     /// Convert all remaining values to a Vec<T>
+//     pub fn collect(self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Result<Vec<T>, SiltError> {
+//         let mut result = Vec::new();
+    //     for value in self.values {
+    //         result.push(T::from_lua(value, vm, mc)?);
+    //     }
+    //     Ok(result)
+    // }
+    //
+    // /// Get the next value as type T
+    // pub fn next(&mut self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Option<Result<T, SiltError>> {
+    //     self.values.next().map(|value| T::from_lua(value, vm, mc))
+    // }
+    //
+    // /// Peek at the next value without consuming it
+    // pub fn peek(&self) -> Option<&Value<'gc>> {
+    //     self.values.as_slice().first()
+    // }
+    //
+    // /// Get a specific value by index as type T
+    // pub fn get(
+    //     &self,
+    //     index: usize,
+    //     vm: &VM<'gc>,
+    //     mc: &Mutation<'gc>,
+    // ) -> Option<Result<T, SiltError>> {
+    //     self.values
+    //         .as_slice()
+    //         .get(index)
+    //         .map(|value| T::from_lua(value, vm, mc))
+    // }
+    //
+    // /// Skip the next n values
+    // pub fn skip(&mut self, n: usize) {
+    //     for _ in 0..n {
+    //         if self.values.next().is_none() {
+    //             break;
+    //         }
+    //     }
+    // }
+    //
+    // /// Get the remaining values as a slice
+    // pub fn as_slice(&self) -> &[Value<'gc>] {
+    //     self.values.as_slice()
+    // }
+// }
 
-impl<'a, 'gc, T> Variadic<'a, 'gc, T>
-where
-    T: FromLua<'gc>,
-{
-    pub fn new(iter: Iter<'a, Value<'gc>>) -> Self {
-        Variadic {
-            values: iter,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Get the number of remaining values
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    /// Check if there are no remaining values
-    pub fn is_empty(&self) -> bool {
-        self.values.len() == 0
-    }
-
-    /// Convert all remaining values to a Vec<T>
-    pub fn collect(self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Result<Vec<T>, SiltError> {
-        let mut result = Vec::new();
-        for value in self.values {
-            result.push(T::from_lua(value, vm, mc)?);
-        }
-        Ok(result)
-    }
-
-    /// Get the next value as type T
-    pub fn next(&mut self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Option<Result<T, SiltError>> {
-        self.values.next().map(|value| T::from_lua(value, vm, mc))
-    }
-
-    /// Peek at the next value without consuming it
-    pub fn peek(&self) -> Option<&Value<'gc>> {
-        self.values.as_slice().first()
-    }
-
-    /// Get a specific value by index as type T
-    pub fn get(
-        &self,
-        index: usize,
-        vm: &VM<'gc>,
-        mc: &Mutation<'gc>,
-    ) -> Option<Result<T, SiltError>> {
-        self.values
-            .as_slice()
-            .get(index)
-            .map(|value| T::from_lua(value, vm, mc))
-    }
-
-    /// Skip the next n values
-    pub fn skip(&mut self, n: usize) {
-        for _ in 0..n {
-            if self.values.next().is_none() {
-                break;
-            }
-        }
-    }
-
-    /// Get the remaining values as a slice
-    pub fn as_slice(&self) -> &[Value<'gc>] {
-        self.values.as_slice()
-    }
-}
-
-impl<'a, 'gc> Iterator for Variadic<'a, 'gc, Value<'gc>> {
-    type Item = &'a Value<'gc>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.values.next()
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.values.size_hint()
-    }
-}
-
-impl<'a, 'gc> ExactSizeIterator for Variadic<'a, 'gc, Value<'gc>> {
-    fn len(&self) -> usize {
-        self.values.len()
-    }
-}
+// impl<'a, 'gc> Iterator for Variadic<'a, 'gc, Value<'gc>> {
+//     type Item = &'a Value<'gc>;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.values.next()
+//     }
+//
+//     fn size_hint(&self) -> (usize, Option<usize>) {
+//         self.values.size_hint()
+//     }
+// }
+//
+// impl<'a, 'gc> ExactSizeIterator for Variadic<'a, 'gc, Value<'gc>> {
+//     fn len(&self) -> usize {
+//         self.values.len()
+//     }
+// }
