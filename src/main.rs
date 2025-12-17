@@ -1,6 +1,6 @@
 use silt_lua::{Compiler, Lua};
 
-const FALLBACK_FILE: &str = "scripts/test.lua";
+const FALLBACK_FILE: &str = "scripts/multi-assign.lua";
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     {
@@ -243,8 +243,20 @@ fn main() {
     }
     // load string from scripts/closure4.lua
     let file = if args.len() > 1 {
-        std::fs::read_to_string(args[1].as_str()).unwrap()
+        match std::fs::read_to_string(args[1].as_str()) {
+            Ok(f) => f,
+            Err(e) => {
+                println!("Invalid file path {}",e.to_string());
+                return;
+            }
+        }
     } else {
+        #[cfg(not(debug_assertions))]
+        {
+            println!("REPL not yet available! Pass a lua file path");
+            return;
+        }
+        #[cfg(debug_assertions)]
         std::fs::read_to_string(FALLBACK_FILE).unwrap()
     };
     let source_in = file.as_str();
@@ -320,7 +332,7 @@ fn main() {
     //     local z=6
     //     return test(x,z)
     //     "#;
-    let mut compiler = Compiler::new_with_flags(true,false,false);
+    let mut compiler = Compiler::new_with_flags(true, false, false);
     let mut lua = Lua::new_with_standard();
     match lua.run(source_in, &mut compiler) {
         Ok(o) => {

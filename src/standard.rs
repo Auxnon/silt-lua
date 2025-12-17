@@ -16,7 +16,6 @@ pub fn clock<'lua>(_: &mut VM<'lua>, _: &Mutation<'lua>, _: ()) -> InnerResult<'
 }
 
 pub fn print<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
-    println!("we called print");
     let s = args
         .iter()
         .map(|v| v.to_string())

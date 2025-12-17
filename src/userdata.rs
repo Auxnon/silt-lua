@@ -17,7 +17,7 @@ use crate::{
     error::SiltError,
     function::{NativeFunctionRaw, WrappedFn},
     lua::VM,
-    value::{FromLua, FromLuaMulti, ToLua, Value, ValueRef},
+    value::{FromLua, FromLuaMulti, ToLua, Value, ValueRef, VariadicRaw},
 };
 
 /// Result type for Lua operations
@@ -157,7 +157,7 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
         vm: &VM<'gc>,
         mc: &Mutation<'gc>,
         ud: &mut UserDataWrapper,
-        index:usize,
+        index: usize,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc>;
     fn get_field(
@@ -935,13 +935,22 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut("test", |vm, mc, this, args: ValueRef| {
-            let v = args.deref();
+        methods.add_method_mut("test", |_, _, this, _: ValueRef| {
+            // let v = args.deref();
             println!(
                 "internal userdata method heehehehe (is self param userdata? {}!)",
-                if this.is_some() { true } else { false }
+                this.is_some()
             );
             Ok(Value::Integer(3))
+        });
+
+        methods.add_method_mut("iter", |vm, mc, this, args: VariadicRaw| {
+            let ite = args.iter();
+            println!("start iterate! we got:");
+            ite.for_each(|v| {
+                println!("value: {}", v);
+            });
+            Ok(())
         });
 
         // let closure = |vm, mc, this, args: (f64,)| Ok(());
