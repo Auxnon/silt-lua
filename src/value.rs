@@ -1157,13 +1157,13 @@ impl<'gc> FromLuaMulti<'gc> for ValueRef<'gc> {
 //     }
 // }
 
-pub struct VariadicRaw<'a, 'gc> {
+pub struct Variadic<'a, 'gc> {
     start: *const Value<'gc>,
     len: usize,
     _marker: PhantomData<&'a [Value<'gc>]>,
 }
 
-impl<'a, 'gc> Deref for VariadicRaw<'a, 'gc> {
+impl<'a, 'gc> Deref for Variadic<'a, 'gc> {
     type Target = [Value<'gc>];
 
     fn deref(&self) -> &Self::Target {
@@ -1177,7 +1177,7 @@ pub struct VariadicIter<'a, 'gc> {
     _marker: PhantomData<&'a Value<'gc>>,
 }
 
-impl<'a, 'gc> IntoIterator for VariadicRaw<'a, 'gc> {
+impl<'a, 'gc> IntoIterator for Variadic<'a, 'gc> {
     type Item = &'a Value<'gc>;
     type IntoIter = VariadicIter<'a, 'gc>;
 
@@ -1219,13 +1219,13 @@ impl<'a, 'gc> ExactSizeIterator for VariadicIter<'a, 'gc> {
     }
 }
 
-impl<'a, 'gc> FromLuaMulti<'gc> for VariadicRaw<'a, 'gc> {
+impl<'a, 'gc> FromLuaMulti<'gc> for Variadic<'a, 'gc> {
     fn from_lua_multi(
         args: &[Value<'gc>],
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
-        Ok(VariadicRaw {
+        Ok(Variadic {
             start: args.as_ptr(),
             len: args.len(),
             _marker: PhantomData,

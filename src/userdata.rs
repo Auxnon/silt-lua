@@ -17,7 +17,7 @@ use crate::{
     error::SiltError,
     function::{NativeFunctionRaw, WrappedFn},
     lua::VM,
-    value::{FromLua, FromLuaMulti, ToLua, Value, ValueRef, VariadicRaw},
+    value::{FromLua, FromLuaMulti, ToLua, Value, ValueRef, Variadic},
 };
 
 /// Result type for Lua operations
@@ -944,7 +944,7 @@ impl UserData for TestEnt {
             Ok(Value::Integer(3))
         });
 
-        methods.add_method_mut("iter", |vm, mc, this, args: VariadicRaw| {
+        methods.add_method_mut("iter", |vm, mc, this, args: Variadic| {
             let ite = args.iter();
             println!("start iterate! we got:");
             ite.for_each(|v| {
