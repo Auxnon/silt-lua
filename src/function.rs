@@ -1,27 +1,48 @@
-use std::{cell::RefCell, fmt::Display, rc::Rc};
+use std::{
+    fmt::Display,
+    ops::{Deref, Index},
+    rc::Rc,
+};
 
-use crate::{chunk::Chunk, code::OpCode, lua::Lua, value::Value};
+use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
+
+use crate::{
+    chunk::Chunk,
+    code::OpCode,
+    error::SiltError,
+    lua::{Ephemeral, VM},
+    userdata::{InnerResult, ToInnerResult},
+    value::{FromLuaMulti, ToLua, ToLuaMulti, Value},
+};
 
 /////////////
 ///
-pub struct CallFrame {
-    pub function: Rc<Closure>, // pointer
+pub struct CallFrame<'gc> {
+    pub function: Gc<'gc, Closure<'gc>>, // pointer
     // ip: *const OpCode
     // pub base: usize,
     // pointer point sinto VM values stack
     pub stack_snapshot: usize,
-    pub local_stack: *mut Value,
+    pub local_stack: *mut Value<'gc>,
     pub ip: *const OpCode,
+    // pub need: u8,
+    pub multi_return: u8,
+    // pub mark: usize
 }
 
-impl<'frame> CallFrame {
-    pub fn new(function: Rc<Closure>, stack_snapshot: usize) -> Self {
+impl<'frame> CallFrame<'frame> {
+    pub fn new<'a>(
+        function: Gc<'frame, Closure<'frame>>,
+        stack_snapshot: usize,
+        multi_return: u8,
+    ) -> Self {
         let ip = function.function.chunk.code.as_ptr();
         Self {
             function,
             ip,
             local_stack: std::ptr::null_mut(),
             stack_snapshot,
+            multi_return,
         }
     }
 
@@ -49,19 +70,19 @@ impl<'frame> CallFrame {
         self.ip = unsafe { self.ip.add(n) };
     }
 
-    pub fn set_val(&mut self, index: u8, value: Value) {
+    pub fn set_val(&mut self, index: u8, value: Value<'frame>) {
         // self.stack[index as usize] = value;
         unsafe { *self.local_stack.add(index as usize) = value };
     }
 
-    pub fn get_val(&self, index: u8) -> &Value {
+    pub fn get_val(&self, index: u8) -> &Value<'frame> {
         // &self.stack[index as usize]
         // println!("get_val: {}", index);
         // println!("top: {}", unsafe { &*self.local_stack });
         unsafe { &*self.local_stack.add(index as usize) }
     }
 
-    pub fn get_val_mut(&self, index: u8) -> &mut Value {
+    pub fn get_val_mut(&mut self, index: u8) -> &mut Value<'frame> {
         unsafe { &mut *self.local_stack.add(index as usize) }
     }
 
@@ -111,7 +132,7 @@ impl<'frame> CallFrame {
     // }
 
     /** take and replace with a Nil */
-    pub fn take(&mut self) -> &Value {
+    pub fn take<'a>(&'frame mut self) -> &'a Value<'frame> {
         // self.stack_top = unsafe { self.stack_top.sub(1) };
         // unsafe { *self.stack_top }
         let v = unsafe { &*self.local_stack };
@@ -131,30 +152,95 @@ impl<'frame> CallFrame {
         // println!("rewind: {}", unsafe { &*self.ip });
     }
 }
-#[derive(Default)]
-pub struct FunctionObject {
+#[derive(Default, Collect)]
+#[collect(no_drop)]
+pub struct FunctionObject<'chnk> {
     pub is_script: bool,
     pub name: Option<String>,
-    pub chunk: Chunk,
+    pub chunk: Chunk<'chnk>,
     pub upvalue_count: u8,
+    pub need: u8,
     // pub arity: usize,
 }
 
-impl FunctionObject {
+impl<'chnk> FunctionObject<'chnk> {
     pub fn new(name: Option<String>, is_script: bool) -> Self {
         Self {
             name,
             is_script,
             chunk: Chunk::new(),
             upvalue_count: 0,
+            need: 1,
         }
     }
-    pub fn set_chunk(&mut self, chunk: Chunk) {
+
+    pub fn set_chunk(&mut self, chunk: Chunk<'chnk>) {
         self.chunk = chunk;
+    }
+
+    pub(crate) fn push_closure<'a>(
+        func: Gc<'a, FunctionObject<'a>>,
+        vm: &mut VM<'a>,
+        frame: &mut CallFrame<'a>,
+        ep: &mut Ephemeral<'_, 'a>,
+    ) -> Result<(), SiltError> {
+        // f.upvalue_count
+        let mut closure = Closure::new(func, Vec::with_capacity(func.upvalue_count as usize));
+        // if func.upvalue_count > 0 {
+        let next_instruction = frame.get_next_n_codes(func.upvalue_count as usize);
+        for i in 0..func.upvalue_count {
+            // devout!(" | {}", next_instruction[i as usize]);
+            if let OpCode::REGISTER_UPVALUE { index, neighboring } = next_instruction[i as usize] {
+                closure.upvalues.push(if neighboring {
+                    // insert at i
+                    vm.capture_upvalue(ep, index, frame)
+                    // closure.upvalues.insert(
+                    //     i as usize,
+                    //     frame.function.upvalues[index as usize].clone(),
+                    // );
+                    // *slots.add(index) ?
+                } else {
+                    frame.function.upvalues[index as usize].clone()
+                });
+            } else {
+                println!(
+                    "next instruction is not CLOSE_UPVALUE {}",
+                    next_instruction[i as usize]
+                );
+                unreachable!()
+            }
+        }
+
+        vm.push(ep, Value::Closure(Gc::new(ep.mc, closure)));
+        // }
+        // else {
+        //     return Err(SiltError::VmRuntimeError);
+        // }
+        frame.shift(func.upvalue_count as usize);
+        Ok(())
+    }
+
+    pub(crate) fn call_closure<'gc, 'a: 'gc>(
+        clos: &'a Gc<Closure<'gc>>,
+        frames: &'a mut Vec<CallFrame<'gc>>,
+        stack_count: usize,
+        arity: usize,
+        mut frame: &'a mut CallFrame<'gc>,
+        ep: &mut Ephemeral<'_, 'a>,
+    ) {
+        let frame_top = unsafe { ep.ip.sub(arity + 1) };
+        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1, 0);
+        frames.push(new_frame);
+        frame = frames.last_mut().unwrap();
+        frame.local_stack = frame_top;
+    }
+
+    pub fn print(&self) {
+        self.chunk.print_chunk(&self.name);
     }
 }
 
-impl Display for FunctionObject {
+impl Display for FunctionObject<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.is_script {
             write!(
@@ -172,25 +258,143 @@ impl Display for FunctionObject {
     }
 }
 
-pub type NativeFunction = fn(&mut Lua, Vec<Value>) -> Value; // TODO should be Result<Value,SiltError> for runtime errors
-pub struct NativeObject {
-    name: String,
-    pub function: fn(&mut Lua, Vec<Value>) -> Value,
+// pub type NativeFunction<'lua> = &'static fn(&'lua mut Lua, Vec<Value>) -> Value<'lua>; // TODO should be Result<Value,SiltError> for runtime errors
+// pub struct NativeObject {
+//     name: &'static str,
+//     pub function: NativeFunction<'static>,
+// }
+
+// pub type NativeFunctionRaw<'a, T: FromLuaMulti<'a>> =
+//     dyn Fn(&mut VM<'a>, &Mutation<'a>, impl FromLuaMulti<'a>) -> InnerResult<'a> + 'a;
+
+// pub type NativeFunctionRaw<'a> = NativeFunctionS<'a>;
+
+pub type NativeFunctionRef<'a> = &'a NativeFunctionRaw<'a>;
+pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
+// pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
+
+pub struct NativeFunctionRaw<'a> {
+    pub func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> InnerResult<'a> + 'a>,
 }
 
-impl NativeObject {
-    pub fn new(name: String, function: NativeFunction) -> Self {
-        Self { name, function }
+impl<'gc> NativeFunctionRaw<'gc> {
+    pub fn new<A, F, R>(f: F) -> Self
+    where
+        A: FromLuaMulti<'gc>,
+        R: ToLua<'gc>,
+        F: Fn(
+                &mut VM<'gc>,
+                &Mutation<'gc>,
+                A,
+                // <A as FromLuaMulti<'gc>>::Output,
+            ) -> ToInnerResult<'gc, R>
+            + 'gc,
+    {
+        Self {
+            func: Box::new(move |vm, mc, raw_args| {
+                let args = A::from_lua_multi(raw_args, vm, mc)?;
+                R::to_lua(f(vm, mc, args), vm, mc)
+            }),
+        }
+    }
+
+    // /// Helper method that infers types from closure signature
+    // pub fn from_closure<F, T, R>(f: F) -> Self
+    // where
+    //     R: ToLua<'a>,
+    //     T: FromLuaMulti<'a>,
+    //     F: for <'f> Fn(&mut VM<'a>, &Mutation<'a>, T::Args<'f>) -> ToInnerResult<'a, R> + 'a,
+    // {
+    //     Self::new::<T, F, R>(f)
+    // }
+
+    pub fn call(
+        &self,
+        vm: &mut VM<'gc>,
+        mutation: &Mutation<'gc>,
+        args: &[Value<'gc>],
+    ) -> InnerResult<'gc> {
+        (self.func)(vm, mutation, args)
     }
 }
 
-pub struct Closure {
-    pub function: Rc<FunctionObject>,
-    pub upvalues: Vec<Rc<RefCell<UpValue>>>,
+// native        (vm, mc, val[])-> res
+// meth          (vm, mc, &ud, val[])-> res
+// meth_meta     (vm, mc, &ud, val[])-> res
+// meth_mut      (vm, mc, &mut ud, val[])-> res
+
+pub struct WrappedFn<'gc> {
+    // pub f: Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> InnerResult<'gc>>, // used exclusively by userdata, a bit of a hack
+    pub f: NativeFunctionRc<'gc>,
+    // pub meta: u8
 }
 
-impl Closure {
-    pub fn new(function: Rc<FunctionObject>, upvalues: Vec<Rc<RefCell<UpValue>>>) -> Self {
+impl<'gc> WrappedFn<'gc> {
+    pub fn new(
+        // callback: Rc<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, T) -> InnerResult<'gc> + 'gc>,
+        callback: NativeFunctionRc<'gc>,
+    ) -> Self {
+        Self { f: callback }
+    }
+
+    pub fn call(
+        &self,
+        vm: &mut VM<'gc>,
+        mc: &Mutation<'gc>,
+        args: &[Value<'gc>],
+    ) -> InnerResult<'gc> {
+        (self.f.func)(vm, mc, args)
+    }
+}
+
+// pub struct WrappedFn<N>
+//
+//         where
+//             N: for<'a> Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>)-> Value<'a>,
+//
+// {
+//     pub f: N}
+
+// impl<'gc> Deref for WrappedFn<'gc> {
+//     type Target = dyn Fn(&mut VM<'gc>, &Mutation<'gc>, Vec<Value<'gc>>) -> Value<'gc>;
+//         fn deref(&self) -> &Self::Target {
+//         &self.f
+//     }
+// }
+
+// impl WrappedFn{
+//     pub fn call(&self, vm: &mut VM<'lua>, m: &Mutation<'lua>, vals: Vec<Value<'lua>>)-> Value{
+//         self.f(vm,m,vals)
+//     }
+// }
+
+unsafe impl<'gc> Collect for WrappedFn<'gc> {
+    fn needs_trace() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+}
+
+// impl NativeObject {
+//     pub fn new(name: &'static str, function: NativeFunction) -> Self {
+//         Self { name, function }
+//     }
+// }
+
+#[derive(Collect)]
+#[collect(no_drop)]
+pub struct Closure<'lua> {
+    pub function: Gc<'lua, FunctionObject<'lua>>,
+    pub upvalues: Vec<Gc<'lua, RefLock<UpValue<'lua>>>>,
+}
+
+impl<'chnk> Closure<'chnk> {
+    pub fn new(
+        function: Gc<'chnk, FunctionObject<'chnk>>,
+        upvalues: Vec<Gc<'chnk, RefLock<UpValue<'chnk>>>>,
+    ) -> Self {
         Self { function, upvalues }
     }
     pub fn print_upvalues(&self) {
@@ -200,29 +404,35 @@ impl Closure {
     }
 }
 
-pub struct UpValue {
+pub struct UpValue<'lua> {
     // is_open: bool,
     // obj?
     pub index: u8,
-    closed: Value,
-    pub location: *mut Value,
+    /** the value */
+    closed: Value<'lua>,
+    // pub location: NonNull<Value<'lua>>,
+    /** the pointer to the closed value */
+    pub location: *mut Value<'lua>,
     // pub value: *mut Value, // TODO oshould be a RC mutex of the value ideally
 }
-impl UpValue {
-    pub fn new(index: u8, location: *mut Value) -> Self {
+impl<'lua> UpValue<'lua> {
+    pub fn new(index: u8, location: *mut Value<'lua>) -> Self {
         Self {
             index,
             closed: Value::Nil,
             location,
         }
     }
-    pub fn set_value(&mut self, value: Value) {
+
+    pub fn set_value(&mut self, value: Value<'lua>) {
         unsafe { *self.location = value }
     }
-    pub fn close_around(&mut self, value: Value) {
+
+    pub fn close_around(&mut self, value: Value<'lua>) {
         self.closed = value;
         self.location = &mut self.closed as *mut Value;
     }
+
     pub fn close(&mut self) {
         #[cfg(feature = "dev-out")]
         println!("closing: {}", unsafe { &*self.location });
@@ -231,12 +441,14 @@ impl UpValue {
         println!("closed: {}", self.closed);
         self.location = &mut self.closed as *mut Value;
     }
-    pub fn copy_value(&self) -> Value {
+
+    pub fn copy_value(&self) -> Value<'lua> {
         #[cfg(feature = "dev-out")]
         println!("copying: {}", unsafe { &*self.location });
         unsafe { (*self.location).clone() }
     }
-    pub fn get_location(&self) -> *mut Value {
+
+    pub fn get_location(&self) -> *mut Value<'lua> {
         #[cfg(feature = "dev-out")]
         println!("getting location: {}", unsafe { &*self.location });
         self.location
@@ -250,7 +462,14 @@ impl UpValue {
     // }
 }
 
-impl Display for UpValue {
+unsafe impl<'lua> Collect for UpValue<'lua> {
+    fn trace(&self, cc: &gc_arena::Collection) {
+        // location is just a helper, it's a pointer to closed, is that stupid? Probably.
+        self.closed.trace(cc);
+    }
+}
+
+impl Display for UpValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

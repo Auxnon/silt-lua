@@ -1,5 +1,5 @@
 use crate::{
-    error::{ErrorTuple, Location, SiltError},
+    error::{ErrorTuple, SiltError, TokenCell, TokenTriple},
     token::{Flag, Operator, Token},
 };
 
@@ -9,25 +9,33 @@ enum Mode {
     Typer,
     // LookAhead,
 }
-pub struct Lexer {
-    pub source: String,
+pub struct Lexer<'c> {
+    pub source: &'c str,
     pub iterator: std::iter::Peekable<std::vec::IntoIter<char>>,
-    pub start: usize,
+    /// index 0 of our current token, the start of it's string
+    pub start_token: usize,
+    /// the very end of our code string, or length
     pub end: usize,
+    /// the actual character index we're looking at
     pub current: usize,
-    pub line: usize,
+    /// current line number, for error pos
+    pub line_number: usize,
+    /// the column index
     pub column: usize,
+    /// tracks start character column position of a token, for error pos
     pub column_start: usize,
     mode: Mode,
     // ahead_buffer: Vec<TokenOption>,
 }
 
-pub type TokenTuple = (Token, Location);
+pub type TokenTuple = (Token, TokenCell);
+pub type TokenTripleTuple = (Token, TokenTriple);
+pub type TokenTripleResult = Result<TokenTripleTuple, ErrorTuple>;
 pub type TokenResult = Result<TokenTuple, ErrorTuple>;
-pub type TokenOption = Option<TokenResult>;
+pub type TokenOption = Option<TokenTripleResult>;
 
-impl Iterator for Lexer {
-    type Item = TokenResult;
+impl Iterator for Lexer<'_> {
+    type Item = TokenTripleResult;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.current >= self.end {
@@ -55,20 +63,19 @@ impl Iterator for Lexer {
     }
 }
 
-impl<'a> Lexer {
-    pub fn new(source: String) -> Self {
-        let st = source.clone();
-        let len = st.len();
+impl<'c> Lexer<'c> {
+    pub fn new(source: &'c str) -> Self {
+        let len = source.len();
         // TODO is this insane?
         let chars = source.chars().collect::<Vec<_>>().into_iter().peekable();
         Lexer {
-            source: st,
-            start: 0,
+            source,
+            start_token: 0,
             column: 0,
             column_start: 0,
             current: 0,
             end: len,
-            line: 1,
+            line_number: 1,
             iterator: chars,
             mode: Mode::Normal,
             // ahead_buffer: Vec::new(),
@@ -76,7 +83,7 @@ impl<'a> Lexer {
     }
 
     fn set_start(&mut self) {
-        self.start = self.current;
+        self.start_token = self.current;
         self.column_start = self.column;
     }
 
@@ -96,10 +103,10 @@ impl<'a> Lexer {
         self.iterator.peek()
     }
 
-    fn _error(&mut self, code: SiltError) -> TokenResult {
+    fn _error(&mut self, code: SiltError) -> TokenTripleResult {
         Err(ErrorTuple {
             code,
-            location: (self.line, self.start),
+            location: (self.line_number, self.start_token),
         })
     }
 
@@ -111,8 +118,16 @@ impl<'a> Lexer {
     //     self.error_list.drain(..).collect()
     // }
 
-    fn _send(&mut self, token: Token) -> TokenResult {
-        Ok((token, (self.line, self.column_start + 1)))
+    fn _send(&mut self, token: Token) -> TokenTripleResult {
+        Ok((
+            token,
+            TokenTriple::new(
+                self.line_number,
+                self.column_start + 1,
+                self.start_token,
+                self.current - self.start_token,
+            ),
+        ))
     }
 
     fn send(&mut self, token: Token) -> TokenOption {
@@ -140,17 +155,17 @@ impl<'a> Lexer {
     // }
 
     fn new_line(&mut self) {
-        self.line += 1;
+        self.line_number += 1;
         self.column = 0;
     }
 
     fn get_sofar(&self) -> String {
-        self.source[self.start..self.current].to_string()
+        self.source[self.start_token..self.current].to_string()
     }
 
     fn number(&mut self, prefix_dot: bool) -> TokenOption {
         if prefix_dot {
-            self.start = self.current - 1;
+            self.start_token = self.current - 1;
             self.column_start = self.column - 1;
         } else {
             self.set_start();
@@ -176,7 +191,7 @@ impl<'a> Lexer {
                         is_float = true;
                         self.eat();
                     }
-                    'a'..='z' | 'A'..='Z' | '_' => {
+                    'a'..='z' | 'A'..='Z'  => {
                         return self.error(SiltError::InvalidNumber(self.get_sofar()));
                     }
                     _ => break,
@@ -184,7 +199,7 @@ impl<'a> Lexer {
                 None => break,
             }
         }
-        let cc = &self.source[self.start..self.current];
+        let cc = &self.source[self.start_token..self.current];
         if is_float {
             let n = match if strip {
                 cc.replace("_", "").parse::<f64>()
@@ -214,9 +229,9 @@ impl<'a> Lexer {
 
     fn string(&mut self, apos: bool) -> TokenOption {
         // start column at '"' not within string starter
-        self.column_start = self.column;
+        self.column_start = self.column-1;
         self.eat();
-        self.start = self.current;
+        self.start_token = self.current;
         while self.current < self.end {
             match self.peek() {
                 Some(c) => match c {
@@ -244,14 +259,14 @@ impl<'a> Lexer {
                 }
             }
         }
-        let cc = self.source[self.start..self.current - 1].to_string();
+        let cc = self.source[self.start_token..self.current - 1].to_string();
         self.send(Token::StringLiteral(cc.into_boxed_str()))
     }
 
     fn multi_line_string(&mut self) -> TokenOption {
         self.column_start = self.column;
         self.eat();
-        self.start = self.current;
+        self.start_token = self.current;
         while self.current < self.end {
             let char = self.peek();
             match char {
@@ -276,7 +291,7 @@ impl<'a> Lexer {
                 }
             }
         }
-        let cc = self.source[self.start..self.current - 2].to_string();
+        let cc = self.source[self.start_token..self.current - 2].to_string();
         self.send(Token::StringLiteral(cc.into_boxed_str()))
     }
 
@@ -306,7 +321,7 @@ impl<'a> Lexer {
                         break;
                     }
                     _ => {
-                        let cc = &self.source[self.start..self.current];
+                        let cc = &self.source[self.start_token..self.current];
                         match cc.to_lowercase().as_str() {
                             "strict" => return self.send(Token::Flag(Flag::Strict)),
                             "local" => return self.send(Token::Flag(Flag::Local)),
@@ -331,10 +346,10 @@ impl<'a> Lexer {
         self.set_start();
         self.word_eater();
         self.mode = Mode::Normal;
-        if self.start == self.current {
+        if self.start_token == self.current {
             return self.error(SiltError::ExpectedLocalIdentifier);
         }
-        let cc = &self.source[self.start..self.current];
+        let cc = &self.source[self.start_token..self.current];
         self.send(Token::ColonIdentifier(cc.into()))
     }
 
@@ -381,7 +396,7 @@ impl<'a> Lexer {
                 '_' | 'a'..='z' | 'A'..='Z' => {
                     self.eat();
                     self.word_eater();
-                    let cc = &self.source[self.start..self.current];
+                    let cc = &self.source[self.start_token..self.current];
                     // TODO is there ever a scenario where a trie is faster then rust's match?
                     self.send(match cc {
                         "if" => Token::If,
@@ -410,7 +425,7 @@ impl<'a> Lexer {
                         "goto" => Token::Goto,
                         "class" => Token::Class,
                         "sprint" => Token::Print,
-                        _ => Token::Identifier(Box::new(cc.to_string())), //return self.look_ahead(Token::Identifier(Box::new(cc.to_string()))),
+                        _ => Token::Identifier(cc.to_string()), //return self.look_ahead(Token::Identifier(Box::new(cc.to_string()))),
                     })
                 }
                 '0'..='9' => self.number(false),
@@ -448,8 +463,10 @@ impl<'a> Lexer {
                     self.eat();
                     match self.peek() {
                         Some('-') => {
+                            // comment line
                             self.eat();
                             if let Some('!') = self.peek() {
+                                // flag
                                 self.eat();
                                 self.get_flag()
                             } else {
@@ -459,7 +476,11 @@ impl<'a> Lexer {
                                         break;
                                     }
                                 }
-                                None
+
+                                // self.current-=1;
+                                let t=self.send(Token::Comment);
+                                // self.current+=1;
+                                t
                             }
                         }
                         Some('=') => {

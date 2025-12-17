@@ -1,7 +1,9 @@
+use gc_arena::Collect;
 use std::fmt::{self, Display, Formatter};
 
-#[allow(non_camel_case_types)]
-#[derive(Clone)]
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[derive(Clone, Collect)]
+#[collect(no_drop)]
 pub enum OpCode {
     CONSTANT {
         constant: u8,
@@ -43,7 +45,7 @@ pub enum OpCode {
     FOR_NUMERIC(u16),
     FORWARD(u16),
     REWIND(u16),
-    RETURN,
+    RETURN(u8),
     POP,
     POPS(u8),
     CLOSE_UPVALUES(u8),
@@ -55,6 +57,9 @@ pub enum OpCode {
     CONCAT,
     NOT,
     NIL,
+    // TODO is it dumb to want to not spam Nil OpCodes?
+    /// Push N number of Nils to the stack
+    NILS(u8),
     TRUE,
     FALSE,
     EQUAL,
@@ -65,7 +70,10 @@ pub enum OpCode {
     GREATER_EQUAL,
     PRINT,
     META(u8),
-    CALL(u8),
+    /// Call function with n parameters, and r count of assignments desired
+     CALL(u8,u8),
+    /// tell the VM we expect n values for next assignment before resetting, otherwise 1
+    NEED(u8),
     REGISTER_UPVALUE {
         index: u8,
         neighboring: bool,
@@ -102,15 +110,11 @@ pub enum OpCode {
         index: u8,
     },
 }
-pub enum Tester {
-    CONSTANT(u8),
-    RETURN,
-}
 
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CALL(i) => write!(f, "OP_CALL({})", i),
+            Self::CALL(i,m) => write!(f, "OP_CALL({},{})", i,m),
             Self::REGISTER_UPVALUE {
                 index: i,
                 neighboring: n,
@@ -145,7 +149,8 @@ impl Display for OpCode {
             Self::DEFINE_LOCAL { constant } => {
                 write!(f, "OP_DEFINE_LOCAL {}", constant)
             }
-            Self::RETURN => write!(f, "OP_RETURN"),
+            Self::NEED(u) => write!(f, "OP_NEED {}",u),
+            Self::RETURN(u) => write!(f, "OP_RETURNx{}",u),
             Self::POP => write!(f, "OP_POP"),
             Self::POPS(n) => {
                 write!(f, "OP_POPx{}", n)
@@ -177,6 +182,7 @@ impl Display for OpCode {
                 write!(f, "OP_LITERAL {} {}", dest, literal)
             }
             Self::NIL => write!(f, "OP_NIL"),
+            Self::NILS(n) => write!(f, "OP_NILS x{}",n),
             Self::TRUE => write!(f, "OP_TRUE"),
             Self::FALSE => write!(f, "OP_FALSE"),
             Self::NOT => write!(f, "OP_NOT"),
@@ -213,6 +219,15 @@ impl Display for OpCode {
             //     write!(f, "OP_TABLE_SET_BY_CONSTANT {}", constant)
             // }
             Self::INCREMENT { index } => write!(f, "OP_INCREMENT {}", index),
+        }
+    }
+}
+
+impl PartialEq for OpCode{
+    fn eq(&self, other: &Self) -> bool {
+        match (self,other){
+            (Self::POP, Self::POP) => true,
+                _=>false
         }
     }
 }

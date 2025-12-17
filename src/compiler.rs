@@ -1,73 +1,72 @@
 use std::{
-    fmt::{Display, Formatter},
-    iter::Peekable,
-    mem::{swap, take},
-    println,
-    rc::Rc,
-    vec,
+    cmp::Ordering, collections::HashMap, fmt::{Display, Formatter}, iter::Peekable, println, vec
 };
 
-use hashbrown::HashMap;
+use gc_arena::{Gc, Mutation};
 
 use crate::{
-    chunk::Chunk,
     code::OpCode,
-    error::{ErrorTuple, Location, SiltError},
+    error::{ErrorTuple, SiltError, TokenCell, TokenTriple},
     function::FunctionObject,
-    lexer::{Lexer, TokenResult},
+    lexer::Lexer,
     token::{Operator, Token},
     value::Value,
 };
 
+#[cfg(feature = "dev-out")]
+use colored::Colorize;
+#[cfg(feature = "wasm")]
+use serde::{Deserialize, Serialize};
+
 macro_rules! build_block_until_then_eat {
-    ($self:ident, $($rule:ident)|*) => {{
-        while match $self.peek()? {
-            $( Token::$rule)|* => {$self.eat(); false}
+    ($self:ident, $mc:ident, $f:ident, $it:ident, $($rule:ident)|*) => {{
+        while match $self.peek($it)? {
+            $( Token::$rule)|* => {$self.eat($it); false}
             Token::EOF => {
                 return Err($self.error_at(SiltError::UnterminatedBlock));
             }
-            _ =>{declaration($self)?; true}
+            _ =>{declaration($self, $mc, $f, $it)?; true}
         } {
         }
     }};
 }
 
 macro_rules! build_block_until {
-    ($self:ident, $($rule:ident)|*) => {{
-        while match $self.peek()? {
+    ($self:ident, $mc:ident, $f:ident, $it:ident, $($rule:ident)|*) => {{
+        while match $self.peek($it)? {
             $( Token::$rule)|* => false,
             Token::EOF => {
                 return Err($self.error_at(SiltError::UnterminatedBlock));
             }
-            _ =>{declaration($self)?; true}
+            _ =>{declaration($self, $mc, $f, $it)?; true}
         } {
         }
     }};
 }
 
 macro_rules! scope_and_block_until {
-    ($self:ident, $($rule:ident)|*) => {{
+    ($self:ident, $mc:ident, $f:ident, $it:ident, $($rule:ident)|*) => {{
         begin_scope($self);
-        build_block_until!($self, $($rule)|*);
-        end_scope($self,false);
+        build_block_until!($self, $mc, $f, $it, $($rule)|*);
+        end_scope($self, $f, false);
     }};
 }
 
-macro_rules! scope_and_block_until_then_eat {
-    ($self:ident, $($rule:ident)|*) => {{
-        begin_scope($self);
-        build_block_until_then_eat!($self, $($rule)|*);
-        end_scope($self,false);
-    }};
-}
+// macro_rules! scope_and_block_until_then_eat {
+//     ($self:ident,$e:ident,, $($rule:ident)|*) => {{
+//         begin_scope($self);
+//         build_block_until_then_eat!($self,$e:ident, $($rule)|*);
+//         end_scope($self,false);
+//     }};
+// }
 
 macro_rules! devnote {
-    ($self:ident $message:literal) => {
+    ($self:ident $it:ident $message:literal) => {
         #[cfg(feature = "dev-out")]
         println!(
             "=> {}: peek: {:?} -> current: {:?}",
             $message,
-            $self.peek().unwrap_or(&Token::Nil).clone(),
+            $self.peek($it).unwrap_or(&Token::Nil).clone(),
             $self.get_current().unwrap_or(&Token::Nil)
         );
     };
@@ -78,55 +77,64 @@ macro_rules! devout {
             #[cfg(feature = "dev-out")]
             println!($($arg)*);
         }
-    }
-
-macro_rules! op_assign {
-    ($self:ident, $ident:ident,$op:ident) => {{
-        let value = $self.expression();
-        let bin = Expression::Binary {
-            left: Box::new(Expression::Variable {
-                $ident,
-                location: $self.get_last_loc(),
-            }),
-            operator: Operator::$op,
-            right: Box::new(value),
-            location: $self.get_last_loc(),
-        };
-        Expression::Assign {
-            ident: $ident,
-            value: Box::new(bin),
-            location: $self.get_last_loc(),
-        }
-    }};
 }
+
+// macro_rules! op_assign {
+//     ($self:ident, $ident:ident,$op:ident) => {{
+//         let value = $self.expression();
+//         let bin = Expression::Binary {
+//             left: Box::new(Expression::Variable {
+//                 $ident,
+//                 location: $self.get_last_loc(),
+//             }),
+//             operator: Operator::$op,
+//             right: Box::new(value),
+//             location: $self.get_last_loc(),
+//         };
+//         Expression::Assign {
+//             ident: $ident,
+//             value: Box::new(bin),
+//             location: $self.get_last_loc(),
+//         }
+//     }};
+// }
 
 /** error if missing, eat if present */
 macro_rules! expect_token {
-    ($self:ident $token:ident) => {{
-        if let Token::$token = $self.peek()? {
-            $self.eat();
+    ($self:ident $it:ident $token:ident) => {{
+        if let Token::$token = $self.peek($it)? {
+            $self.eat($it);
         } else {
             return Err($self.error_at(SiltError::ExpectedToken(Token::$token)));
         }
     };};
-    ($self:ident, $token:ident, $custom_error:expr) => {{
-        if let Token::$token = $self.peek()? {
-            $self.eat();
+    ($self:ident, $it:ident, $token:ident, $custom_error:expr) => {{
+        if let Token::$token = $self.peek($it)? {
+            $self.eat($it);
         } else {
             return Err($custom_error);
         }
     };};
 }
-macro_rules! expect_token_exp {
-    ($self:ident $token:ident) => {{
-        if let Some(&Token::$token) = $self.peek() {
-            $self.eat();
-        } else {
-            $self.error(SiltError::ExpectedToken(Token::$token));
-            return Expression::InvalidExpression;
-        }
+
+macro_rules! add {
+    ($self:ident) => {{
+        $self.expression_count += 1;
+        #[cfg(feature = "dev-out")]
+        println!("{} {}", "Add".on_cyan(), $self.expression_count);
     };};
 }
+
+// macro_rules! expect_token_exp {
+//     ($self:ident $token:ident) => {{
+//         if let Some(&Token::$token) = $self.peek() {
+//             $self.eat();
+//         } else {
+//             $self.error(SiltError::ExpectedToken(Token::$token));
+//             return Expression::InvalidExpression;
+//         }
+//     };};
+// }
 
 macro_rules! rule {
     ($prefix:expr, $infix:expr, $precedence:tt) => {{
@@ -160,6 +168,23 @@ enum Precedence {
 type Ident = u8;
 
 type Catch = Result<(), ErrorTuple>;
+
+#[derive(Clone, Copy, Debug)]
+pub struct LanguageFlags {
+    pub implicit_returns: bool,
+    pub arrow_functions: bool,
+    pub bang_operator: bool,
+}
+
+impl Default for LanguageFlags {
+    fn default() -> Self {
+        Self {
+            implicit_returns: false,
+            arrow_functions: false,
+            bang_operator: false,
+        }
+    }
+}
 
 impl Precedence {
     fn next(self) -> Self {
@@ -200,14 +225,47 @@ impl Display for Precedence {
 }
 
 struct ParseRule {
-    prefix: fn(&mut Compiler, can_assign: bool) -> Catch,
-    infix: fn(&mut Compiler, can_assign: bool) -> Catch,
+    prefix: fn(&mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign: bool) -> Catch,
+    infix: fn(&mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign: bool) -> Catch,
     precedence: Precedence,
+}
+
+const WORD_MAP: [&str; 7] = [
+    "keyword", "op", "number", "bool", "nil", "string", "comment",
+];
+
+// type LSPIndent =(usize, usize);
+// start, length, type
+type LSPFormatMark = (usize, usize, u8);
+
+#[cfg(feature = "wasm")]
+#[derive(Serialize, Deserialize)]
+pub struct LanguageServerOutput<'c> {
+    #[serde(borrow)]
+    legend: [&'c str; 7],
+    map: Vec<LSPFormatMark>,
+    indented: String, // indents: Vec<IndentMark>,
+}
+#[cfg(not(feature = "wasm"))]
+pub struct LanguageServerOutput<'c> {
+    legend: [&'c str; 7],
+    map: Vec<LSPFormatMark>,
+    indented: String, // indents: Vec<IndentMark>,
+}
+
+impl Display for LanguageServerOutput<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "legend [{}],\n map ", self.legend.join(","))?;
+        for (s, l, t) in self.map.iter() {
+            write!(f, "({} {} {}),", s, l, t)?;
+        }
+        writeln!(f, "{}", self.indented)
+    }
 }
 
 /** stores a local identifier's name by boxed string, if none is provbided it serves as a placeholder for statements such as a loop, this way they cannot be resolved as variables */
 struct Local {
-    ident: Option<Box<String>>,
+    ident: Option<String>,
     /** scope depth, indepedent of functional depth */
     depth: usize,
     /** how many layers deep the local value is nested in a function, with 0 being global (should only happen once to reserve the root func on the stack) */
@@ -224,14 +282,15 @@ struct UpLocal {
     universal_ident: u8,
 }
 
+type FnRef<'a, 'c> = &'a mut FunctionObject<'c>;
+
 pub struct Compiler {
-    pub body: FunctionObject,
-    iterator: Peekable<Lexer>,
+    // pub body: FunctionObject<'chnk>,
     pub current_index: usize,
     pub errors: Vec<ErrorTuple>,
     pub valid: bool,
     current: Result<Token, ErrorTuple>,
-    current_location: Location,
+    current_location: TokenCell,
     scope_depth: usize,
     functional_depth: usize,
     // TODO we need a fail catch if we exceed a local variable amount of up values as well
@@ -245,19 +304,35 @@ pub struct Compiler {
     // location: (usize, usize),
     // previous: TokenTuple,
     // pre_previous: TokenTuple,
-    pending_gotos: Vec<(String, usize, Location)>,
-    extra: bool, // pub global: &'a mut Environment,
+    pending_gotos: Vec<(String, usize, TokenCell)>,
     /** hack to flip off a pop when an expression takes on statement properties, used only for := right now */
     override_pop: bool,
+    /// flag that a self calling method was used
+    self_arg: bool,
+    /** language flags for optional features */
+    language_flags: LanguageFlags,
+    /** tracks if the last statement was an expression for implicit returns */
+    last_was_expression: bool,
+    // return_count: u8,
+    /** tracks the number of values on the stack from comma-separated expressions */
+    expression_count: u8,
+    /// used for multi var assignment, start small, expand if really necessary
+    var_stack: Vec<(OpCode, OpCode)>,
+    /// men will do anything to not have to allocate a new vec
+    var_set_stack: Vec<(OpCode, OpCode)>,
+    // TODO this is a decent stopgap to fix our multivar headaches BUT this will definitely break
+    // in our implicit returns as they're treated as setters and wouldnt collapse expressions
+    // correctly. If we walk our setters all the way to find an assignment (:=) 
+    /// can we gather multivars for setters? multivar return or gets must skip this
+    can_multivar_set: bool,
 }
 
-impl<'a> Compiler {
+impl Compiler {
     /** Create a new compiler instance */
     pub fn new() -> Compiler {
         // assert!(p.len() == p.len());
         Self {
-            body: FunctionObject::new(None, true),
-            iterator: Lexer::new("".to_string()).peekable(),
+            // body: FunctionObject::new(None, true),
             current: Ok(Token::Nil),
             current_location: (0, 0),
             current_index: 0,
@@ -280,15 +355,35 @@ impl<'a> Compiler {
             // location: (0, 0),
             // previous: (Token::Nil, (0, 0)),
             // pre_previous: (Token::Nil, (0, 0)),
-            extra: true,
             override_pop: false,
+            self_arg: false,
+            language_flags: LanguageFlags::default(),
+            last_was_expression: false,
+            expression_count: 0,
+            var_stack: Vec::with_capacity(4),
+            var_set_stack: Vec::with_capacity(4),
+            can_multivar_set: true,
         }
     }
 
+    /** Create a new compiler instance with language flags */
+    pub fn new_with_flags(
+        implicit_returns: bool,
+        arrow_functions: bool,
+        bang_operator: bool,
+    ) -> Compiler {
+        let mut compiler = Self::new();
+        compiler.language_flags = LanguageFlags {
+            implicit_returns,
+            arrow_functions,
+            bang_operator,
+        };
+        compiler
+    }
+
     /** Syntax error with code at location */
-    fn error_syntax(&mut self, code: SiltError, location: Location) -> ErrorTuple {
+    fn error_syntax(&mut self, code: SiltError, location: TokenCell) -> ErrorTuple {
         self.valid = false;
-        self.body.chunk.invalidate();
         ErrorTuple { code, location }
     }
 
@@ -329,56 +424,64 @@ impl<'a> Compiler {
         std::mem::replace(&mut self.errors, vec![])
     }
 
-    fn get_chunk(&self) -> &Chunk {
-        &self.body.chunk
+    // fn get_chunk(&self,e: &'a mut Emphereal) -> &'chnk Chunk {
+    //     &e.body.chunk
+    // }
+
+    // fn get_chunk_mut(&mut self) -> &'chnk mut Chunk {
+    //     &mut self.body.chunk
+    // }
+
+    fn get_chunk_size(&self, f: FnRef) -> usize {
+        f.chunk.code.len()
     }
 
-    fn get_chunk_mut(&mut self) -> &mut Chunk {
-        &mut self.body.chunk
+    fn write_code(&self, f: FnRef, byte: OpCode, location: TokenCell) -> usize {
+        f.chunk.write_code(byte, location)
     }
 
-    fn get_chunk_size(&self) -> usize {
-        self.body.chunk.code.len()
+    // fn read_last_code<'a, 'c: 'a>(&self, e: &mut Emphereal<'a,'c>) -> &'c OpCode {
+    //     e.body.chunk.code.last().unwrap()
+    //     // self.code.last().unwrap()
+    // }
+
+    fn write_identifier(&mut self, f: FnRef, identifier: String) -> usize {
+        f.chunk.write_identifier(identifier)
     }
 
-    fn write_code(&mut self, byte: OpCode, location: Location) -> usize {
-        self.body.chunk.write_code(byte, location)
+    fn change_code(&mut self, f: FnRef, offset: usize, byte: OpCode) {
+        f.chunk.code[offset] = byte;
     }
-
-    fn read_last_code(&self) -> &OpCode {
-        self.body.chunk.read_last_code()
-    }
-
-    fn write_identifier(&mut self, identifier: Box<String>) -> usize {
-        self.body.chunk.write_identifier(identifier)
+    fn get_code<'a, 'c: 'a>(&self, f: FnRef<'a, 'c>, offset: usize) -> &'a OpCode {
+        &f.chunk.code[offset]
     }
 
     /** Tokens, not stack. Pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
-    fn pop(&mut self) -> (Result<Token, ErrorTuple>, Location) {
+    fn pop(&mut self, iter: &mut Peekable<Lexer>) -> (Result<Token, ErrorTuple>, TokenCell) {
         self.current_index += 1;
-        match self.iterator.next() {
+        match iter.next() {
             Some(Ok(t)) => {
-                devout!("popped {}", t.0);
-                (Ok(t.0), t.1)
+                // devout!("popped {}", t.0);
+                (Ok(t.0), (t.1.line, t.1.col))
             }
             Some(Err(e)) => {
                 let l = e.location;
                 (Err(e), l)
             }
-            None => (Ok(Token::EOF), (0, 0)),
+            None => (Ok(Token::EOF), (1, 0)),
         }
     }
 
     /** Force stack to pop N values without usual niceties, this both emits opcode and drops off the emulated stack locals */
-    fn force_stack_pop(&mut self, n: usize) {
+    fn force_stack_pop(&mut self, f: FnRef, n: usize) {
         self.locals.truncate(self.locals.len() - n);
-        self.emit_at(OpCode::POPS(n as u8));
+        self.emit_at(f, OpCode::POPS(n as u8));
     }
 
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
-    fn eat(&mut self) {
+    fn eat(&mut self, iter: &mut Peekable<Lexer>) {
         self.current_index += 1;
-        let t = self.iterator.next();
+        let t = iter.next();
         #[cfg(feature = "dev-out")]
         {
             match t {
@@ -390,14 +493,14 @@ impl<'a> Compiler {
     }
 
     /** pop and store on to self as current token tuple */
-    fn store(&mut self) {
+    fn store(&mut self, iter: &mut Peekable<Lexer>) {
         self.current_index += 1;
-        (self.current, self.current_location) = match self.iterator.next() {
-            Some(Ok(t)) => (Ok(t.0), t.1),
-            Some(Err(e)) => {
+        (self.current, self.current_location) = match iter.next() {
+            Some(Ok(t)) => (Ok(t.0), (t.1.line, t.1.col)),
+            Some(Err(er)) => {
                 // self.error_syntax(e.code, e.location);
-                let l = e.location;
-                (Err(e), l)
+                let l = er.location;
+                (Err(er), l)
             }
             None => (Ok(Token::EOF), (0, 0)),
         };
@@ -410,10 +513,10 @@ impl<'a> Compiler {
     }
 
     /** take current, replace with next. a true pop*/
-    fn store_and_return(&mut self) -> Result<Token, ErrorTuple> {
+    fn store_and_return(&mut self, iter: &mut Peekable<Lexer>) -> Result<Token, ErrorTuple> {
         self.current_index += 1;
-        let (r, l) = match self.iterator.next() {
-            Some(Ok(t)) => (Ok(t.0), t.1),
+        let (r, l) = match iter.next() {
+            Some(Ok(t)) => (Ok(t.0), (t.1.line, t.1.col)),
             Some(Err(e)) => {
                 // self.error_syntax(e.code, e.location);
                 let l = e.location;
@@ -430,11 +533,30 @@ impl<'a> Compiler {
     fn get_current(&self) -> Result<&Token, ErrorTuple> {
         match &self.current {
             Ok(t) => {
-                devout!("get_current {}", t);
+                // devout!("get_current {}", t);
                 Ok(t)
             }
             Err(e) => Err(e.clone()),
         }
+    }
+
+    fn drain_setters(&mut self, f: FnRef) {
+        let vv = self.var_set_stack.drain(..).rev();
+        let mut it = vv.peekable();
+        while let Some(v) = it.next() {
+            f.chunk.write_code(v.0, self.current_location);
+            f.chunk.write_code(OpCode::POP, self.current_location);
+        }
+    }
+
+    fn drain_getters(&mut self, f: FnRef) {
+        devout!("{}", "drain getters".green());
+        for v in self.var_stack.drain(..) {
+            f.chunk.write_code(v.1, self.current_location);
+        }
+    }
+    fn pull_getter(&mut self, f: FnRef) -> OpCode {
+        self.var_stack.first().unwrap().1.clone()
     }
 
     /** only use after peek */
@@ -444,15 +566,15 @@ impl<'a> Compiler {
     // }
 
     /** return the peeked token result */
-    fn peek(&mut self) -> Result<&Token, ErrorTuple> {
-        match self.iterator.peek() {
+    fn peek<'c>(&mut self, iter: &'c mut Peekable<Lexer>) -> Result<&'c Token, ErrorTuple> {
+        match iter.peek() {
             Some(Ok(t)) => {
-                devout!("peek {}", t.0);
+                // devout!("peek {}", t.0);
                 Ok(&t.0)
             }
             Some(Err(e)) => {
                 // self.error_syntax(e.code, e.location);
-                devout!("peek err {}", e.code);
+                devout!("!! peek err {}", e.code);
                 let l = e.location;
                 Err(ErrorTuple {
                     code: e.code.clone(),
@@ -464,82 +586,96 @@ impl<'a> Compiler {
     }
 
     /** return the peeked token tuple (token+location) result */
-    fn peek_result(&mut self) -> &TokenResult {
+    fn peek_result<'c>(&mut self, iter: &'c mut Peekable<Lexer>) -> Result<&'c Token, ErrorTuple> {
         #[cfg(feature = "dev-out")]
-        match self.iterator.peek() {
-            Some(r) => {
-                match r {
-                    Ok(t) => {
-                        println!("peek_res {}", t.0);
-                    }
-                    Err(e) => {
-                        println!("peek_res err {}", e.code);
-                    }
+        match iter.peek() {
+            Some(r) => match r {
+                Ok(t) => {
+                    println!("peek_res {}", t.0);
+                    Ok(&t.0)
                 }
-                r
-            }
-            None => &Ok((Token::EOF, (0, 0))),
+                Err(e) => {
+                    println!("peek_res err {}", e.code);
+                    Err(e.clone())
+                }
+            },
+            None => Ok(&Token::EOF),
         }
         #[cfg(not(feature = "dev-out"))]
-        match self.iterator.peek() {
-            Some(r) => r,
-            None => &Ok((Token::EOF, (0, 0))),
+        {
+            // let t = iter.peek();
+            match iter.peek() {
+                Some(r) => match r {
+                    Ok(o) => Ok(&o.0),
+                    Err(e) => Err(e.clone()),
+                },
+                None => Ok(&Token::EOF),
+            }
         }
     }
 
     /** emit op code at token location */
-    fn emit(&mut self, op: OpCode, location: Location) {
+    fn emit<'a, 'c: 'a>(&mut self, f: FnRef, op: OpCode, location: TokenCell) {
         #[cfg(feature = "dev-out")]
         {
             println!("emit ... {}", op);
             // self.chunk.print_chunk();
         }
-        self.write_code(op, location);
+        self.write_code(f, op, location);
     }
 
     /** emit op code at current token location */
-    fn emit_at(&mut self, op: OpCode) {
+    fn emit_at(&self, f: FnRef, op: OpCode) {
         #[cfg(feature = "dev-out")]
         {
             println!("emit_at ...{}", op);
             // self.chunk.print_chunk()
         }
-        self.write_code(op, self.current_location);
+        self.write_code(f, op, self.current_location);
+    }
+
+    /** emit op code at current token location */
+    fn drop_last_if(&mut self, f: FnRef, op: &OpCode) {
+        let b = f.chunk.drop_last_if(op);
+        #[cfg(feature = "dev-out")]
+        {
+            println!("{} drop_last_if {}? {}!", "DROP".on_red(), op, b);
+            // self.chunk.print_chunk()
+        }
     }
 
     /** emit op code at current token location and return op index */
-    fn emit_index(&mut self, op: OpCode) -> usize {
+    fn emit_index(&mut self, f: FnRef, op: OpCode) -> usize {
         #[cfg(feature = "dev-out")]
         {
             println!("emit_index ... {}", op);
             // frame.chunk.print_chunk()
         }
-        self.write_code(op, self.current_location)
+        self.write_code(f, op, self.current_location)
     }
 
     /** patch the op code that specified index */
-    fn patch(&mut self, offset: usize) -> Catch {
-        let jump = self.get_chunk().code.len() - offset - 1;
+    fn patch(&mut self, f: FnRef, offset: usize) -> Catch {
+        let jump = self.get_chunk_size(f) - offset - 1;
         if jump > u16::MAX as usize {
-            self.error_at(SiltError::TooManyOperations);
+            return Err(self.error_at(SiltError::TooManyOperations));
         }
         // self.chunk.code[offset] = ((jump >> 8) & 0xff) as u8;
         // self.chunk.code[offset + 1] = (jump & 0xff) as u8;
-        match self.get_chunk().code[offset] {
+        let c = self.get_code(f, offset);
+        match c {
             OpCode::GOTO_IF_FALSE(_) => {
-                self.get_chunk_mut().code[offset] = OpCode::GOTO_IF_FALSE(jump as u16)
+                self.change_code(f, offset, OpCode::GOTO_IF_FALSE(jump as u16));
             }
             OpCode::GOTO_IF_TRUE(_) => {
-                self.get_chunk_mut().code[offset] = OpCode::GOTO_IF_TRUE(jump as u16)
+                self.change_code(f, offset, OpCode::GOTO_IF_TRUE(jump as u16));
             }
             OpCode::POP_AND_GOTO_IF_FALSE(_) => {
-                self.get_chunk_mut().code[offset] = OpCode::POP_AND_GOTO_IF_FALSE(jump as u16)
+                self.change_code(f, offset, OpCode::POP_AND_GOTO_IF_FALSE(jump as u16));
             }
-            OpCode::FORWARD(_) => self.get_chunk_mut().code[offset] = OpCode::FORWARD(jump as u16),
-            OpCode::REWIND(_) => self.get_chunk_mut().code[offset] = OpCode::REWIND(jump as u16),
-            OpCode::FOR_NUMERIC(_) => {
-                self.get_chunk_mut().code[offset] = OpCode::FOR_NUMERIC(jump as u16)
-            }
+            OpCode::FORWARD(_) => self.change_code(f, offset, OpCode::FORWARD(jump as u16)),
+            OpCode::REWIND(_) => self.change_code(f, offset, OpCode::REWIND(jump as u16)),
+            OpCode::FOR_NUMERIC(_) => self.change_code(f, offset, OpCode::FOR_NUMERIC(jump as u16)),
             _ => {
                 return Err(self.error_at(SiltError::ChunkCorrupt));
             }
@@ -547,57 +683,56 @@ impl<'a> Compiler {
         Ok(())
     }
 
-    fn emit_rewind(&mut self, start: usize) {
+    fn emit_rewind(&mut self, f: FnRef, start: usize) {
         // we base the jump off of the index we'll be at one we've written the rewind op below
-        let jump = (self.get_chunk_size() + 1) - start;
+        let jump = (self.get_chunk_size(f) + 1) - start;
         if jump > u16::MAX as usize {
             self.error_at(SiltError::TooManyOperations);
         }
-        self.write_code(OpCode::REWIND(jump as u16), self.current_location);
+        self.write_code(f, OpCode::REWIND(jump as u16), self.current_location);
     }
 
-    fn set_label(&mut self, label: String) {
-        self.labels.insert(label, self.get_chunk_size());
+    fn set_label(&mut self, f: FnRef, label: String) {
+        self.labels.insert(label, self.get_chunk_size(f));
     }
 
-    fn identifer_constant(&mut self, ident: Box<String>) -> u8 {
-        self.write_identifier(ident) as u8
+    fn identifer_constant(&mut self, f: FnRef, ident: String) -> u8 {
+        self.write_identifier(f, ident) as u8
     }
 
     /** write to constant table  */
-    fn write_constant(&mut self, value: Value) -> u8 {
-        self.body.chunk.write_constant(value) as u8
+    fn write_constant<'a, 'c: 'a>(&mut self, f: FnRef<'a, 'c>, value: Value<'c>) -> u8 {
+        f.chunk.write_constant(value) as u8
     }
 
     /** write to constant table and emit the op code at location */
-    fn constant(&mut self, value: Value, location: Location) {
-        let constant = self.write_constant(value);
-        self.emit(OpCode::CONSTANT { constant }, location);
+    fn constant<'a, 'c: 'a>(&mut self, f: FnRef<'_, 'c>, value: Value<'c>, location: TokenCell) {
+        let constant = self.write_constant(f, value);
+        self.emit(f, OpCode::CONSTANT { constant }, location);
     }
 
     /** write to constant table and emit the op code at the current location */
-    fn constant_at(&mut self, value: Value) {
-        self.constant(value, self.current_location);
+    fn constant_at<'a, 'c: 'a>(&mut self, f: FnRef<'_, 'c>, value: Value<'c>) {
+        self.constant(f, value, self.current_location);
     }
 
     /** write identifier to constant table, remove duplicates, and emit code */
-    fn emit_identifer_constant_at(&mut self, ident: Box<String>) {
-        let constant = self.write_identifier(ident) as u8;
-        self.emit(OpCode::CONSTANT { constant }, self.current_location);
+    fn emit_identifer_constant_at<'a, 'c: 'a>(&mut self, f: FnRef, ident: String) {
+        let constant = self.write_identifier(f, ident) as u8;
+        self.emit(f, OpCode::CONSTANT { constant }, self.current_location);
     }
 
-    fn is_end(&mut self) -> bool {
-        match self.iterator.peek() {
+    fn is_end(&mut self, iter: &mut Peekable<Lexer>) -> bool {
+        match iter.peek() {
             None => true,
             _ => false,
         }
     }
 
     /** replaces the conents of func with the compilers body */
-    fn swap_function(&mut self, mut func: &mut FunctionObject) {
-        swap(&mut self.body, func);
-        // func
-    }
+    // fn swap_function(&mut self, func: &mut FunctionObject<'chnk>) {
+    //     swap(&mut self.body, func);
+    // }
 
     fn get_rule(token: &Token) -> ParseRule {
         // ParseRule {
@@ -645,10 +780,15 @@ impl<'a> Compiler {
         }
     }
 
-    pub fn compile(&mut self, source: String) -> FunctionObject {
+    fn compile<'c>(
+        &mut self,
+        mc: &Mutation<'c>,
+        name: Option<String>,
+        source: &str,
+    ) -> FunctionObject<'c> {
         #[cfg(feature = "dev-out")]
         {
-            let lexer = Lexer::new(source.to_owned());
+            let lexer = Lexer::new(source);
             lexer.for_each(|r| match r {
                 Ok(t) => {
                     println!("token {}", t.0);
@@ -656,10 +796,12 @@ impl<'a> Compiler {
                 Err(e) => println!("err {}", e),
             });
         }
-        let lexer = Lexer::new(source.to_owned());
-        self.iterator = lexer.peekable();
-        while !self.is_end() {
-            match declaration(self) {
+        let lexer = Lexer::new(source);
+        let mut body = FunctionObject::new(name, true);
+        let mut iter = lexer.peekable();
+
+        while iter.peek().is_some() {
+            match declaration(self, mc, &mut body, &mut iter) {
                 Ok(()) => {}
                 Err(e) => {
                     self.push_error(e);
@@ -668,8 +810,189 @@ impl<'a> Compiler {
             }
         }
 
-        self.emit(OpCode::RETURN, (0, 0));
-        take(&mut self.body)
+        // Handle implicit returns for multiple expressions
+        if self.language_flags.implicit_returns && self.last_was_expression {
+            // If we have multiple expressions, keep them all on the stack
+            // Otherwise, drop the last POP to keep the single expression
+            if self.expression_count <= 1 {
+                self.drop_last_if(&mut body, &OpCode::POP);
+            }
+        } else {
+            self.drop_last_if(&mut body, &OpCode::POP);
+        }
+        // self.expression_count we should convert to tuple right? piping to CLI ???
+        self.emit(&mut body, OpCode::RETURN(0), (0, 0));
+        if !self.valid {
+            body.chunk.invalidate();
+        }
+        body
+    }
+
+    pub fn try_compile<'c>(
+        &mut self,
+        mc: &Mutation<'c>,
+        name: Option<String>,
+        source: &str,
+    ) -> Result<FunctionObject<'c>, Vec<ErrorTuple>> {
+        let obj = self.compile(mc, name, source);
+        if obj.chunk.is_valid() {
+            Ok(obj)
+        } else {
+            Err(self.pop_errors())
+        }
+    }
+
+    pub fn lsp(&mut self, source: &str, format: bool) -> LanguageServerOutput {
+        let mut map = Vec::new();
+        let mut indented = String::new();
+        let mut indent_level = 0;
+        let mut at_line_start = true;
+        let mut last_pos = 0;
+        let mut offset: isize = 0;
+
+        let lexer = Lexer::new(source);
+        let mut iter = lexer.peekable();
+
+        while let Some(token_result) = iter.next() {
+            match token_result {
+                Ok((
+                    token,
+                    TokenTriple {
+                        line,
+                        col,
+                        index,
+                        length,
+                    },
+                )) => {
+                    let start = index;
+                    // Add any whitespace/newlines between tokens to maintain formatting
+                    if start > last_pos && format {
+                        let between = &source[last_pos..start];
+                        // indented.push_str(between);
+
+                        devout!(">>{}<<", between);
+                        // Track if we're at the start of a new line
+                        if between.contains('\n') {
+                            let squash: String = between
+                                .chars()
+                                .filter(|c| !c.is_whitespace() || *c == '\n')
+                                .collect();
+                            offset -= (between.len() as isize) - squash.len() as isize;
+                            indented.push_str(&squash);
+                            at_line_start = true;
+                        } else {
+                            indented.push_str(between);
+                        }
+                    }
+
+                    // Add indentation at the start of new lines
+                    if format && at_line_start && !matches!(token, Token::EOF) {
+                        // Adjust indent level based on token
+                        match &token {
+                            Token::End | Token::Else | Token::ElseIf => {
+                                if indent_level > 0 {
+                                    indent_level -= 1;
+                                }
+                            }
+                            _ => {}
+                        }
+
+                        for _ in 0..indent_level {
+                            indented.push('\t');
+                        }
+                        at_line_start = false;
+                    }
+
+                    let token_type = match &token {
+                        // Keywords (type 1)
+                        Token::Local
+                        | Token::Global
+                        | Token::Function
+                        | Token::If
+                        | Token::Then
+                        | Token::Else
+                        | Token::ElseIf
+                        | Token::End
+                        | Token::While
+                        | Token::Do
+                        | Token::For
+                        | Token::Return
+                        | Token::Print
+                        | Token::Goto => 1,
+
+                        // Ops (type 2)
+                        Token::Op(_) | Token::Assign => 2,
+
+                        // Values (type 3) - numbers
+                        Token::Integer(_) | Token::Number(_) => 3,
+
+                        // Values (type 4) - bool
+                        Token::True | Token::False => 4,
+
+                        // Values (type 5) - nil
+                        Token::Nil => 5,
+
+                        // Strings (type 6)
+                        Token::StringLiteral(_) => 6,
+                        // Comment (type 7)
+                        Token::Comment => 7,
+
+                        // Everything else that's not a comment
+                        _ => 0,
+                    };
+
+                    // Only add non-whitespace tokens to the map
+                    if !matches!(token, Token::EOF) {
+                        // println!("start len {} {}", start, length);
+                        let token_str = &source[start..start + length];
+                        println!("~{}~", token_str);
+                        if !token_str.trim().is_empty() {
+                            let i: usize = if offset < 0 {
+                                start.checked_sub(offset.wrapping_abs() as usize)
+                            } else {
+                                start.checked_add(offset as usize)
+                            }
+                            .unwrap_or(0);
+                            map.push((i, length, token_type));
+                            if format {
+                                indented.push_str(token_str);
+                            }
+                        }
+                    }
+
+                    if format {
+                        // Adjust indent level for tokens that increase nesting
+                        match &token {
+                            Token::Then | Token::Do | Token::Function => {
+                                indent_level += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    last_pos = start + length;
+                }
+                Err(_) => {
+                    // Skip error tokens but continue processing
+                    continue;
+                }
+            }
+        }
+
+        if format {
+            // Add any remaining content after the last token
+            if last_pos < source.len() {
+                indented.push_str(&source[last_pos..]);
+            }
+        } else {
+            indented = source.to_owned();
+        }
+
+        LanguageServerOutput {
+            legend: WORD_MAP,
+            map,
+            indented,
+        }
     }
 
     fn synchronize(&mut self) {
@@ -684,17 +1007,22 @@ impl<'a> Compiler {
         // }
     }
 
-    fn parse_precedence(&mut self, precedence: Precedence, skip_step: bool) -> Catch {
+    fn parse_precedence(
+        &mut self,
+        f: FnRef,
+        it: &mut Peekable<Lexer>,
+        precedence: Precedence,
+        skip_step: bool,
+    ) -> Catch {
         if !skip_step {
-            self.store();
+            self.store(it);
         }
         // self.store(); // MARK with store first it works for normal statements, but it breaks for incomplete expressions that are meant to pop off
         // Basically the integer we just saw is dropped off when we reach here because of store
         let t = self.get_current()?;
-        let loc = self.current_location;
 
         devout!("check rule for token {}", t);
-        let rule = Self::get_rule(&t);
+        let rule = Self::get_rule(t);
         // #[cfg(feature = "dev-out")]
         devout!(
             "target precedence:  {}, current precedence: {}",
@@ -703,13 +1031,13 @@ impl<'a> Compiler {
         );
         // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
         let can_assign = precedence <= Precedence::Assignment;
-        (rule.prefix)(self, can_assign)?;
+        (rule.prefix)(self, f, it, can_assign)?;
 
         loop {
-            let c = self.peek_result();
+            let c = self.peek_result(it);
             let rule = match c {
-                Ok((Token::EOF, _)) => break,
-                Ok((t, _)) => Self::get_rule(t),
+                Ok(&Token::EOF) => break,
+                Ok(t) => Self::get_rule(t),
                 Err(e) => {
                     return Err(e.clone());
                 }
@@ -722,19 +1050,19 @@ impl<'a> Compiler {
             if precedence > rule.precedence {
                 break;
             }
-            self.store();
-            (rule.infix)(self, false)?;
+            self.store(it);
+            (rule.infix)(self, f, it, false)?;
         }
 
         // TODO test this with `local b="b" sprint b`
         if can_assign
-            && if let Token::Assign = self.peek()? {
+            && if let Token::Assign = self.peek(it)? {
                 true
             } else {
                 false
             }
         {
-            let res = self.peek()?.clone();
+            let res = self.peek(it)?.clone();
             return Err(self.error_at(SiltError::InvalidAssignment(res)));
         }
 
@@ -745,42 +1073,61 @@ impl<'a> Compiler {
     }
 }
 
-fn declaration(this: &mut Compiler) -> Catch {
+fn declaration<'a, 'c: 'a>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'a, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
     devout!("----------------------------");
-    devnote!(this "declaration");
+    devnote!(this it "declaration");
+    let t = this.peek(it)?;
+    if t == &Token::Comment {
+        this.eat(it);
+        return Ok(());
+    }
 
-    let t = this.peek()?;
+    // Reset expression tracking for each declaration
+    this.last_was_expression = false;
+
     match t {
-        Token::Local => declaration_keyword(this, true, false)?,
-        Token::Global => declaration_keyword(this, false, false)?,
+        Token::Local => declaration_keyword(this, mc, f, it, true, false)?,
+        Token::Global => declaration_keyword(this, mc, f, it, false, false)?,
         Token::Function => {
-            this.eat();
-            define_function(this, true, None)?;
+            this.eat(it);
+            define_function(this, mc, f, it, true, None)?;
         }
-        _ => statement(this)?,
+        _ => statement(this, mc, f, it)?,
     }
     Ok(())
 }
 
-fn declaration_keyword(this: &mut Compiler, local: bool, already_function: bool) -> Catch {
-    devnote!(this "declaration_keyword");
-    this.eat();
-    let (res, location) = this.pop();
+fn declaration_keyword<'a, 'c: 'a>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'a, 'c>,
+    it: &mut Peekable<Lexer>,
+    local: bool,
+    already_function: bool,
+) -> Catch {
+    devnote!(this it "declaration_keyword");
+    this.eat(it);
+    let (res, location) = this.pop(it);
     match res? {
         Token::Identifier(ident) => {
             if this.scope_depth > 0 && local {
                 //local
                 //TODO should we warn? redefine_behavior(this,ident)?
-                add_local(this, ident)?;
-                typing(this, None)?;
+                add_local(this, it, ident)?;
+                typing(this, f, it, None)?;
             } else {
-                let ident = this.identifer_constant(ident); //(self.global.to_register(&ident), 0);
-                typing(this, Some((ident, location)))?;
+                let ident = this.identifer_constant(f, ident);
+                typing(this, f, it, Some((ident, location)))?;
             }
         }
         Token::Function => {
             if !already_function {
-                define_function(this, local, None)?;
+                define_function(this, mc, f, it, local, None)?;
             } else {
                 return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
                 // Statement::InvalidStatement
@@ -795,20 +1142,22 @@ fn declaration_keyword(this: &mut Compiler, local: bool, already_function: bool)
     Ok(())
 }
 
-fn declaration_scope(
+fn declaration_scope<'a, 'c: 'a>(
     this: &mut Compiler,
-    ident: Box<String>,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    ident: String,
     local: bool,
-    location: Location,
+    location: TokenCell,
 ) -> Catch {
     if this.scope_depth > 0 && local {
         //local
         //TODO should we warn? redefine_behavior(this,ident)?
-        add_local(this, ident)?;
-        typing(this, None)?;
+        add_local(this, it, ident)?;
+        typing(this, f, it, None)?;
     } else {
-        let ident = this.identifer_constant(ident);
-        typing(this, Some((ident, location)))?;
+        let ident = this.identifer_constant(f, ident);
+        typing(this, f, it, Some((ident, location)))?;
     }
     Ok(())
 }
@@ -829,17 +1178,25 @@ fn declaration_scope(
 // }
 
 /** Store location as a local to resolve getters with, the index pointing to the stack */
-fn add_local(this: &mut Compiler, ident: Box<String>) -> Result<u8, ErrorTuple> {
-    _add_local(this, Some(ident))
+fn add_local(
+    this: &mut Compiler,
+    it: &mut Peekable<Lexer>,
+    ident: String,
+) -> Result<u8, ErrorTuple> {
+    _add_local(this, it, Some(ident))
 }
 
 /** Store location on the stack with a placeholder that cannot be resolved as a variable, only reserves for operations */
-fn add_local_placeholder(this: &mut Compiler) -> Result<u8, ErrorTuple> {
-    _add_local(this, None)
+fn add_local_placeholder(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Result<u8, ErrorTuple> {
+    _add_local(this, it, None)
 }
 
-fn _add_local(this: &mut Compiler, ident: Option<Box<String>>) -> Result<u8, ErrorTuple> {
-    devnote!(this "add_local");
+fn _add_local(
+    this: &mut Compiler,
+    it: &mut Peekable<Lexer>,
+    ident: Option<String>,
+) -> Result<u8, ErrorTuple> {
+    devnote!(this it "add_local");
     // let offset = if this.functional_depth > 0 {
     //     this.local_functional_offset[this.functional_depth - 1]
     // } else {
@@ -871,8 +1228,12 @@ fn _add_local(this: &mut Compiler, ident: Option<Box<String>>) -> Result<u8, Err
 //     this.locals.pop();
 // }
 
-fn resolve_local(this: &mut Compiler, ident: &Box<String>) -> Option<(u8, bool)> {
-    devnote!(this "resolve_local");
+fn resolve_local(
+    this: &mut Compiler,
+    it: &mut Peekable<Lexer>,
+    ident: &String,
+) -> Option<(u8, bool)> {
+    devnote!(this it "resolve_local");
     for (i, l) in this.locals.iter_mut().enumerate().rev() {
         if let Some(local_ident) = &l.ident {
             if local_ident == ident {
@@ -966,12 +1327,17 @@ fn resolve_upvalue(
 //     Ok(None)
 // }
 
-fn typing(this: &mut Compiler, ident_tuple: Option<(Ident, Location)>) -> Catch {
-    devnote!(this "typing");
-    if let Token::Colon = this.peek()? {
+fn typing<'a, 'c: 'a>(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    ident_tuple: Option<(Ident, TokenCell)>,
+) -> Catch {
+    devnote!(this it "typing");
+    if let Token::Colon = this.peek(it)? {
         // typing or self calling
-        this.eat();
-        this.store();
+        this.eat(it);
+        this.store(it);
         let t = this.get_current()?;
         if let Token::ColonIdentifier(target) = t {
             // method or type name
@@ -984,25 +1350,30 @@ fn typing(this: &mut Compiler, ident_tuple: Option<(Ident, Location)>) -> Catch 
             //     // return self.assign(self.peek(), ident);
             //     Statement::InvalidStatement
             // }
-            define_declaration(this, ident_tuple)?;
+            define_declaration(this, f, it, ident_tuple)?;
         } else {
             todo!("typing");
             // self.error(SiltError::InvalidColonPlacement);
             // Statement::InvalidStatement
         }
     } else {
-        define_declaration(this, ident_tuple)?;
+        define_declaration(this, f, it, ident_tuple)?;
     }
     Ok(())
 }
 
-fn define_declaration(this: &mut Compiler, ident_tuple: Option<(Ident, Location)>) -> Catch {
-    devnote!(this "define_declaration");
-    this.store();
+fn define_declaration<'a, 'c: 'a>(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    ident_tuple: Option<(Ident, TokenCell)>,
+) -> Catch {
+    devnote!(this it "define_declaration");
+    this.store(it);
     let t = this.get_current()?;
     match t {
         Token::Assign => {
-            expression(this, false)?;
+            expression(this, f, it, false)?;
         }
         // we can't increment what doesn't exist yet, like what are you even doing?
         Token::AddAssign
@@ -1015,88 +1386,118 @@ fn define_declaration(this: &mut Compiler, ident_tuple: Option<(Ident, Location)
             // Statement::InvalidStatement
             todo!()
         }
-        _ => this.emit_at(OpCode::NIL), // TODO are more then just declarations hitting this syntactic sugar?
+        _ => this.emit_at(f, OpCode::NIL), // TODO are more then just declarations hitting this syntactic sugar?
     }
-    define_variable(this, ident_tuple)?;
+    define_variable(this, it, f, ident_tuple)?;
     Ok(())
 }
 
-fn define_variable(this: &mut Compiler, ident: Option<(Ident, Location)>) -> Catch {
-    devnote!(this "define_variable");
+fn define_variable<'a, 'c: 'a>(
+    this: &mut Compiler,
+    it: &mut Peekable<Lexer>,
+    f: FnRef,
+    ident: Option<(Ident, TokenCell)>,
+) -> Catch {
+    devnote!(this it "define_variable");
 
     if let Some(ident) = ident {
-        this.emit(OpCode::DEFINE_GLOBAL { constant: ident.0 }, ident.1);
+        this.emit(f, OpCode::DEFINE_GLOBAL { constant: ident.0 }, ident.1);
     }
     Ok(())
 }
 
-fn define_function(this: &mut Compiler, local: bool, pre_ident: Option<usize>) -> Catch {
-    let (ident, location) = if let &Token::Identifier(_) = this.peek()? {
-        let (res, location) = this.pop();
+fn define_function<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    local: bool,
+    pre_ident: Option<usize>,
+) -> Catch {
+    let (ident, location) = if let &Token::Identifier(_) = this.peek(it)? {
+        let (res, location) = this.pop(it);
         if let Token::Identifier(ident) = res? {
             (ident, location)
         } else {
             unreachable!()
         }
     } else {
-        (Box::new("anonymous".to_string()), this.current_location)
+        ("anonymous".to_string(), this.current_location)
     };
 
-    let ident_clone = *ident.clone();
+    let ident_clone = ident.clone();
     let global_ident = if this.scope_depth > 0 && local {
         //local
         //TODO should we warn? redefine_behavior(this,ident)?
-        add_local(this, ident)?;
+        add_local(this, it, ident)?;
         None
     } else {
-        let ident = Some((this.identifer_constant(ident), location));
-        ident
+        Some((this.identifer_constant(f, ident), location))
     };
 
-    build_function(this, ident_clone, global_ident, false, false)?;
+    build_function(this, mc, f, it, ident_clone, global_ident, false)?;
 
     Ok(())
 }
 
 /** builds function, implicit return specifices whether a nil is return or the last value popped */
-fn build_function(
+fn build_function<'c>(
     this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
     ident: String,
-    global_ident: Option<(u8, Location)>,
+    global_ident: Option<(u8, TokenCell)>,
     is_script: bool,
-    implicit_return: bool,
 ) -> Catch {
     // TODO this function could be called called rercursivelly due to the recursive decent nature of the parser, we should add a check to make sure we don't overflow the stack
-    devnote!(this "build_function");
-    let mut sidelined_func = FunctionObject::new(Some(ident), is_script);
-    this.swap_function(&mut sidelined_func);
+    devnote!(this it "build_function");
+    let mut f2 = FunctionObject::new(Some(ident), is_script);
+    let fr2 = &mut f2;
+    // this.swap_function(&mut sidelined_func);
+    // swap(f, &mut sidelined_func);
     begin_scope(this);
     begin_functional_scope(this);
-    expect_token!(this OpenParen);
+    expect_token!(this it OpenParen);
     let mut arity = 0;
-    if let Token::Identifier(_) = this.peek()? {
+    if let Token::Identifier(_) = this.peek(it)? {
         arity += 1;
-        build_param(this)?;
+        build_param(this, it)?;
 
-        while let Token::Comma = this.peek()? {
-            this.eat();
+        while let Token::Comma = this.peek(it)? {
+            this.eat(it);
             arity += 1;
             if arity > 255 {
                 // TODO we should use an arity value on the function object but let's make it only exist on compile time
                 return Err(this.error_at(SiltError::TooManyParameters));
             }
-            build_param(this)?;
+            build_param(this, it)?;
         }
     }
 
-    block(this)?;
-    if let &OpCode::RETURN = this.read_last_code() {
+    // this.override_pop=true; // the function declare is inside our scope and it would trigger a pop
+    block(this, mc, fr2, it)?;
+
+    if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() { //read_last_code
     } else {
+        this.drop_last_if(fr2, &OpCode::POP);
+        // println!("impli {}",implicit_return);
         // TODO if last was semicolon we also push a nil
-        if !implicit_return {
-            this.emit_at(OpCode::NIL);
+        // Check if implicit returns are enabled and last statement was an expression
+        if this.language_flags.implicit_returns && this.last_was_expression {
+            // Don't emit NIL, the last expression value(s) are already on the stack
+            // If we have multiple expressions, they're all on the stack for multiple returns
+        } else {
+            this.emit_at(fr2, OpCode::NIL);
         }
-        this.emit_at(OpCode::RETURN);
+        print_var_stack(&this.var_stack);
+        devout!(
+            "{} {}",
+            "=============================== return is".purple(),
+            this.expression_count
+        );
+        this.emit_at(fr2, OpCode::RETURN(this.expression_count));
+        this.expression_count = 0;
     }
 
     // TODO why do we need to eat again? This prevents an expression_statement of "End" being called but block should have eaten it?
@@ -1104,39 +1505,43 @@ fn build_function(
     //     this.eat();
     // }
 
-    end_scope(this, true);
+    end_scope(this, fr2, true);
     let upvals = end_functional_scope(this);
     // When we're done compiling the function object we drop the current body function back in and push the compiled func as a constant within that body
-    this.swap_function(&mut sidelined_func);
-    sidelined_func.upvalue_count = upvals.len() as u8;
-    let func_value = Value::Function(Rc::new(sidelined_func));
+    // this.swap_function(&mut sidelined_func);
+    // swap(f, &mut sidelined_func);
+    f2.upvalue_count = upvals.len() as u8;
+    let func_value = Value::Function(Gc::new(mc, f2));
     if true {
         // need closure
-        let constant = this.body.chunk.write_constant(func_value) as u8;
-        this.emit_at(OpCode::CLOSURE { constant });
+        let constant = f.chunk.write_constant(func_value) as u8;
+        this.emit_at(f, OpCode::CLOSURE { constant });
         // emit upvalues
 
         for val in upvals.iter() {
             // TODO is it worth specifying difference between first function enclosure from higher functional enclosure?
-            this.emit_at(OpCode::REGISTER_UPVALUE {
-                index: val.ident,
-                neighboring: val.neighboring,
-            });
+            this.emit_at(
+                f,
+                OpCode::REGISTER_UPVALUE {
+                    index: val.ident,
+                    neighboring: val.neighboring,
+                },
+            );
         }
     } else {
         // no closure needed
-        this.constant_at(func_value);
+        // this.constant_at(f, func_value);
     }
-    define_variable(this, global_ident)?;
+    define_variable(this, it, f, global_ident)?;
 
     Ok(())
 }
 
-fn build_param(this: &mut Compiler) -> Catch {
-    let (res, _) = this.pop();
+fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
+    let (res, _) = this.pop(it);
     match res? {
         Token::Identifier(ident) => {
-            add_local(this, ident)?;
+            add_local(this, it, ident)?;
         }
         _ => {
             return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
@@ -1145,39 +1550,56 @@ fn build_param(this: &mut Compiler) -> Catch {
     Ok(())
 }
 
-fn statement(this: &mut Compiler) -> Catch {
-    devnote!(this "statement");
-    match this.peek()? {
-        Token::Print => print(this)?,
-        Token::If => if_statement(this)?,
+fn statement<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    devnote!(this it "statement");
+
+    // Most statements are not expressions, so reset the flag
+    this.last_was_expression = false;
+    this.expression_count = 1;
+    // we can now set multivars again, x,y=...
+    this.can_multivar_set=true;
+
+    match this.peek(it)? {
+        Token::Print => print(this, f, it)?,
+        Token::If => if_statement(this, mc, f, it)?,
         Token::Do => {
-            this.eat();
+            this.eat(it);
             begin_scope(this);
-            block(this)?;
-            end_scope(this, false);
+            block(this, mc, f, it)?;
+            end_scope(this, f, false);
         }
-        Token::While => while_statement(this)?,
-        Token::For => for_statement(this)?,
-        Token::Return => return_statement(this)?,
+        Token::While => while_statement(this, mc, f, it)?,
+        Token::For => for_statement(this, mc, f, it)?,
+        Token::Return => return_statement(this, f, it)?,
         // Token::OpenBrace => block(this),
-        Token::ColonColon => set_goto_label(this)?,
-        Token::Goto => goto_statement(this)?,
+        Token::ColonColon => set_goto_label(this, f, it)?,
+        Token::Goto => goto_statement(this, f, it)?,
         Token::SemiColon => {
-            this.eat();
+            this.eat(it);
             // TODO ???
         }
         // Token::End => {
         //     // this.eat();
         //     // TODO ???
         // }
-        _ => expression_statement(this)?,
+        _ => expression_statement(this, f, it)?, // This will set last_was_expression = true
     }
     Ok(())
 }
 
-fn block(this: &mut Compiler) -> Catch {
-    devnote!(this "block");
-    build_block_until_then_eat!(this, End);
+fn block<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    devnote!(this it "block");
+    build_block_until_then_eat!(this, mc, f, it, End);
 
     Ok(())
 }
@@ -1199,7 +1621,7 @@ fn begin_functional_scope(this: &mut Compiler) {
 }
 
 /** raise scope depth and dump lowest locals off the imaginary stack */
-fn end_scope(this: &mut Compiler, skip_code: bool) {
+fn end_scope(this: &mut Compiler, f: FnRef, skip_code: bool) {
     this.scope_depth -= 1;
 
     let mut last_was_pop = true;
@@ -1236,9 +1658,9 @@ fn end_scope(this: &mut Compiler, skip_code: bool) {
     // index 0 is always OP_POPS but could be count of 0 if the first local is captured. Otherwise we can safely stagger even as pop, odds as close
     v.iter().enumerate().for_each(|(i, c)| {
         if i % 2 == 0 {
-            this.emit_at(OpCode::POPS(*c));
+            this.emit_at(f, OpCode::POPS(*c));
         } else {
-            this.emit_at(OpCode::CLOSE_UPVALUES(*c));
+            this.emit_at(f, OpCode::CLOSE_UPVALUES(*c));
         }
     });
 }
@@ -1255,46 +1677,56 @@ fn end_functional_scope(this: &mut Compiler) -> Vec<UpLocal> {
     this.up_values.pop().unwrap()
 }
 
-fn if_statement(this: &mut Compiler) -> Catch {
-    devnote!(this "if_statement");
-    this.eat();
-    expression(this, false)?;
-    expect_token!(this Then);
-    let skip_if = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
-    scope_and_block_until!(this, End | Else | ElseIf);
+fn if_statement<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    devnote!(this it "if_statement");
+    this.eat(it);
+    expression(this, f, it, false)?;
+    expect_token!(this it Then);
+    let skip_if = this.emit_index(f, OpCode::POP_AND_GOTO_IF_FALSE(0));
+    scope_and_block_until!(this, mc, f, it, End | Else | ElseIf);
     // this.emit_at(OpCode::POP); // pop the if compare again as we skipped the pop from before
-    match this.peek()? {
+    match this.peek(it)? {
         Token::Else => {
-            this.eat();
-            let skip_else = this.emit_index(OpCode::FORWARD(0));
-            this.patch(skip_if)?; // patch to fo AFTER the forward so we actually run the else block
-            scope_and_block_until!(this, End);
-            this.patch(skip_else)?;
-            expect_token!(this End);
+            this.eat(it);
+            let skip_else = this.emit_index(f, OpCode::FORWARD(0));
+            this.patch(f, skip_if)?; // patch to fo AFTER the forward so we actually run the else block
+            scope_and_block_until!(this, mc, f, it, End);
+            this.patch(f, skip_else)?;
+            expect_token!(this it End);
         }
         Token::ElseIf => {
-            this.eat();
+            this.eat(it);
             // this.emit_at(OpCode::POP);
-            this.patch(skip_if)?;
-            if_statement(this)?;
+            this.patch(f, skip_if)?;
+            if_statement(this, mc, f, it)?;
         }
         _ => {
-            this.patch(skip_if)?;
+            this.patch(f, skip_if)?;
         }
     }
     Ok(())
 }
 
-fn while_statement(this: &mut Compiler) -> Catch {
-    devnote!(this "while_statement");
-    this.eat();
-    let loop_start = this.get_chunk_size();
-    expression(this, false)?;
-    expect_token!(this Do);
-    let exit_jump = this.emit_index(OpCode::POP_AND_GOTO_IF_FALSE(0));
-    build_block_until_then_eat!(this, End);
-    this.emit_rewind(loop_start);
-    this.patch(exit_jump)?;
+fn while_statement<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    devnote!(this it "while_statement");
+    this.eat(it);
+    let loop_start = this.get_chunk_size(f);
+    expression(this, f, it, false)?;
+    expect_token!(this it Do);
+    let exit_jump = this.emit_index(f, OpCode::POP_AND_GOTO_IF_FALSE(0));
+    build_block_until_then_eat!(this, mc, f, it, End);
+    this.emit_rewind(f, loop_start);
+    this.patch(f, exit_jump)?;
     Ok(())
 }
 
@@ -1304,31 +1736,36 @@ fn while_statement(this: &mut Compiler) -> Catch {
  * At end of block increment iterator by step value and rewind
  * Re-evaluate and if iterator is greater than end value, forward to immediately after end of block
  */
-fn for_statement(this: &mut Compiler) -> Catch {
-    devnote!(this "for_statement");
-    this.eat();
-    let pair = this.pop();
+fn for_statement<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    devnote!(this it "for_statement");
+    this.eat(it);
+    let pair = this.pop(it);
     let t = pair.0?;
     if let Token::Identifier(ident) = t {
         // let offset = this.local_functional_offset[this.functional_depth - 1];
-        let iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
-        expect_token!(this Assign);
-        add_local_placeholder(this)?; // reserve end value with placeholder
-        add_local_placeholder(this)?; // reserve step value with placeholder
-        expression(this, false)?; // expression for iterator
-        expect_token!(this Comma);
-        expression(this, false)?; // expression for end value
+        let iterator = add_local_placeholder(this, it)?; // reserve iterator with placeholder
+        expect_token!(this it Assign);
+        add_local_placeholder(this, it)?; // reserve end value with placeholder
+        add_local_placeholder(this, it)?; // reserve step value with placeholder
+        expression(this, f, it, false)?; // expression for iterator
+        expect_token!(this it Comma);
+        expression(this, f, it, false)?; // expression for end value
 
         // let exit_jump = this.emit_index(OpCode::GOTO_IF_FALSE(0));
         // this.emit_at(OpCode::POP);
         // either we have an expression for the step or we set it to 1i
-        if let Token::Comma = this.peek()? {
-            this.eat();
-            expression(this, false)?;
+        if let Token::Comma = this.peek(it)? {
+            this.eat(it);
+            expression(this, f, it, false)?;
         } else {
-            this.constant_at(Value::Integer(1))
+            this.constant_at(f, Value::Integer(1))
         };
-        let for_start = this.emit_index(OpCode::FOR_NUMERIC(0));
+        let for_start = this.emit_index(f, OpCode::FOR_NUMERIC(0));
         // this.emit_at(OpCode::GET_LOCAL { index: iterator });
         // let loop_start = this.get_chunk_size();
         // compare iterator to end value
@@ -1336,16 +1773,16 @@ fn for_statement(this: &mut Compiler) -> Catch {
         // this.emit_at(OpCode::EQUAL);
         // let exit_jump = this.emit_index(OpCode::GOTO_IF_TRUE(0));
         // this.emit_at(OpCode::POP);
-        expect_token!(this Do);
+        expect_token!(this it Do);
         begin_scope(this);
-        add_local(this, ident)?; // we add the local inside the scope which was actually added on by the for opcode already
-        build_block_until_then_eat!(this, End);
-        end_scope(this, false);
+        add_local(this, it, ident)?; // we add the local inside the scope which was actually added on by the for opcode already
+        build_block_until_then_eat!(this, mc, f, it, End);
+        end_scope(this, f, false);
 
-        this.emit_at(OpCode::INCREMENT { index: iterator });
-        this.emit_rewind(for_start);
-        this.patch(for_start)?;
-        this.force_stack_pop(3);
+        this.emit_at(f, OpCode::INCREMENT { index: iterator });
+        this.emit_rewind(f, for_start);
+        this.patch(f, for_start)?;
+        this.force_stack_pop(f, 3);
         Ok(())
     } else {
         Err(this.error_at(SiltError::ExpectedLocalIdentifier))
@@ -1358,36 +1795,45 @@ fn for_statement(this: &mut Compiler) -> Catch {
  */
 fn generic_for_statement() {}
 
-fn return_statement(this: &mut Compiler) -> Catch {
-    devnote!(this "return_statement");
-    this.eat();
-    if let Token::End | Token::Else | Token::ElseIf | Token::SemiColon | Token::EOF = this.peek()? {
-        this.emit_at(OpCode::NIL);
+fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    this.can_multivar_set=false;
+    devnote!(this it "return_statement");
+    devout!("{} {}", "HERE".on_red(), this.expression_count);
+    this.eat(it);
+    if let Token::End | Token::Else | Token::ElseIf | Token::SemiColon | Token::EOF =
+        this.peek(it)?
+    {
+        this.emit_at(f, OpCode::NIL);
     } else {
-        expression(this, false)?;
+        expression(this, f, it, false)?;
+        // expression() will set this.expression_count to the number of comma-separated expressions
     }
-    this.emit_at(OpCode::RETURN);
+    this.can_multivar_set=true;
+
+    // For multiple return values, all expressions are already on the stack
+    this.emit_at(f, OpCode::RETURN(this.expression_count));
     Ok(())
 }
 
-fn set_goto_label(this: &mut Compiler) -> Catch {
-    devnote!(this "goto_label");
-    this.eat();
-    let token = this.pop().0?;
+fn set_goto_label(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    devnote!(this it "goto_label");
+    this.eat(it);
+    let token = this.pop(it).0?;
     if let Token::Identifier(ident) = token {
-        this.labels.insert(*ident, this.get_chunk_size());
+        this.labels.insert(ident, this.get_chunk_size(f));
     } else {
         return Err(this.error_at(SiltError::ExpectedLabelIdentifier));
     }
     Ok(())
 }
 
-fn goto_statement(this: &mut Compiler) -> Catch {
-    devnote!(this "goto_statement");
-    this.eat();
-    let token = this.pop().0?;
+fn goto_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    devnote!(this it "goto_statement");
+    this.eat(it);
+    let token = this.pop(it).0?;
     if let Token::Identifier(ident) = token {
-        resolve_goto(this, &*ident, this.get_chunk_size(), None)?;
+        let size = this.get_chunk_size(f);
+        resolve_goto(this, f, &*ident, size, None)?;
         // match this.labels.get(ident) {
         //     Some(i) => {
         //         let c = this.chunk.code.len();
@@ -1431,9 +1877,10 @@ fn goto_statement(this: &mut Compiler) -> Catch {
 
 fn resolve_goto(
     this: &mut Compiler,
+    f: FnRef,
     ident: &str,
     op_count: usize,
-    replace: Option<(usize, Location)>,
+    replace: Option<(usize, TokenCell)>,
 ) -> Catch {
     match this.labels.get(ident) {
         Some(i) => {
@@ -1455,10 +1902,10 @@ fn resolve_goto(
 
             match replace {
                 Some((i, _)) => {
-                    this.get_chunk_mut().code[i] = code;
+                    this.change_code(f, i, code);
                 }
                 None => {
-                    this.emit_at(code);
+                    this.emit_at(f, code);
                 }
             }
         }
@@ -1467,7 +1914,7 @@ fn resolve_goto(
                 return Err(this.error_syntax(SiltError::UndefinedLabel(ident.to_owned()), location))
             }
             None => {
-                let index = this.emit_index(OpCode::FORWARD(0));
+                let index = this.emit_index(f, OpCode::FORWARD(0));
                 this.pending_gotos
                     .push((ident.to_owned(), index, this.current_location));
             } // this.labels.insert(*ident, index);
@@ -1482,7 +1929,7 @@ fn final_resolve_goto(this: &mut Compiler) {
         .for_each(|(ident, index, location)| {});
 }
 
-fn goto_scope_skip(this: &mut Compiler) {
+fn goto_scope_skip(this: &mut Compiler, f: FnRef) {
     if this.locals.is_empty() {
         return;
     }
@@ -1495,36 +1942,78 @@ fn goto_scope_skip(this: &mut Compiler) {
             i += 1;
         });
 
-    this.emit_at(OpCode::POPS(i));
+    this.emit_at(f, OpCode::POPS(i));
 }
 
-fn expression(this: &mut Compiler, skip_step: bool) -> Catch {
-    devnote!(this "expression");
-    this.parse_precedence(Precedence::Assignment, skip_step)?;
+fn expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, skip_step: bool) -> Catch {
+    devnote!(this it "expression");
+    this.parse_precedence(f, it, Precedence::Assignment, skip_step)?;
+
+    while let Token::Comma = this.peek(it)? {
+        add!(this);
+        devout!("{}", "COMMAS".on_red());
+        this.eat(it);
+        devout!("===================exp count {}", this.expression_count);
+        this.parse_precedence(f, it, Precedence::Assignment, false)?;
+    }
+
     Ok(())
 }
 
-fn next_expression(this: &mut Compiler) -> Catch {
-    devnote!(this "next_expression");
-    this.eat();
-    expression(this, false)?;
+/// Walk through expression precedence but stop at commas, used by arguments, and table building
+fn expression_single(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    skip_step: bool,
+) -> Catch {
+    devnote!(this it "expression_single");
+    this.parse_precedence(f, it, Precedence::Assignment, skip_step)?;
     Ok(())
 }
 
-fn expression_statement(this: &mut Compiler) -> Catch {
-    devnote!(this "expression_statement");
-    expression(this, false)?;
+fn next_expression(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    devnote!(this it "next_expression");
+    this.eat(it);
+    expression(this, f, it, false)?;
+    Ok(())
+}
+
+fn expression_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    devnote!(this it "expression_statement");
+    devout!(
+        "{} {}",
+        "At (expression statement start)".on_cyan(),
+        this.expression_count
+    );
+
+    expression(this, f, it, false)?;
+
+    // Mark that the last statement was an expression for implicit returns
+    this.last_was_expression = true;
+
     if this.override_pop {
         this.override_pop = false;
     } else {
-        this.emit_at(OpCode::POP);
+        // For implicit returns, we might want to keep the value(s) on the stack
+        // if this is the last statement in a function, but we can't know that here
+        // The function compilation will handle this by checking last_was_expression
+
+        // If we have multiple expressions and implicit returns are enabled,
+        // we might want to keep them all on the stack for the function to return
+        if this.language_flags.implicit_returns && this.expression_count > 1 {
+            // Don't pop - keep all values for potential multiple return
+        } else {
+            // Pop the single expression value as usual
+            this.emit_at(f, OpCode::POP);
+        }
     }
-    devnote!(this "expression_statement end");
+    devnote!(this it "expression_statement end");
     Ok(())
 }
 
-fn variable(this: &mut Compiler, can_assign: bool) -> Catch {
-    devnote!(this "variable");
+fn variable(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign: bool) -> Catch {
+    devnote!(this it "variable");
     // let t = this.previous.clone();
     // let ident = if let Token::Identifier(ident) = t.0 {
     //     this.identifer_constant(ident)
@@ -1539,18 +2028,69 @@ fn variable(this: &mut Compiler, can_assign: bool) -> Catch {
     //     this.emit(OpCode::LITERAL { dest: ident, literal: ident }, t.1);
     // }
 
-    named_variable(this, can_assign, false)?;
+    named_variable(this, f, it, can_assign)?;
     Ok(())
 }
 
-fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Catch {
-    devnote!(this "named_variables");
+fn resolve_etters(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    ident: String,
+) -> (OpCode, OpCode) {
+    // TODO currently this mechanism searches the entire local stack to determine local and then up values,  ideally we check up values first once we raise out of the functional scope instead of continuing to walk the local stack, but this will work for now.
+    match resolve_local(this, it, &ident) {
+        Some((i, is_up)) => {
+            if is_up {
+                (
+                    OpCode::SET_UPVALUE { index: i },
+                    OpCode::GET_UPVALUE { index: i },
+                )
+            } else {
+                (
+                    OpCode::SET_LOCAL { index: i },
+                    OpCode::GET_LOCAL { index: i },
+                )
+            }
+        }
+        None => {
+            // println!("============== we in {}", ident);
+            let ident = this.identifer_constant(f, ident);
+            // add_upvalue(this, ident, this.scope_depth);
+            (
+                OpCode::SET_GLOBAL { constant: ident },
+                OpCode::GET_GLOBAL { constant: ident },
+            )
+        }
+    }
+}
+
+fn print_var_stack(_v: &[(OpCode, OpCode)]) {
+    #[cfg(feature = "dev-out")]
+    {
+        println!(":::::::::::::::::::::::::::::::::::::");
+        print!("var stack -> ");
+        for v in _v.iter() {
+            print!("({},{})", v.0, v.1)
+        }
+        println!();
+        println!(":::::::::::::::::::::::::::::::::::::");
+    }
+}
+
+fn named_variable(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    can_assign: bool,
+) -> Catch {
+    devnote!(this it "-> named_variables");
     let t = this.copy_store()?;
 
     // declare shortcut only valid if we're above scope 0 otherwise it's redundant
     // TODO should we send a warning that 0 scoped declares are redundant?
     if this.scope_depth > 0
-        && if let Token::Op(Operator::ColonEquals) = this.peek()? {
+        && if let Token::Op(Operator::ColonEquals) = this.peek(it)? {
             true
         } else {
             false
@@ -1558,48 +2098,84 @@ fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Cat
     {
         if let Token::Identifier(ident) = t {
             // short declare
-            add_local(this, ident)?;
+            add_local(this, it, ident)?;
             this.override_pop = true;
-            this.eat();
-            expression(this, false)?;
+            this.eat(it);
+            expression(this, f, it, false)?;
         } else {
             unreachable!()
         }
         return Ok(());
     }
 
-    //normal assigment
-    let (setter, getter) = if let Token::Identifier(ident) = t {
-        devout!("assigning to identifier: {}", ident);
-        // TODO currently this mechanism searches the entire local stack to determine local and then up values,  ideally we check up values first once we raise out of the functional scope instead of continuing to walk the local stack, but this will work for now.
-        match resolve_local(this, &ident) {
-            Some((i, is_up)) => {
-                if is_up {
-                    (
-                        OpCode::SET_UPVALUE { index: i },
-                        OpCode::GET_UPVALUE { index: i },
-                    )
-                } else {
-                    (
-                        OpCode::SET_LOCAL { index: i },
-                        OpCode::GET_LOCAL { index: i },
-                    )
-                }
-            }
-            None => {
-                let ident = this.identifer_constant(ident);
-                // add_upvalue(this, ident, this.scope_depth);
-                (
-                    OpCode::SET_GLOBAL { constant: ident },
-                    OpCode::GET_GLOBAL { constant: ident },
-                )
-            }
-        }
+    // ident getter/setter gather for 1 variable, then continue on our while loop to check for
+    // more. This should usually only hit for multi var assignment
+
+    let ops = if let Token::Identifier(ident) = t {
+        // devout!("assigning to identifier: {}", ident);
+        resolve_etters(this, f, it, ident)
     } else {
         unreachable!()
     };
 
-    devout!("setter: {}, getter: {}", setter, getter);
+    this.var_stack.push(ops);
+    if this.can_multivar_set {
+        // These commas are intended for multivar setting aka what to assign to. x,y= ...
+        // Check for additional variables in multi-variable context
+        while let Token::Comma = this.peek(it)? {
+            devnote!(this it "-> multi_var comma walk");
+            add!(this);
+            this.eat(it);
+            if let Token::Identifier(_) = this.peek(it)? {
+                let t = this.pop(it);
+                this.current_location = t.1;
+
+                let ops = if let Token::Identifier(ident) = t.0? {
+                    resolve_etters(this, f, it, ident)
+                } else {
+                    unreachable!()
+                };
+                this.var_stack.push(ops);
+            } else {
+                // We encountered a non-identifier after comma
+                // This means we have a mixed expression like "a, 5" or "a, func()"
+                // For assignment, this is invalid. For retrieval, we need to handle it differently.
+                let t = this.peek(it)?;
+
+                if can_assign && matches!(t, Token::Assign) {
+                    // This would be invalid assignment like "a, 5 = ..."
+                    return Err(this.error_at(SiltError::InvalidAssignment(t.clone())));
+                }
+                // we at least know multivar setting has ended
+                this.can_multivar_set=false;
+
+                // For retrieval context, we need to drain the getters we've collected so far
+                // and then continue parsing as a regular expression
+                // this.return_count = this.var_stack.len() as u8;
+                println!("multivar drain 1");
+                this.drain_getters(f);
+
+                // Now parse the remaining expression starting from current position
+                // We need to handle this as part of a larger comma-separated expression
+                // this.return_count += 1;
+                this.parse_precedence(f, it, Precedence::Assignment, false)?;
+
+                return Ok(());
+            }
+        }
+        print_var_stack(&this.var_stack);
+    }
+    // loop {
+    //     //normal assigment
+    //
+    //     devout!("setter: {}, getter: {}", setter, getter);
+    //
+    //     if let  {
+    //     } else {
+    //         break;
+    //     }
+    // }
+    //
 
     /*
      * normally:
@@ -1615,30 +2191,98 @@ fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Cat
      *
      *
      */
-    match this.peek()? {
+    match this.peek(it)? {
         Token::Assign => {
             if can_assign {
-                this.eat();
-                expression(this, false)?;
-                this.emit_at(setter);
+                this.eat(it);
+                let assign_need = this.var_stack.len() as isize;
+                this.expression_count = 1;
+                // if assign_need > 1 {
+                //     this.emit_at(f, OpCode::NEED(assign_need as u8));
+                // }
+                // println!("=============== pre setters {}", this.peek(it)?);
+                std::mem::swap(&mut this.var_stack, &mut this.var_set_stack);
+                this.override_pop = true;
+                this.can_multivar_set = false;
+                expression(this, f, it, false)?;
+                this.can_multivar_set = true;
+                // println!("=============== setters? {}", this.var_stack.len());
+                print_var_stack(&this.var_set_stack);
+                print_var_stack(&this.var_stack);
+                // println!(
+                //     "{} {} <-> exp# {}",
+                //     "==================check here need".yellow(),
+                //     assign_need,
+                //     this.expression_count
+                // );
+
+                // a,b,c,d,e = 1, fn(), fn()
+                // 5 = 1, 2 , 3..
+                let remainder = assign_need - this.expression_count as isize;
+                // println!("reaminder is {}", remainder);
+                match remainder.cmp(&0) {
+                    Ordering::Greater => {
+                        // we have room so spread the last if possible
+                        // let offset = this.current_index - 1;
+                        match f.chunk.read_last_code() {
+                            OpCode::CALL(u, _) => {
+                                // the remainder is how much MORE we would need, at least 1 is
+                                // already assumed so we add 1+remainder
+                                // devout!("{} {}", "modify call to ".red(), remainder + 1);
+                                f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8));
+                            }
+                            _ => this.emit_at(f, OpCode::NILS(remainder as u8)),
+                        }
+                    }
+                    Ordering::Less => {
+                        // pop extra
+                        this.emit_at(f, OpCode::POPS((-remainder) as u8));
+                    }
+                    Ordering::Equal => {}
+                }
+                // for _ in 0..remainder {
+                //     this.emit_at(f, OpCode::NIL);
+                // }
+
+                // println!("multivar drain 2");
+                this.drain_setters(f);
             } else {
-                this.emit_at(getter);
+                // this.return_count = this.var_stack.len() as u8;
+                // println!("multivar drain 3");
+                this.drain_getters(f);
             }
         }
         Token::OpenBracket | Token::Dot => {
-            this.emit_at(getter);
-            let count = table_indexer(this)? as u8;
-            if let Token::Assign = this.peek()? {
-                this.eat();
-                expression(this, false)?;
-                this.emit_at(OpCode::TABLE_SET { depth: count });
+            // println!("drain 4");
+            this.drain_getters(f); // TODO we should probably error if this is higher then 1
+            let count = table_indexer(this, f, it)? as u8;
+            if let Token::Assign = this.peek(it)? {
+                this.eat(it);
+                expression(this, f, it, false)?;
+                this.emit_at(f, OpCode::TABLE_SET { depth: count });
                 // override statement end pop because instruction takes care of it
                 this.override_pop = true;
             } else {
-                this.emit_at(OpCode::TABLE_GET { depth: count });
+                this.emit_at(f, OpCode::TABLE_GET { depth: count });
+                // add!(this);
             }
         }
-        _ => this.emit_at(getter),
+        Token::Colon => {
+            let target = this.pull_getter(f);
+            this.drain_getters(f);
+            single_table_index(this, f, it)?;
+            // we should only have one getter, table_indexer is just a faster getter opcode
+            // sequence anyway
+            this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
+            this.emit_at(f, target);
+            this.self_arg = true;
+        }
+        _ => {
+            // this.return_count = this.var_stack.len() as u8;
+            // devnote!(this it "drain 5");
+
+            this.drain_getters(f);
+        }
     }
 
     // if can_assign
@@ -1665,62 +2309,63 @@ fn named_variable(this: &mut Compiler, can_assign: bool, mut local: bool) -> Cat
     Ok(())
 }
 
-fn grouping(this: &mut Compiler, _can_assign: bool) -> Catch {
-    devnote!(this "grouping");
-    expression(this, false)?;
+fn grouping(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "-> grouping");
+    expression(this, f, it, false)?;
     //TODO expect
     // expect_token!(self, CloseParen, SiltError::UnterminatedParenthesis(0, 0));
     // self.consume(TokenType::RightParen, "Expect ')' after expression.");
     Ok(())
 }
 
-fn tabulate(this: &mut Compiler, _can_assign: bool) -> Catch {
-    devnote!(this "tabulate");
-    this.emit_at(OpCode::NEW_TABLE);
+fn tabulate(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "-> tabulate");
+    this.emit_at(f, OpCode::NEW_TABLE);
     // not immediately closed
-    if !matches!(this.peek()?, &Token::CloseBrace) {
+    if !matches!(this.peek(it)?, &Token::CloseBrace) {
         let mut count = 0;
         // check if index provided via brackets or ident, otherwise increment our count to build array at the end
         while {
             let start_brace = this.current_location;
-            if match this.peek()? {
+            if match this.peek(it)? {
                 Token::Identifier(_) => {
-                    this.store();
-                    if let Token::Assign = this.peek()? {
+                    this.store(it);
+                    if let Token::Assign = this.peek(it)? {
                         let ident = this.get_current()?.unwrap_identifier();
-                        this.emit_identifer_constant_at(ident.clone());
-                        this.eat();
+                        this.emit_identifer_constant_at(f, ident.clone());
+                        this.eat(it);
                         true
                     } else {
-                        expression(this, true)?; // we skip the store because the ip is already where it needs to be
+                        expression_single(this, f, it, true)?; // we skip the store because the ip is already where it needs to be
                         false
                     }
                 }
                 Token::OpenBracket => {
-                    this.eat();
-                    expression(this, false)?;
+                    this.eat(it);
+                    expression_single(this, f, it, false)?;
                     expect_token!(
                         this,
+                        it,
                         CloseBracket,
                         this.error_at(SiltError::UnterminatedBracket(start_brace.0, start_brace.1))
                     );
-                    expect_token!(this, Assign, this.error_at(SiltError::ExpectedAssign));
+                    expect_token!(this, it, Assign, this.error_at(SiltError::ExpectedAssign));
                     true
                 }
                 _ => {
-                    expression(this, false)?; // normal store expression
+                    expression_single(this, f, it, false)?; // normal store expression
                     false
                 }
             } {
-                expression(this, false)?;
-                this.emit_at(OpCode::TABLE_INSERT { offset: count });
+                expression_single(this, f, it, false)?;
+                this.emit_at(f, OpCode::TABLE_INSERT { offset: count });
             } else {
                 count += 1;
             }
 
-            match this.peek()? {
+            match this.peek(it)? {
                 Token::Comma => {
-                    this.eat();
+                    this.eat(it);
                     true
                 }
                 Token::CloseBrace => false,
@@ -1732,12 +2377,13 @@ fn tabulate(this: &mut Compiler, _can_assign: bool) -> Catch {
             // }
         }
         if count > 0 {
-            this.emit_at(OpCode::TABLE_BUILD(count));
+            this.emit_at(f, OpCode::TABLE_BUILD(count));
         }
     }
 
     expect_token!(
         this,
+        it,
         CloseBrace,
         this.error_at(SiltError::TableExpectedCommaOrCloseBrace)
     );
@@ -1745,16 +2391,16 @@ fn tabulate(this: &mut Compiler, _can_assign: bool) -> Catch {
 }
 
 /** op unary or primary */
-fn unary(this: &mut Compiler, _can_assign: bool) -> Catch {
-    devnote!(this "unary");
+fn unary(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "unary");
     let t = this.copy_store()?;
     // self.expression();
 
-    this.parse_precedence(Precedence::Unary, false)?;
+    this.parse_precedence(f, it, Precedence::Unary, false)?;
     match t {
-        Token::Op(Operator::Sub) => this.emit_at(OpCode::NEGATE),
-        Token::Op(Operator::Not) => this.emit_at(OpCode::NOT),
-        Token::Op(Operator::Length) => this.emit_at(OpCode::LENGTH),
+        Token::Op(Operator::Sub) => this.emit_at(f, OpCode::NEGATE),
+        Token::Op(Operator::Not) => this.emit_at(f, OpCode::NOT),
+        Token::Op(Operator::Length) => this.emit_at(f, OpCode::LENGTH),
         _ => {}
     }
     //     let operator = Self::de_op(self.eat_out());
@@ -1771,30 +2417,27 @@ fn unary(this: &mut Compiler, _can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn table_indexer(this: &mut Compiler) -> Result<usize, ErrorTuple> {
+/// Walk down multiple table fields if necessary table1.table2.table3.field
+fn table_indexer(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+) -> Result<usize, ErrorTuple> {
     let mut count = 0;
-    while match this.peek()? {
+    while match this.peek(it)? {
         Token::OpenBracket => {
-            this.eat();
-            expression(this, false)?;
+            this.eat(it);
+            expression(this, f, it, false)?;
             expect_token!(
                 this,
+                it,
                 CloseBracket,
                 this.error_at(SiltError::UnterminatedBracket(0, 0))
             );
             true
         }
         Token::Dot => {
-            this.eat();
-            let t = this.pop();
-            this.current_location = t.1;
-            let field = t.0?;
-            devout!("table_indexer: {} p:{}", field, this.peek()?);
-            if let Token::Identifier(ident) = field {
-                this.emit_identifer_constant_at(ident);
-            } else {
-                return Err(this.error_at(SiltError::ExpectedFieldIdentifier));
-            }
+            single_table_index(this, f, it)?;
             true
         }
         _ => false,
@@ -1804,29 +2447,47 @@ fn table_indexer(this: &mut Compiler) -> Result<usize, ErrorTuple> {
     Ok(count)
 }
 
-fn binary(this: &mut Compiler, _can_assign: bool) -> Catch {
-    devnote!(this "binary");
+fn single_table_index(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+) -> Result<(), ErrorTuple> {
+    this.eat(it);
+    let t = this.pop(it);
+    this.current_location = t.1;
+    let field = t.0?;
+    devout!("table_indexer: {} p:{}", field, this.peek(it)?);
+    if let Token::Identifier(ident) = field {
+        this.emit_identifer_constant_at(f, ident);
+    } else {
+        return Err(this.error_at(SiltError::ExpectedFieldIdentifier));
+    }
+    Ok(())
+}
+
+fn binary(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "binary");
     let t = this.copy_store()?;
     let l = this.current_location;
     let rule = Compiler::get_rule(&t);
-    this.parse_precedence(rule.precedence.next(), false)?;
+    this.parse_precedence(f, it, rule.precedence.next(), false)?;
     if let Token::Op(op) = t {
         match op {
-            Operator::Add => this.emit(OpCode::ADD, l),
-            Operator::Sub => this.emit(OpCode::SUB, l),
-            Operator::Multiply => this.emit(OpCode::MULTIPLY, l),
-            Operator::Divide => this.emit(OpCode::DIVIDE, l),
+            Operator::Add => this.emit(f, OpCode::ADD, l),
+            Operator::Sub => this.emit(f, OpCode::SUB, l),
+            Operator::Multiply => this.emit(f, OpCode::MULTIPLY, l),
+            Operator::Divide => this.emit(f, OpCode::DIVIDE, l),
 
-            Operator::Concat => this.emit(OpCode::CONCAT, l),
+            Operator::Concat => this.emit(f, OpCode::CONCAT, l),
 
             // Operator::Modulus => self.emit(OpCode::MODULUS, t.1),
             // Operator::Equal => self.emit(OpCode::EQUAL, t.1),
-            Operator::Equal => this.emit(OpCode::EQUAL, l),
-            Operator::NotEqual => this.emit(OpCode::NOT_EQUAL, l),
-            Operator::Less => this.emit(OpCode::LESS, l),
-            Operator::LessEqual => this.emit(OpCode::LESS_EQUAL, l),
-            Operator::Greater => this.emit(OpCode::GREATER, l),
-            Operator::GreaterEqual => this.emit(OpCode::GREATER_EQUAL, l),
+            Operator::Equal => this.emit(f, OpCode::EQUAL, l),
+            Operator::NotEqual => this.emit(f, OpCode::NOT_EQUAL, l),
+            Operator::Less => this.emit(f, OpCode::LESS, l),
+            Operator::LessEqual => this.emit(f, OpCode::LESS_EQUAL, l),
+            Operator::Greater => this.emit(f, OpCode::GREATER, l),
+            Operator::GreaterEqual => this.emit(f, OpCode::GREATER_EQUAL, l),
 
             _ => todo!(),
         }
@@ -1834,33 +2495,33 @@ fn binary(this: &mut Compiler, _can_assign: bool) -> Catch {
     Ok(())
 }
 
-fn concat(this: &mut Compiler, _can_assign: bool) -> Catch {
-    devnote!(this "concat_binary");
+fn concat(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "concat_binary");
     let t = this.copy_store()?;
     let l = this.current_location;
     let rule = Compiler::get_rule(&t);
-    this.parse_precedence(rule.precedence.next(), false)?;
+    this.parse_precedence(f, it, rule.precedence.next(), false)?;
 
     if let Token::Op(op) = t {
         match op {
-            Operator::Concat => this.emit(OpCode::CONCAT, l),
+            Operator::Concat => this.emit(f, OpCode::CONCAT, l),
             _ => todo!(),
         }
     }
     Ok(())
 }
 
-fn and(this: &mut Compiler, _can_assign: bool) -> Catch {
-    devnote!(this "and");
-    let index = this.emit_index(OpCode::GOTO_IF_FALSE(0));
-    this.emit_at(OpCode::POP);
-    this.parse_precedence(Precedence::And, false)?;
-    this.patch(index)?;
+fn and(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "and");
+    let index = this.emit_index(f, OpCode::GOTO_IF_FALSE(0));
+    this.emit_at(f, OpCode::POP);
+    this.parse_precedence(f, it, Precedence::And, false)?;
+    this.patch(f, index)?;
     Ok(())
 }
 
-fn or(this: &mut Compiler, _can_assign: bool) -> Catch {
-    devnote!(this "or");
+fn or(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "or");
 
     // the goofy way
     // let index = this.emit_index(OpCode::GOTO_IF_FALSE(0));
@@ -1870,63 +2531,63 @@ fn or(this: &mut Compiler, _can_assign: bool) -> Catch {
     // this.parse_precedence(Precedence::Or, false)?;
     // this.patch(final_index)?;
 
-    let index = this.emit_index(OpCode::GOTO_IF_TRUE(0));
-    this.emit_at(OpCode::POP);
-    this.parse_precedence(Precedence::Or, false)?;
-    this.patch(index)?;
+    let index = this.emit_index(f, OpCode::GOTO_IF_TRUE(0));
+    this.emit_at(f, OpCode::POP);
+    this.parse_precedence(f, it, Precedence::Or, false)?;
+    this.patch(f, index)?;
     Ok(())
 }
 
-fn integer(this: &mut Compiler, can_assign: bool) -> Catch {
-    devnote!(this "integer");
+fn integer(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "integer");
     let t = this.copy_store()?;
     let value = if let Token::Integer(i) = t {
         Value::Integer(i)
     } else {
         unreachable!()
     };
-    this.constant_at(value);
+    this.constant_at(f, value);
     Ok(())
 }
 
-fn number(this: &mut Compiler, can_assign: bool) -> Catch {
-    devnote!(this "number");
+fn number(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "number");
     let t = this.copy_store()?;
     let value = if let Token::Number(n) = t {
         Value::Number(n)
     } else {
         unreachable!()
     };
-    this.constant_at(value);
+    this.constant_at(f, value);
     Ok(())
 }
 
-fn string(this: &mut Compiler, can_assign: bool) -> Catch {
-    devnote!(this "string");
+fn string(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "string");
     let t = this.copy_store()?;
     let value = if let Token::StringLiteral(s) = t {
-        Value::String(Box::new(s.into_string()))
+        Value::String(s.into_string())
     } else {
         unreachable!()
     };
-    this.constant_at(value);
+    this.constant_at(f, value);
     Ok(())
 }
 
-fn literal(this: &mut Compiler, can_assign: bool) -> Catch {
-    devnote!(this "literal");
+fn literal(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "literal");
     let t = this.copy_store()?;
     match t {
-        Token::Nil => this.emit_at(OpCode::NIL),
-        Token::True => this.emit_at(OpCode::TRUE),
-        Token::False => this.emit_at(OpCode::FALSE),
+        Token::Nil => this.emit_at(f, OpCode::NIL),
+        Token::True => this.emit_at(f, OpCode::TRUE),
+        Token::False => this.emit_at(f, OpCode::FALSE),
         _ => unreachable!(),
     }
     Ok(())
 }
 
-fn call(this: &mut Compiler, can_assign: bool) -> Catch {
-    devnote!(this "call");
+fn call(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(this it "call");
     // let t = this.take_store()?;
     // let l = this.current_location;
     // let rule = Compiler::get_rule(&t);
@@ -1936,42 +2597,68 @@ fn call(this: &mut Compiler, can_assign: bool) -> Catch {
     //     this.emit(OpCode::CALL { arg_count }, l);
     // }
     let start = this.current_location;
-    let arg_count = arguments(this, start)?;
-    this.emit(OpCode::CALL(arg_count), start);
+
+    // println!("{} ", "TIME TO COUNT".on_cyan());
+    let arg_count = arguments(this, f, it, start)?;
+    devout!("{} {}", "ARG COUNT".on_cyan(), arg_count);
+    this.emit(f, OpCode::CALL(arg_count, 0), start);
     Ok(())
 }
 
-fn call_table(this: &mut Compiler, can_assign: bool) -> Catch {
+fn call_table(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
     todo!();
     Ok(())
 }
 
-fn call_string(this: &mut Compiler, can_assign: bool) -> Catch {
+fn call_string(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
     todo!();
     Ok(())
 }
-fn arguments(this: &mut Compiler, start: Location) -> Result<u8, ErrorTuple> {
-    devnote!(this "arguments");
-    let mut args = 0;
-    if !matches!(this.peek()?, &Token::CloseParen) {
+
+fn arguments(
+    this: &mut Compiler,
+    f: FnRef,
+    it: &mut Peekable<Lexer>,
+    start: TokenCell,
+) -> Result<u8, ErrorTuple> {
+    devnote!(this it "arguments");
+    this.can_multivar_set = false;
+    // self was pushed on the stack recently, include it and turn off
+    let mut args = if this.self_arg {
+        this.self_arg = false;
+        1
+    } else {
+        0
+    };
+    devout!("{} {}", "start with ".red(), args);
+    if !matches!(this.peek(it)?, &Token::CloseParen) {
         while {
-            expression(this, false)?;
+            expression_single(this, f, it, false)?;
+            devout!("{}", "yeah ADD 1".red());
             args += 1;
-            if let &Token::Comma = this.peek()? {
-                this.eat();
+            if let &Token::Comma = this.peek(it)? {
+                this.eat(it);
                 true
             } else {
                 false
             }
         } {
-            if args >= 255 {
+            devout!("{} {}", "yeah done ading".red(), args);
+            if args == 255 {
                 return Err(this.error_at(SiltError::TooManyParameters));
             }
         }
     }
+    this.can_multivar_set = true;
 
     expect_token!(
         this,
+        it,
         CloseParen,
         this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
     );
@@ -1980,16 +2667,16 @@ fn arguments(this: &mut Compiler, start: Location) -> Result<u8, ErrorTuple> {
     Ok(args)
 }
 
-fn print(this: &mut Compiler) -> Catch {
-    devnote!(this "print");
-    this.eat();
-    expression(this, false)?;
-    this.emit_at(OpCode::PRINT);
+fn print(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    devnote!(this it "print");
+    this.eat(it);
+    expression(this, f, it, false)?;
+    this.emit_at(f, OpCode::PRINT);
     Ok(())
 }
 
-pub fn void(_this: &mut Compiler, _can_assign: bool) -> Catch {
-    devnote!(_this "void");
+pub fn void(_this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+    devnote!(_this it "void");
     Ok(())
 }
 

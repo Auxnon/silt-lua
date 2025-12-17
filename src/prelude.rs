@@ -1,9 +1,10 @@
 #[doc(no_inline)]
 pub use crate::{
-    error::ErrorTypes,
-    function::{Closure, FunctionObject, NativeObject},
-    lua::Lua,
+    compiler::Compiler,
+    error::{SiltError as LuaError, ValueTypes},
+    function::{Closure, FunctionObject},
+    lua::{Lua, VM},
     table::Table,
-    userdata::UserData,
+    userdata::{UserData, UserDataFields, UserDataTypedMap},
     value::{Reference, Value},
 };

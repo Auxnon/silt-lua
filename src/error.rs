@@ -1,7 +1,4 @@
-use crate::{
-    token::{Operator, Token},
-    value::{self, Value},
-};
+use crate::{token::Token, userdata::MetaMethod};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum SiltError {
@@ -31,11 +28,11 @@ pub enum SiltError {
     ChunkCorrupt,
 
     //expression errors
-    ExpInvalidOperator(Operator),
-    ExpInvalidBitwise(ErrorTypes),
-    ExpInvalidLength(ErrorTypes),
-    ExpOpValueWithValue(ErrorTypes, Operator, ErrorTypes),
-    ExpInvalidNegation(ErrorTypes),
+    ExpInvalidOperator(MetaMethod),
+    ExpInvalidBitwise(ValueTypes),
+    ExpInvalidLength(ValueTypes),
+    ExpOpValueWithValue(ValueTypes, MetaMethod, ValueTypes),
+    ExpInvalidNegation(ValueTypes),
     EarlyEndOfFile,
     ExpInvalid,
     ExpectedAssign,
@@ -46,22 +43,41 @@ pub enum SiltError {
     // statement errors
 
     //interpreted errors
-    EvalNoInteger(ErrorTypes),
+    EvalNoInteger(ValueTypes),
     NotCallable(String),
-    Return(Value),
+    // Return(Value),
+    MetaMethodMissing(MetaMethod),
+    MetaMethodNotCallable(MetaMethod),
+
+    // Userdata errors
+    UDNoInitField,
+    UDNoInitMethod,
+    UDBadCast,
+    UDNoMap,
+    UDNoFieldGet,
+    UDNoFieldSet,
+    UDNoMethodRef,
+    UDTypeMismatch,
 
     //vm
     VmCompileError,
     VmRuntimeError,
     VmCorruptConstant,
     VmUpvalueResolveError,
-    VmNonTableOperations(ErrorTypes),
+    VmNonTableOperations(ValueTypes),
+    VmValBadConvert(ValueTypes),
+    VmNativeParameterMismatch,
 
     Unknown,
+
+    // Generic custom enums
+    Custom(String),
+    Network(String),
+    IO(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ErrorTypes {
+pub enum ValueTypes {
     String,
     Number,
     Operator,
@@ -74,9 +90,57 @@ pub enum ErrorTypes {
     Closure,
     Table,
     UserData,
+    #[cfg(feature = "vectors")]
+    Vec3,
+    #[cfg(feature = "vectors")]
+    Vec2,
 }
 
-pub type Location = (usize, usize);
+pub struct TokenTriple {
+    pub line: usize,
+    pub col: usize,
+    pub index: usize,
+    pub length: usize,
+}
+
+impl TokenTriple {
+    pub fn new(line: usize, col: usize, index: usize, length: usize) -> Self {
+        TokenTriple {
+            line,
+            col,
+            index,
+            length,
+        }
+    }
+}
+
+impl Default for TokenTriple {
+    fn default() -> Self {
+        TokenTriple {
+            line: 0,
+            col: 0,
+            index: 0,
+            length: 0,
+        }
+    }
+}
+pub type TokenCell = (usize, usize);
+
+// impl TripleLocation{
+//     pub fn into(&self)-> Location{
+//         (self.0,self.2)
+//     }
+// }
+
+// impl Into<Location> for TripleLocation {
+//     fn into(self) -> Location {
+//         (self.0,self.2)
+//     }
+// }
+// //     fn from(value: TripleLocation) -> Self {
+// //         (value.0, value.2)
+// //     }
+// // }
 
 impl std::fmt::Display for SiltError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -103,7 +167,6 @@ impl std::fmt::Display for SiltError {
             ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
             Self::TooManyParameters => write!(f, "Too many parameters, limited to 255"),
-            Self::Return(v) => write!(f, "~Return {}~", v),
             Self::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
             Self::NotANumber(s) => write!(f, "Not a number: {}", s),
             Self::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),
@@ -162,26 +225,52 @@ impl std::fmt::Display for SiltError {
             Self::VmCompileError => write!(f, "Error compiling chunk"),
             Self::VmRuntimeError => write!(f, "Runtime error for chunk"),
             Self::VmCorruptConstant => write!(f, "Constant store corrupted"),
+            Self::VmValBadConvert(t)=> write!(f, "Impossible to convert from \"{}\"",t),
+            Self::VmNativeParameterMismatch=>write!(f, "Cannot call native function with available parameters"), 
+
             Self::Unknown => write!(f, "Unknown error"),
-            // Self::ResReadInOwnInit => write!(f, "Cannot read variable in its own initializer"),
+            SiltError::MetaMethodMissing(meta_method) => {
+                write!(f, "Meta method missing for '{}'", meta_method)
+            }
+            SiltError::MetaMethodNotCallable(meta_method) => {
+                write!(f, "Value for meta method '{}' is not callable", meta_method)
+            }
+
+            SiltError::UDNoInitField => write!(f, "UserData field not setup"),
+            SiltError::UDNoInitMethod => write!(f, "UserData method not setup"),
+            SiltError::UDNoMap => write!(f, "UserData map not setup"),
+            SiltError::UDNoFieldGet => write!(f, "UserData field getter does not exist"),
+            SiltError::UDNoFieldSet => write!(f, "UserData field setter does not exist"),
+            SiltError::UDNoMethodRef => write!(f, "UserData method does not exist"),
+            SiltError::UDTypeMismatch => {
+                write!(f, "UserData type mismatch during method or field access")
+            }
+            SiltError::UDBadCast => write!(f, "UserData bad downcast"),
+            SiltError::Custom(s)=> write!(f, "{}",s),
+            SiltError::Network(s)=> write!(f, "Network Error; {}",s),
+            SiltError::IO(s)=> write!(f, "Input Output Error; {}",s),
         }
     }
 }
-impl std::fmt::Display for ErrorTypes {
+impl std::fmt::Display for ValueTypes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorTypes::String => write!(f, "string"),
-            ErrorTypes::Number => write!(f, "number"),
-            ErrorTypes::Operator => write!(f, "operator"),
-            ErrorTypes::Integer => write!(f, "integer"),
-            ErrorTypes::Bool => write!(f, "bool"),
-            ErrorTypes::Nil => write!(f, "nil"),
-            ErrorTypes::Infinity => write!(f, "infinity"),
-            ErrorTypes::NativeFunction => write!(f, "native_function"),
-            ErrorTypes::Function => write!(f, "function"),
-            ErrorTypes::Closure => write!(f, "(function)"),
-            ErrorTypes::Table => write!(f, "table"),
-            ErrorTypes::UserData => write!(f, "userdata"),
+            ValueTypes::String => write!(f, "string"),
+            ValueTypes::Number => write!(f, "number"),
+            ValueTypes::Operator => write!(f, "operator"),
+            ValueTypes::Integer => write!(f, "integer"),
+            ValueTypes::Bool => write!(f, "bool"),
+            ValueTypes::Nil => write!(f, "nil"),
+            ValueTypes::Infinity => write!(f, "infinity"),
+            ValueTypes::NativeFunction => write!(f, "native_function"),
+            ValueTypes::Function => write!(f, "function"),
+            ValueTypes::Closure => write!(f, "(function)"),
+            ValueTypes::Table => write!(f, "table"),
+            ValueTypes::UserData => write!(f, "userdata"),
+            #[cfg(feature = "vectors")]
+            ValueTypes::Vec3 => write!(f, "vec3"),
+            #[cfg(feature = "vectors")]
+            ValueTypes::Vec2 => write!(f, "vec2"),
         }
     }
 }
@@ -189,7 +278,7 @@ impl std::fmt::Display for ErrorTypes {
 #[derive(Clone)]
 pub struct ErrorTuple {
     pub code: SiltError,
-    pub location: Location,
+    pub location: TokenCell,
 }
 
 impl std::fmt::Display for ErrorTuple {

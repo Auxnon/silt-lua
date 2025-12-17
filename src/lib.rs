@@ -1,68 +1,99 @@
 use error::ErrorTuple;
-use lua::Lua;
-use value::Value;
 
 mod chunk;
 mod code;
-pub mod compiler;
-mod error;
+mod compiler;
+pub mod error;
 mod function;
 mod lexer;
+mod lsp;
 pub mod lua;
 pub mod prelude;
 pub mod standard;
 pub mod table;
 mod token;
-mod userdata;
+pub mod userdata;
 pub mod value;
+pub extern crate gc_arena;
 
+pub use self::{
+    compiler::Compiler, error::SiltError as LuaError, lua::Lua, lua::VM, value::ExVal, value::Value,
+};
+
+#[cfg(feature = "vectors")]
+pub mod vec;
+
+#[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 
-fn simple(source: &str) -> Value {
-    let mut vm = Lua::new();
-    vm.load_standard_library();
-    match vm.run(source) {
+fn simple(source: &str) -> ExVal {
+    let mut compiler = Compiler::new();
+    let mut lua = Lua::new_with_standard();
+    match lua.run(source, &mut compiler) {
         Ok(v) => v,
-        Err(e) => Value::String(Box::new(e[0].to_string())),
+        Err(e) => ExVal::String(e[0].to_string()),
     }
-
-    // let e = compiler.get_errors();
-    // if e.len() > 0 {
-    //     return Value::String(Box::new(e[0].to_string()));
-    // }
-    // Value::String(Box::new("Unknown error".to_string()))
 }
 
-fn complex(source: &str) -> Result<Value, ErrorTuple> {
-    let mut vm = Lua::new();
-    vm.load_standard_library();
-    match vm.run(source) {
+fn complex(source: &str) -> Result<ExVal, ErrorTuple> {
+    let mut compiler = Compiler::new();
+    let mut lua = Lua::new_with_standard();
+    match lua.run(source, &mut compiler) {
         Ok(v) => Ok(v),
         Err(e) => Err(e.get(0).unwrap().clone()),
     }
+    //
+    // let mut vm = VM::new();
+    // vm.load_standard_library();
+    // let mut compiler = Compiler::new();
+    // match compiler.try_compile(source) {
+    //     Ok(obj) => match vm.run(obj) {
+    //         Ok(v) => Ok(v),
+    //         Err(e) => Err(e.get(0).unwrap().clone()),
+    //     },
+    //     Err(e) => Err(e.get(0).unwrap().clone()),
+    // }
 }
 
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
     pub fn jprintln(s: &str);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn run(source: &str) -> String {
-    let mut vm = Lua::new();
-    vm.load_standard_library();
-    match vm.run(source) {
+    let mut compiler = Compiler::new();
+    let mut lua = Lua::new_with_standard();
+    match lua.run(source, &mut compiler) {
         Ok(v) => v.to_string(),
         Err(e) => e[0].to_string(),
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn lsp(source: &str, format: Option<bool>) -> Result<JsValue, JsError> {
+    let mut compiler = Compiler::new();
+    let obj = compiler.lsp(source, format.unwrap_or(false));
+    Ok(serde_wasm_bindgen::to_value(&obj)?)
+    // let mut lua = Lua::new_with_standard();
+    // match lua.run(source, &mut compiler) {
+    //     Ok(v) => Ok(v.to_string().into()),
+    //     Err(e) => Err(JsError::new(&e[0].to_string())),
+    // }
+    // Err(JsError::new("failed to run LSP"))
+}
+
+#[allow(unused_macros)]
 macro_rules! valeq {
     ($source:literal, $val:expr) => {
         assert_eq!(simple($source), $val);
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! fails {
     ($source:literal, $val:expr) => {{
         match complex($source) {
@@ -72,9 +103,10 @@ macro_rules! fails {
     }};
 }
 
+#[allow(unused_macros)]
 macro_rules! vstr {
     ($source:literal) => {
-        Value::String(Box::new($source.to_string()))
+        ExVal::String($source.to_string())
     };
 }
 
@@ -82,17 +114,16 @@ macro_rules! vstr {
 mod tests {
     use crate::{
         chunk::Chunk,
-        code::{self, OpCode},
+        code::OpCode,
         complex,
         error::SiltError,
         function::FunctionObject,
-        lua::Lua,
-        prelude::ErrorTypes,
+        prelude::ValueTypes,
         simple,
-        token::{Operator, Token},
-        value::Value,
+        token::Token,
+        value::{ExVal, Value},
     };
-    use std::{mem::size_of, println, rc::Rc};
+    use std::{mem::size_of, println};
 
     #[test]
     fn test_32bits() {
@@ -109,9 +140,12 @@ mod tests {
         println!("size of Box<str>: {}", size_of::<Box<str>>());
         println!("size of boxed<Strinv> {}", size_of::<Box<String>>());
         println!("size of Operator: {}", size_of::<crate::token::Operator>());
-        println!("size of Tester: {}", size_of::<crate::code::Tester>());
+        // println!("size of Tester: {}", size_of::<crate::code::Tester>());
         println!("size of Flag: {}", size_of::<crate::token::Flag>());
         println!("size of token: {}", size_of::<Token>());
+        println!("size of yarn: {}", size_of::<byteyarn::Yarn>());
+        // let t: usize = 5;
+        // let u: NonZeroUsize = NonZeroUsize::new(1).unwrap();
 
         println!("size of token: {}", size_of::<Token>());
         println!(
@@ -120,7 +154,7 @@ mod tests {
         );
         println!(
             "size of error_types: {}",
-            size_of::<crate::error::ErrorTypes>()
+            size_of::<crate::error::ValueTypes>()
         );
 
         println!("size of value: {}", size_of::<crate::value::Value>());
@@ -145,15 +179,15 @@ mod tests {
     print ("elapsed: "..elapsed)
     return {elapsed,i}
     "#;
-        let tuple = if let crate::value::Value::Table(t) = simple(source_in) {
-            let tt = t.borrow();
+        let tuple = if let crate::value::ExVal::Table(t) = simple(source_in) {
+            let tt = t;
             (
-                if let Some(&Value::Number(n)) = tt.getn(1) {
+                if let Some(&ExVal::Number(n)) = tt.getn(1) {
                     n
                 } else {
                     999999.
                 },
-                if let Some(&Value::Integer(n)) = tt.getn(2) {
+                if let Some(&ExVal::Integer(n)) = tt.getn(2) {
                     println!("{} iterations", n);
                     n
                 } else {
@@ -205,7 +239,7 @@ mod tests {
         return elapsed
         "#;
 
-        let n = if let crate::value::Value::Number(n) = simple(source_in) {
+        let n = if let crate::value::ExVal::Number(n) = simple(source_in) {
             println!("{} seconds", n);
             n
         } else {
@@ -223,26 +257,76 @@ mod tests {
         c.write_value(Value::Number(9.2), (1, 4));
         c.write_code(OpCode::DIVIDE, (1, 5));
         c.write_code(OpCode::NEGATE, (1, 1));
-        c.write_code(OpCode::RETURN, (1, 3));
-        c.print_chunk(None);
+        c.write_code(OpCode::RETURN(0), (1, 3));
+        c.print_chunk(&None);
+
+        #[cfg(feature = "dev-out")]
         println!("-----------------");
-        let blank = FunctionObject::new(None, false);
+        // let blank = FunctionObject::new(None, false);
         let mut tester = FunctionObject::new(None, false);
         tester.set_chunk(c);
-        let mut vm = Lua::new();
-        match vm.execute(Rc::new(tester)) {
-            Ok(v) => {
-                assert_eq!(v, Value::Number(-0.5));
-            }
-            Err(e) => {
-                panic!("Test should not fail with error: {}", e)
-            }
-        }
+        // let lua = Lua::new();
+        // lua.run_chunk
+        // match vm.execute(Rc::new(tester)) {
+        //     Ok(v) => {
+        //         assert_eq!(v, ExVal::Number(-0.5));
+        //     }
+        //     Err(e) => {
+        //         panic!("Test should not fail with error: {}", e)
+        //     }
+        // }
+        panic!(" uh oh we can't eval this chunk!");
+    }
+
+    #[test]
+    fn compliance1() {
+        valeq!("return 1+2", ExVal::Integer(3));
+    }
+
+    #[test]
+    fn compliance2() {
+        valeq!("return '1'..'2'", vstr!("12"));
+    }
+
+    #[test]
+    fn compliance3() {
+        valeq!(
+            r#"
+            local a= 1+2
+            return a
+            "#,
+            ExVal::Integer(3)
+        );
+    }
+
+    #[test]
+    fn compliance4() {
+        valeq!(
+            r#"
+            local a= '1'..'2'
+            return a
+            "#,
+            vstr!("12")
+        );
+    }
+
+    #[test]
+    fn compliance5() {
+        valeq!(
+            r#"
+            local a= 'a'
+            a='b'
+            local b='c'
+            b=a..b
+            return b
+            "#,
+            vstr!("bc")
+        );
     }
 
     #[test]
     fn compliance() {
-        valeq!("return 1+2", Value::Integer(3));
+        valeq!("return 1+2", ExVal::Integer(3));
         valeq!("return '1'..'2'", vstr!("12"));
 
         valeq!(
@@ -250,7 +334,7 @@ mod tests {
             local a= 1+2
             return a
             "#,
-            Value::Integer(3)
+            ExVal::Integer(3)
         );
         valeq!(
             r#"
@@ -272,11 +356,29 @@ mod tests {
     }
 
     #[test]
+    fn inner_function_global() {
+        valeq!(
+            r#"
+            function test(a)
+                y=7
+                return y
+            end
+            test(3)
+            "#,
+            ExVal::Integer(7)
+        );
+    }
+
+    #[test]
     fn string_infererence() {
-        valeq!("return '1'+2", Value::Integer(3));
+        valeq!("return '1'+2", ExVal::Integer(3));
         fails!(
             "return 'a1'+2",
-            SiltError::ExpOpValueWithValue(ErrorTypes::String, Operator::Add, ErrorTypes::Integer)
+            SiltError::ExpOpValueWithValue(
+                ValueTypes::String,
+                crate::userdata::MetaMethod::Add,
+                ValueTypes::Integer
+            )
         );
     }
 
@@ -297,7 +399,7 @@ mod tests {
                 return a[1]() + a[2]() + a[3]() -- 1+2+3 = 6
             end
             "#,
-            Value::Integer(6)
+            ExVal::Integer(6)
         );
         valeq!(
             r#"
@@ -312,7 +414,7 @@ mod tests {
 
             return a[1]() + a[2]() + a[3]() -- 1+2+3 = 6
             "#,
-            Value::Integer(6)
+            ExVal::Integer(6)
         );
     }
 
@@ -337,7 +439,7 @@ mod tests {
                 return x() + x() -- 14+18 = 32
             end
             "#,
-            Value::Integer(32)
+            ExVal::Integer(32)
         );
     }
 
@@ -357,7 +459,7 @@ mod tests {
                 return b --4
             end
             "#,
-            Value::Integer(4)
+            ExVal::Integer(4)
         );
         valeq!(
             r#"
@@ -383,7 +485,18 @@ mod tests {
                 return b()
             end
             "#,
-            Value::Integer(3)
+            ExVal::Integer(3)
         );
+    }
+    #[test]
+    fn call_string() {
+        let source_in = r#"
+        function call_string(s)
+            return s
+        end
+
+        return call_string "hello"
+        "#;
+        assert_eq!(simple(source_in), ExVal::String("hello".to_string()));
     }
 }

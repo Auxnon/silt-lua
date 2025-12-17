@@ -1,4 +1,5 @@
 use core::fmt::Display;
+use std::fmt::write;
 // implement clone
 
 #[derive(Debug, Clone, PartialEq)]
@@ -6,7 +7,7 @@ pub enum Token {
     // TODO temporary
     Print,
 
-    Identifier(Box<String>),
+    Identifier(String),
     Break,
     Do,
     If,
@@ -73,6 +74,8 @@ pub enum Token {
     StringLiteral(Box<str>),
     True,
     False,
+
+    Comment,
     EOF,
 
     //extra
@@ -113,7 +116,7 @@ pub enum Flag {
     Local,
 }
 impl Token {
-    pub fn unwrap_identifier(&self) -> &Box<String> {
+    pub fn unwrap_identifier(&self) -> &String {
         match self {
             Token::Identifier(s) => s,
             _ => panic!("unwrap_identifier"),
@@ -182,6 +185,7 @@ impl Display for Token {
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
             Token::Global => write!(f, "global"),
             Token::Flag(ref flag) => write!(f, "flag({})", flag),
+            Self::Comment=> write!(f, "--"),
             Self::EOF => write!(f, "EOF"),
         }
     }
