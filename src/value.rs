@@ -343,7 +343,7 @@ impl<'v> Value<'v> {
         apply: F,
     ) -> Result<R, SiltError>
     where
-        F: FnMut(&mut T) -> Result<R, SiltError>,
+        F: FnOnce(&mut T) -> Result<R, SiltError>,
         R: ToLua<'v>,
     {
         if let Value::UserData(udw) = self {
@@ -1233,8 +1233,6 @@ impl<'a, 'gc> FromLuaMulti<'gc> for Variadic<'a, 'gc> {
     }
 }
 
-
-
 //
 // // Implement IntoIterator for the wrapper
 // impl<'a, 'gc> IntoIterator for VariadicArgs<'a, 'gc> {
@@ -1282,16 +1280,6 @@ impl<'gc> FromLuaMultiBorrow<'gc> for ValueRef<'gc> {
     }
 }
 
-// impl<'gc> FromLuaMulti<'gc> for &Value<'gc> {
-//     fn from_lua_multi<'a>(
-//         args: &'a [Value<'gc>],
-//         _vm: &VM<'gc>,
-//         _mc: &Mutation<'gc>,
-//     ) -> Result<Self, SiltError> {
-//         Ok(args.get(0).unwrap_or(&Value::Nil))
-//     }
-// }
-
 impl<'a, 'gc> Hkt for &'_ Value<'gc> {
     type This<'b> = Self;
 }
@@ -1337,6 +1325,41 @@ where
             result.push(T::from_lua(arg, vm, mc)?);
         }
         Ok(result)
+    }
+}
+
+impl<'gc, T, const N: usize> FromLuaMulti<'gc> for [T; N]
+where
+    T: FromLua<'gc>,
+    T: Default,
+    T: Copy,
+    T: From<Value<'gc>>,
+{
+    fn from_lua_multi(
+        args: &[Value<'gc>],
+        _: &VM<'gc>,
+        _: &Mutation<'gc>,
+    ) -> Result<Self, SiltError> {
+               if let Some(val) = args.first() {
+            match val {
+                Value::Table(t) => Ok(t.borrow().to_array()),
+                _ => {
+                    let mut t = args.iter();
+                    let mut out: [T; N] = [T::default(); N];
+                    for o in out.iter_mut() {
+                        *o = if let Some(tt) = t.next() {
+                            T::from(tt.clone())
+                            // T::try_from(tt.1).unwrap_or_default()
+                        } else {
+                            T::default()
+                        }
+                    }
+                    Ok(out)
+                }
+            }
+        } else {
+            Ok([T::default(); N])
+        }
     }
 }
 
@@ -1481,48 +1504,48 @@ where
 //     /// Convert all remaining values to a Vec<T>
 //     pub fn collect(self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Result<Vec<T>, SiltError> {
 //         let mut result = Vec::new();
-    //     for value in self.values {
-    //         result.push(T::from_lua(value, vm, mc)?);
-    //     }
-    //     Ok(result)
-    // }
-    //
-    // /// Get the next value as type T
-    // pub fn next(&mut self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Option<Result<T, SiltError>> {
-    //     self.values.next().map(|value| T::from_lua(value, vm, mc))
-    // }
-    //
-    // /// Peek at the next value without consuming it
-    // pub fn peek(&self) -> Option<&Value<'gc>> {
-    //     self.values.as_slice().first()
-    // }
-    //
-    // /// Get a specific value by index as type T
-    // pub fn get(
-    //     &self,
-    //     index: usize,
-    //     vm: &VM<'gc>,
-    //     mc: &Mutation<'gc>,
-    // ) -> Option<Result<T, SiltError>> {
-    //     self.values
-    //         .as_slice()
-    //         .get(index)
-    //         .map(|value| T::from_lua(value, vm, mc))
-    // }
-    //
-    // /// Skip the next n values
-    // pub fn skip(&mut self, n: usize) {
-    //     for _ in 0..n {
-    //         if self.values.next().is_none() {
-    //             break;
-    //         }
-    //     }
-    // }
-    //
-    // /// Get the remaining values as a slice
-    // pub fn as_slice(&self) -> &[Value<'gc>] {
-    //     self.values.as_slice()
-    // }
+//     for value in self.values {
+//         result.push(T::from_lua(value, vm, mc)?);
+//     }
+//     Ok(result)
+// }
+//
+// /// Get the next value as type T
+// pub fn next(&mut self, vm: &VM<'gc>, mc: &Mutation<'gc>) -> Option<Result<T, SiltError>> {
+//     self.values.next().map(|value| T::from_lua(value, vm, mc))
+// }
+//
+// /// Peek at the next value without consuming it
+// pub fn peek(&self) -> Option<&Value<'gc>> {
+//     self.values.as_slice().first()
+// }
+//
+// /// Get a specific value by index as type T
+// pub fn get(
+//     &self,
+//     index: usize,
+//     vm: &VM<'gc>,
+//     mc: &Mutation<'gc>,
+// ) -> Option<Result<T, SiltError>> {
+//     self.values
+//         .as_slice()
+//         .get(index)
+//         .map(|value| T::from_lua(value, vm, mc))
+// }
+//
+// /// Skip the next n values
+// pub fn skip(&mut self, n: usize) {
+//     for _ in 0..n {
+//         if self.values.next().is_none() {
+//             break;
+//         }
+//     }
+// }
+//
+// /// Get the remaining values as a slice
+// pub fn as_slice(&self) -> &[Value<'gc>] {
+//     self.values.as_slice()
+// }
 // }
 
 // impl<'a, 'gc> Iterator for Variadic<'a, 'gc, Value<'gc>> {

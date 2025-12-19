@@ -8,7 +8,7 @@ use gc_arena::{Collect, Mutation};
 use crate::{
     error::SiltError,
     userdata::MetaMethod,
-    value::{ExVal,  Value},
+    value::{ExVal, Value},
     VM,
 };
 
@@ -109,6 +109,25 @@ impl<'v> Table<'v> {
         self.data.insert(key.into(), val.into())
     }
 
+    pub fn to_array<'f, T, const N: usize>(&self) -> [T; N]
+    where
+        'v: 'f,
+        T: Default,
+        T: Copy,
+        T: From<Value<'v>>,
+    {
+        let mut t = self.data.iter();
+        let mut out: [T; N] = [T::default(); N];
+        for i in 0..N {
+            out[i] = if let Some(tt) = t.next() {
+                T::from(tt.1.clone())
+            } else {
+                T::default()
+            }
+        }
+        out
+    }
+
     pub fn to_exval(&self) -> ExTable {
         let mut map = HashMap::new();
         for (k, v) in self.data.iter() {
@@ -127,9 +146,6 @@ impl<'v> Table<'v> {
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
-
-    // pub fn display(&self){
-    //     self.data.
 
     /** push by counter's current index, if it aready exists keep incrementing until empty position is found */
     pub fn push(&mut self, value: Value<'v>) {
@@ -225,7 +241,6 @@ impl ExTable {
     // pub fn iter(&self) -> Iter<'_, ExVal, ExVal> {
     //     self.data.iter()
     // }
-
 }
 
 impl PartialEq for ExTable {
@@ -279,7 +294,6 @@ impl<'a> IntoIterator for &'a mut ExTable {
     type Item = (&'a ExVal, &'a mut ExVal);
     type IntoIter = std::collections::hash_map::IterMut<'a, ExVal, ExVal>;
 
-    
     fn into_iter(self) -> Self::IntoIter {
         self.data.iter_mut()
     }
@@ -290,7 +304,7 @@ where
     A: From<ExVal>,
     B: From<ExVal>,
 {
-    fn from( value: ExVal) -> Self {
+    fn from(value: ExVal) -> Self {
         match value {
             ExVal::Table(mut t) => (&mut t).into(),
             _ => (ExVal::Nil.into(), ExVal::Nil.into()),
@@ -303,7 +317,7 @@ where
     A: From<ExVal>,
     B: From<ExVal>,
 {
-    fn from( value: &mut ExVal) -> Self {
+    fn from(value: &mut ExVal) -> Self {
         match value {
             ExVal::Table(t) => t.into(),
             _ => (ExVal::Nil.into(), ExVal::Nil.into()),

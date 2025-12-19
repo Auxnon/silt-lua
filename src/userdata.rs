@@ -325,15 +325,15 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
     ) -> InnerResult<'gc> {
         // TODO man this is broken, we can downcast but it wont work with our normal method
         // closure, we need a new thing??
-            // if let Some(&method_fn) = self.meta_methods.get(index) {
-            //     if let Ok(mut d) = ud.data.lock() {
-            //        
-            //         return match d.downcast_mut() {
-            //             Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
-            //             None => Err(SiltError::UDBadCast),
-            //         };
-            //     }
-            // }
+        // if let Some(&method_fn) = self.meta_methods.get(index) {
+        //     if let Ok(mut d) = ud.data.lock() {
+        //
+        //         return match d.downcast_mut() {
+        //             Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
+        //             None => Err(SiltError::UDBadCast),
+        //         };
+        //     }
+        // }
         Err(SiltError::UDNoMethodRef)
     }
 
@@ -804,10 +804,10 @@ impl UserDataWrapper {
     // pub fn
     pub fn downcast_mut<'a, 'b: 'a, T: UserData, F, R>(
         &'a mut self,
-        mut apply: F,
+        apply: F,
     ) -> Result<R, SiltError>
     where
-        F: FnMut(&mut T) -> Result<R, SiltError>,
+        F: FnOnce(&mut T) -> Result<R, SiltError>,
         R: ToLua<'b>,
     {
         let mut i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
