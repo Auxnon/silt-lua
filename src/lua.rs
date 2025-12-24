@@ -1900,6 +1900,16 @@ impl<'gc> VM<'gc> {
         )
     }
 
+/// Create a UserData wrapper without creating a value object
+    pub fn create_userdata_raw<T: UserData>(&mut self, mc: &Mutation<'gc>, data: T) -> UserDataWrapper {
+        crate::userdata::vm_integration::create_userdata_raw(
+            &mut self.userdata_registry,
+            mc,
+            data,
+            &mut self.userdata_stack,
+        )
+    }
+
     /** Load standard library functions */
     pub fn load_standard_library<'a>(&'a mut self, mc: &Mutation<'gc>) {
         // macro_rules! register_native_fn {

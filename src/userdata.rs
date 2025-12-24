@@ -793,6 +793,14 @@ impl UserDataWrapper {
         }
     }
 
+    pub fn is_type<T: UserData>(&self) -> bool {
+        if let Ok(d) = self.data.lock() {
+            d.is::<T>()
+        } else {
+            false
+        }
+    }
+
     // pub fn lock()
 
     // pub fn downcast_mut2<'a, 'b: 'a, T:'static>(&'b mut self) -> Result<&'a mut T, SiltError> {
@@ -1258,12 +1266,12 @@ pub mod vm_integration {
     use crate::lua::{UDVec, VM};
 
     /// Create a new UserData value
-    pub fn create_userdata<'gc, T: UserData>(
+    pub fn create_userdata_raw<'gc, T: UserData>(
         reg: &mut UserDataRegistry<'gc>,
         mc: &Mutation<'gc>,
         data: T,
         userdata_stack: &mut Option<UDVec>,
-    ) -> Value<'gc> {
+    ) -> UserDataWrapper {
         // Register the type if it hasn't been registered yet
         let type_name = T::type_name();
         if !reg.maps.contains_key(type_name) {
@@ -1283,9 +1291,21 @@ pub mod vm_integration {
             let weak_wrapper = WeakWrapper::from_wrapper(&wrapper);
             stack.0.push(weak_wrapper);
         };
+        wrapper
 
         // Create the GC-managed wrapper
-        let ud_gc = Gc::new(mc, RefLock::new(wrapper));
+    }
+
+    /// Create a new UserData value
+    pub fn create_userdata<'gc, T: UserData>(
+        reg: &mut UserDataRegistry<'gc>,
+        mc: &Mutation<'gc>,
+        data: T,
+        userdata_stack: &mut Option<UDVec>,
+    ) -> Value<'gc> {
+        let ud = create_userdata_raw(reg, mc, data, userdata_stack);
+
+        let ud_gc = Gc::new(mc, RefLock::new(ud));
 
         // Set the stack index in the GC-managed wrapper
         // ud_gc.borrow_mut(mc).set_stack_index(index);
