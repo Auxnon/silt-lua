@@ -525,6 +525,25 @@ impl From<ExVal> for i64 {
     }
 }
 
+// ========== convert u8 ==========
+impl From<u8> for Value<'_> {
+    fn from(value: u8) -> Self {
+        Value::Integer(value.into())
+    }
+}
+impl From<Value<'_>> for u8 {
+    fn from(value: Value<'_>) -> Self {
+        match value {
+            // TODO is this lossless conversion best?
+            Value::Number(f) => f.max(u8::MIN as f64).min(u8::MAX as f64).round() as u8,
+            Value::Integer(i) => i.max(u8::MAX as i64).min(0) as u8,
+            // TODO Value::String()
+            Value::Bool(b)=>if b{Self::MAX}else{0},
+            _ => 0,
+        }
+    }
+}
+
 // ========== convert u32 ==========
 impl From<u32> for Value<'_> {
     fn from(value: u32) -> Self {
@@ -532,18 +551,13 @@ impl From<u32> for Value<'_> {
     }
 }
 
-impl From<u8> for Value<'_> {
-    fn from(value: u8) -> Self {
-        Value::Integer(value.into())
-    }
-}
-
 impl From<Value<'_>> for u32 {
-    fn from(value: Value<'_>) -> u32 {
+    fn from(value: Value<'_>) -> Self {
         match value {
             // TODO is this lossless conversion best?
             Value::Number(f) => f.max(u32::MIN as f64).min(u32::MAX as f64).round() as u32,
             Value::Integer(i) => i.max(u32::MAX as i64).min(0) as u32,
+            Value::Bool(b)=>if b{Self::MAX}else{0},
             // TODO Value::String()
             _ => 0,
         }
@@ -556,6 +570,7 @@ impl From<&Value<'_>> for u32 {
             // TODO is this lossless conversion best?
             Value::Number(f) => f.max(u32::MIN as f64).min(u32::MAX as f64).round() as u32,
             Value::Integer(i) => (*i).max(u32::MAX as i64).min(0) as u32,
+            Value::Bool(b)=>if *b{Self::MAX}else{0},
             // TODO Value::String()
             _ => 0,
         }
@@ -563,6 +578,51 @@ impl From<&Value<'_>> for u32 {
 }
 
 impl<'a> FromLua<'a> for u32 {
+    fn from_lua(val: &Value<'a>, _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
+        Ok(val.into())
+    }
+}
+
+// impl<'a, T: From<Value<'a>>> FromLua<'a> for T {
+//     fn from_lua(val: &Value<'a>, _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
+//         Ok(T::from(val.into()))
+//     }
+// }
+
+// ========== convert u64 ==========
+
+impl From<u64> for Value<'_> {
+    fn from(value: u64) -> Self {
+        Value::Integer(value.max(i64::MAX as u64) as i64)
+    }
+}
+
+impl From<Value<'_>> for u64 {
+    fn from(value: Value<'_>) -> Self {
+        match value {
+            // TODO is this lossless conversion best?
+            Value::Number(f) => f.max(Self::MIN as f64).min(Self::MAX as f64).round() as u64,
+            Value::Integer(i) => i.max(Self::MAX as i64).min(0) as u64,
+            Value::Bool(b)=>if b{Self::MAX}else{0},
+            // TODO Value::String()
+            _ => 0,
+        }
+    }
+}
+
+impl From<&Value<'_>> for u64 {
+    fn from(value: &Value<'_>) -> Self {
+        match value {
+            // TODO is this lossless conversion best?
+            Value::Number(f) => f.max(Self::MIN as f64).min(Self::MAX as f64).round() as Self,
+            Value::Integer(i) => (*i).max(Self::MAX as i64).min(0) as Self,
+            // TODO Value::String()
+            _ => 0,
+        }
+    }
+}
+
+impl<'a> FromLua<'a> for u64 {
     fn from_lua(val: &Value<'a>, _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
         Ok(val.into())
     }
@@ -601,7 +661,40 @@ impl<'a> FromLua<'a> for i32 {
     }
 }
 
-// ========== convert f64 ==========
+// ========== convert f32 ==========
+impl From<f32> for Value<'_> {
+    fn from(value: f32) -> Self {
+        Value::Number(value.into())
+    }
+}
+
+impl From<Value<'_>> for f32 {
+    fn from(value: Value<'_>) -> Self {
+        match value {
+            Value::Number(f) => f.max(f32::MAX as f64).min(f32::MIN as f64) as f32,
+            Value::Integer(i) => i as f32,
+            // TODO Value::String()
+            _ => 0.,
+        }
+    }
+}
+
+impl From<&Value<'_>> for f32 {
+    fn from(value: &Value<'_>) -> Self {
+        match value {
+            Value::Number(f) => (*f).max(f32::MAX as f64).min(f32::MIN as f64) as f32,
+            Value::Integer(i) => *i as f32,
+            // TODO Value::String()
+            _ => 0.,
+        }
+    }
+}
+
+impl FromLua<'_> for f32 {
+    fn from_lua(val: &Value<'_>, _: &VM<'_>, _: &Mutation<'_>) -> Result<Self, SiltError> {
+        Ok(val.into())
+    }
+} // ========== convert f64 ==========
 impl From<f64> for Value<'_> {
     fn from(value: f64) -> Self {
         Value::Number(value)
@@ -633,6 +726,29 @@ impl From<&Value<'_>> for f64 {
 impl FromLua<'_> for f64 {
     fn from_lua(val: &Value<'_>, _: &VM<'_>, _: &Mutation<'_>) -> Result<Self, SiltError> {
         Ok(val.into())
+    }
+}
+
+/// Note: this is intentionally similiar to FromLuaMulti for [T;N] with the differennce of no Value
+/// slice to play with, thus slightly different syntax
+impl<'f, T, const N: usize> FromLua<'f> for [T; N]
+where
+    T: Default,
+    T: Copy,
+    T: From<Value<'f>>,
+{
+    fn from_lua(val: &Value<'f>, _: &VM<'_>, _: &Mutation<'_>) -> Result<Self, SiltError> {
+        Ok(match val {
+            Value::Table(t) => t.borrow().to_array(),
+            v => {
+                let mut out = [T::default(); N];
+                if N > 0 {
+                    let vv = v.clone();
+                    out[0] = T::from(vv);
+                }
+                out
+            }
+        })
     }
 }
 
@@ -767,15 +883,29 @@ impl<'a> From<&Value<'a>> for Option<Value<'a>> {
     }
 }
 
-impl<'a> FromLua<'a> for Option<Value<'a>> {
-    fn from_lua(val: &Value<'a>, _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
-        Ok(val.into())
-    }
-}
+// impl<'a> FromLua<'a> for Option<Value<'a>> {
+//     fn from_lua(val: &Value<'a>, _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
+//         Ok(val.into())
+//     }
+// }
 
 impl<'a> FromLua<'a> for Value<'a> {
     fn from_lua(val: &Value<'a>, _: &VM<'a>, _: &Mutation<'a>) -> Result<Self, SiltError> {
         Ok(val.clone())
+    }
+}
+
+impl<'a, T> FromLua<'a> for Option<T>
+where
+    T: FromLua<'a>,
+{
+    fn from_lua(val: &Value<'a>, vm: &VM<'a>, mc: &Mutation<'a>) -> Result<Self, SiltError> {
+        Ok(match val {
+            Value::Nil => None,
+            v => {
+                Some(T::from_lua(v, vm, mc)?)
+            }
+        })
     }
 }
 
@@ -1340,7 +1470,7 @@ where
         _: &VM<'gc>,
         _: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
-               if let Some(val) = args.first() {
+        if let Some(val) = args.first() {
             match val {
                 Value::Table(t) => Ok(t.borrow().to_array()),
                 _ => {
