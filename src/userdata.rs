@@ -491,7 +491,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
             metamethod.as_ind(),
             Box::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
-                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                    match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
@@ -525,7 +525,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
             name.to_string(),
             Box::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
-                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                    match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
@@ -574,7 +574,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
             name.to_string(),
             Box::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
-                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                    match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
@@ -592,7 +592,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
     }
 }
 
-impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc, T> {
+impl<'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_field_method_get<F, R>(&mut self, name: &str, closure: F)
     where
         R: ToLua<'gc>,
@@ -820,6 +820,27 @@ impl UserDataWrapper {
     {
         let mut i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
         let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCast)?;
+        apply(ud)
+    }
+pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(
+        &'a self,
+        apply: F,
+    ) -> Result<R, SiltError>
+    where
+        F: FnOnce(&T) -> Result<R, SiltError>,
+        R: ToLua<'b>,
+    {
+        let i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
+        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCast)?;
+        apply(ud)
+    }
+
+    pub fn downcast_get<'a, 'b: 'a, T: UserData, F, R>(&'a self, apply: F) -> Result<R, SiltError>
+    where
+        F: FnOnce(&T) -> Result<R, SiltError>,
+    {
+        let i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
+        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCast)?;
         apply(ud)
 
         // Ok(Value::Nil)
