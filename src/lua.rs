@@ -1711,6 +1711,18 @@ impl<'gc> VM<'gc> {
         Ok(Value::Table(Gc::new(mc, RefLock::new(t))))
     }
 
+    pub fn table_from_array<A, I>(&self, mc: &Mutation<'gc>, array: I) -> Value<'gc>
+    where
+        I: IntoIterator<Item = A>,
+        A: Into<Value<'gc>>,
+    {
+        let mut t = Table::new(*self.table_counter.borrow());
+        *self.table_counter.borrow_mut() += 1;
+        t.concat_array(array);
+
+        Value::Table(Gc::new(mc, RefLock::new(t)))
+    }
+
     pub fn raw_table(&self) -> Table<'gc> {
         let t = Table::new(*self.table_counter.borrow());
         *self.table_counter.borrow_mut() += 1;
@@ -1900,8 +1912,12 @@ impl<'gc> VM<'gc> {
         )
     }
 
-/// Create a UserData wrapper without creating a value object
-    pub fn create_userdata_raw<T: UserData>(&mut self, mc: &Mutation<'gc>, data: T) -> UserDataWrapper {
+    /// Create a UserData wrapper without creating a value object
+    pub fn create_userdata_raw<T: UserData>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        data: T,
+    ) -> UserDataWrapper {
         crate::userdata::vm_integration::create_userdata_raw(
             &mut self.userdata_registry,
             mc,

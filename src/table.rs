@@ -8,7 +8,7 @@ use gc_arena::{Collect, Mutation};
 use crate::{
     error::SiltError,
     userdata::MetaMethod,
-    value::{ExVal, Value},
+    value::{ExVal, FromLua, ToLua, Value},
     VM,
 };
 
@@ -89,6 +89,30 @@ impl<'v> Table<'v> {
         }
     }
 
+    pub fn try_get_type<'f, T, R>(&self, key: T, vm: &VM<'v>, mc: &Mutation<'v>) -> Option<R>
+    where
+        'v: 'f,
+        T: Into<Value<'v>>,
+        R: FromLua<'v>,
+        R: Default,
+    {
+        self.data
+            .get(&key.into())
+            .map(|v| R::from_lua(v, vm, mc).unwrap_or_default())
+    }
+    pub fn get_type<'f, T, R>(&self, key: T, vm: &VM<'v>, mc: &Mutation<'v>) -> R
+    where
+        'v: 'f,
+        T: Into<Value<'v>>,
+        R: FromLua<'v>,
+        R: Default,
+    {
+        match self.data.get(&key.into()) {
+            Some(v) => R::from_lua(v, vm, mc).unwrap_or_default(),
+            None => R::default(),
+        }
+    }
+
     pub fn get_number<'f, T>(&self, key: T) -> f64
     where
         'v: 'f,
@@ -128,6 +152,19 @@ impl<'v> Table<'v> {
         out
     }
 
+    pub fn to_vec<'f, T>(&self, vm: &VM<'v>, mc: &Mutation<'v>) -> Vec<T>
+    where
+        'v: 'f,
+        T: Default,
+        // T: Copy,
+        T: FromLua<'v>,
+    {
+        self.data
+            .iter()
+            .map(|f| T::from_lua(f.1, vm, mc).unwrap_or_default())
+            .collect()
+    }
+
     pub fn to_exval(&self) -> ExTable {
         let mut map = HashMap::new();
         for (k, v) in self.data.iter() {
@@ -154,8 +191,8 @@ impl<'v> Table<'v> {
         let mut key = Value::Integer(self.counter);
         while self.data.contains_key(&key) {
             self.counter += 1;
+            key.force_to_int(self.counter);
         }
-        key.force_to_int(self.counter);
         self.data.insert(key, value);
     }
 
@@ -168,6 +205,20 @@ impl<'v> Table<'v> {
         for v in array.into_iter() {
             let key = Value::Integer(self.counter);
             self.data.insert(key, A::into(v));
+            self.counter += 1;
+        }
+    }
+
+    pub fn concat_complex_array<A, I>(&mut self, lua: &VM<'v>, mc: &Mutation<'v>, array: I)
+    where
+        I: IntoIterator<Item = A>,
+        A: ToLua<'v>,
+    {
+        self.counter += 1;
+        for v in array.into_iter() {
+            let key = Value::Integer(self.counter);
+            let res = v.to_lua(lua, mc).unwrap_or_default();
+            self.data.insert(key, res);
             self.counter += 1;
         }
     }
@@ -203,6 +254,7 @@ impl<'v> Table<'v> {
     pub fn iter(&self) -> Iter<'_, Value<'v>, Value<'v>> {
         self.data.iter()
     }
+    
 }
 
 impl ToString for Table<'_> {
