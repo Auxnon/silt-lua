@@ -1,6 +1,20 @@
 .app-code.app-max {
-  background-color: rgb(54, 43, 94);
+  background: linear-gradient(135deg, 
+    #667eea 0%, 
+    #764ba2 25%, 
+    #f093fb 50%, 
+    #f5576c 75%, 
+    #4facfe 100%);
+  background-size: 400% 400%;
+  animation: gradientShift 15s ease infinite;
 }
+
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
 .code-panel {
   z-index: 200;
   position: absolute;
@@ -11,13 +25,16 @@
   max-width: 816px;
   max-height: 1024px;
   height: 80%;
-  background-color: #e3e2d7;
+  background-color: #1e1e1e;
   border-radius: 16px 100px 16px 16px;
-  box-shadow: 0px 10px 10px 0px rgba(0, 0, 0, 0.25);
+  box-shadow: 0px 20px 40px 0px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   &.backpanel {
     z-index: -1;
-    background-color: #9c9c9a;
+    background-color: rgba(0, 0, 0, 0.2);
     transform: translate(calc(-50% - 20px), calc(-50% + 10px));
+    backdrop-filter: blur(10px);
   }
   * {
     font-family: Arial, Helvetica, sans-serif;
@@ -36,6 +53,7 @@
     overflow-y: auto;
     position: relative;
     border-radius: 0 100px 0 0;
+    background-color: #1e1e1e;
     &::-webkit-scrollbar-thumb {
       border-radius: 16px;
       background-color: #7d7979;
@@ -80,17 +98,18 @@
     //   background: red;
     // }
     .code-area {
-      color: #5c594c;
-      position: relative;
-      border-left: 3px solid #7d7979;
+      color: transparent;
+      caret-color: #ffffff;
+      position: absolute;
+      top: 0;
+      left: 0;
+      border-left: 3px solid #4a9eff;
       margin: 2rem;
-      // background-image: linear-gradient(#f1f1f1 50%, #f9f9f9 50%);
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', monospace;
       background: transparent;
-      background-size: 100% 4rem;
       border: none;
-      border-left: 3px solid #7d7979;
-      width: 100%;
+      border-left: 3px solid #4a9eff;
+      width: calc(100% - 4rem);
       height: auto;
       resize: none;
       line-height: 2rem;
@@ -98,9 +117,45 @@
       outline: 0;
       padding-left: 2.5rem;
       overflow: hidden;
+      z-index: 2;
       .app-partial & {
         margin: 0.5rem;
       }
+    }
+
+    .code-highlight {
+      color: #d4d4d4;
+      position: absolute;
+      top: 0;
+      left: 0;
+      border-left: 3px solid transparent;
+      margin: 2rem;
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', monospace;
+      background: transparent;
+      border: none;
+      width: calc(100% - 4rem);
+      height: auto;
+      line-height: 2rem;
+      padding: 4px;
+      padding-left: 2.5rem;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 1;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      .app-partial & {
+        margin: 0.5rem;
+      }
+
+      .keyword { color: #569cd6; font-weight: bold; }
+      .operator { color: #d4d4d4; }
+      .number { color: #b5cea8; }
+      .boolean { color: #569cd6; }
+      .nil { color: #569cd6; }
+      .string { color: #ce9178; }
+      .comment { color: #6a9955; font-style: italic; }
+      .identifier { color: #9cdcfe; }
+      .function { color: #dcdcaa; }
     }
     .code-back {
       z-index: -1;
@@ -137,12 +192,10 @@
           counter-increment: element;
         }
         &:nth-child(even) {
-          background-color: #f7f7ea;
-          // margin-top: 2rem;
-          //   background-color: #f5f5f5;
+          background-color: rgba(255, 255, 255, 0.02);
         }
         &:nth-child(odd) {
-          background-color: #d2d1c7;
+          background-color: rgba(255, 255, 255, 0.01);
         }
       }
     }
@@ -180,13 +233,18 @@
     left: 50%;
     padding: 0.5rem 1rem;
     border-radius: 16px;
-    background-color: #7d7979;
+    background: linear-gradient(135deg, #4a9eff, #0078d4);
     color: white;
     transform: translate(-50%, 0);
     font-weight: 600;
     cursor: pointer;
+    border: none;
+    box-shadow: 0 4px 12px rgba(74, 158, 255, 0.3);
+    transition: all 0.2s ease;
     &:hover {
-      background-color: #683382;
+      background: linear-gradient(135deg, #5aa3ff, #106ebe);
+      box-shadow: 0 6px 16px rgba(74, 158, 255, 0.4);
+      transform: translate(-50%, -2px);
     }
   }
 }

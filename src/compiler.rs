@@ -17,6 +17,8 @@ use crate::{
 use colored::Colorize;
 #[cfg(feature = "wasm")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::*;
 
 macro_rules! build_block_until_then_eat {
     ($self:ident, $mc:ident, $f:ident, $it:ident, $($rule:ident)|*) => {{
@@ -994,6 +996,21 @@ impl Compiler {
             indented,
         }
     }
+
+    #[cfg(feature = "wasm")]
+    #[wasm_bindgen]
+    pub fn lsp_wasm(&mut self, source: &str, format: bool) -> String {
+        let output = self.lsp(source, format);
+        serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+pub fn lsp(source: &str, format: bool) -> String {
+    let mut compiler = Compiler::new();
+    let output = compiler.lsp(source, format);
+    serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string())
 
     fn synchronize(&mut self) {
         // TODO should we unwind or just dump it all?
