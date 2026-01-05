@@ -1,0 +1,193 @@
+.app-code.app-max {
+  background-color: rgb(54, 43, 94);
+}
+.code-panel {
+  z-index: 200;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 80%;
+  max-width: 816px;
+  max-height: 1024px;
+  height: 80%;
+  background-color: #e3e2d7;
+  border-radius: 16px 100px 16px 16px;
+  box-shadow: 0px 10px 10px 0px rgba(0, 0, 0, 0.25);
+  &.backpanel {
+    z-index: -1;
+    background-color: #9c9c9a;
+    transform: translate(calc(-50% - 20px), calc(-50% + 10px));
+  }
+  * {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+  }
+
+  .app-partial & {
+    width: 100%;
+    height: 100%;
+    border-radius: 16px;
+  }
+
+  .code-segment {
+    max-height: calc(100% - 128px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    position: relative;
+    border-radius: 0 100px 0 0;
+    &::-webkit-scrollbar-thumb {
+      border-radius: 16px;
+      background-color: #7d7979;
+      box-shadow: none;
+    }
+    &::-webkit-scrollbar-track-piece {
+      // margin: 100px 0 0 100px;
+
+      // width: 10px;
+      // background-color: #e3e2d7;
+      // max-width: 10px;
+      // background: white;
+      // box-shadow: inset 0 0 0px 7px black;
+    }
+    &::-webkit-scrollbar-track {
+      // height: 10px;
+      // margin: 100px 0 0 100px;
+      margin: 100px 0 0 100px;
+      background-color: rgba(131, 113, 113, 0.3);
+      border-radius: 16px;
+      .app-partial & {
+        margin: 10px 0 0 10px;
+      }
+    }
+    // &::-webkit-scrollbar-corner {
+    //   margin: 100px;
+    //   height: 10px;
+    //   background: red;
+    // }
+    &::-webkit-scrollbar {
+      width: 10px;
+      // margin: 0;
+      border: none;
+      margin: 0;
+      box-shadow: none;
+      // --webkit-box-shadow: none;
+      // background-color: red;
+    }
+    // &::-webkit-scrollbar-button {
+    //   margin: 100px;
+    //   height: 10px;
+    //   background: red;
+    // }
+    .code-area {
+      color: #5c594c;
+      position: relative;
+      border-left: 3px solid #7d7979;
+      margin: 2rem;
+      // background-image: linear-gradient(#f1f1f1 50%, #f9f9f9 50%);
+      font-family: Arial, Helvetica, sans-serif;
+      background: transparent;
+      background-size: 100% 4rem;
+      border: none;
+      border-left: 3px solid #7d7979;
+      width: 100%;
+      height: auto;
+      resize: none;
+      line-height: 2rem;
+      padding: 4px;
+      outline: 0;
+      padding-left: 2.5rem;
+      overflow: hidden;
+      .app-partial & {
+        margin: 0.5rem;
+      }
+    }
+    .code-back {
+      z-index: -1;
+      min-height: 10px;
+      position: absolute;
+      width: calc(100% - 4rem);
+      margin: 2rem;
+      top: 0;
+      counter-reset: element;
+      overflow: hidden;
+      .code-line {
+        height: 1.75rem;
+        padding: 0;
+        max-width: 100%;
+        margin-top: 0.25rem;
+        margin-bottom: 0;
+        margin-left: 2rem;
+        outline: 0;
+        border-radius: 16px;
+        text-align: right;
+        &::after {
+          font-size: 0.8rem;
+          font-weight: 600;
+          position: relative;
+          // left: -1.5rem;
+          right: 100%;
+          margin-right: 0.25rem;
+          text-align: right;
+          // float: right;
+          top: 0.25rem;
+          color: #c1c1c1;
+
+          content: counter(element);
+          counter-increment: element;
+        }
+        &:nth-child(even) {
+          background-color: #f7f7ea;
+          // margin-top: 2rem;
+          //   background-color: #f5f5f5;
+        }
+        &:nth-child(odd) {
+          background-color: #d2d1c7;
+        }
+      }
+    }
+  }
+  .code-output {
+    color: white;
+    position: absolute;
+    height: 128px;
+    bottom: 0;
+    width: 100%;
+    border-radius: 0 0 16px 16px;
+    box-shadow: inset 0px 10px 10px 0px rgba(0, 0, 0, 0.25);
+    background-color: #171716;
+    overflow-y: auto;
+    padding-top: 16px;
+    &::after {
+      z-index: 1;
+      content: "";
+      position: fixed;
+      bottom: 128px;
+      left: 0;
+      width: 100%;
+      height: 16px;
+      background-color: #e3e2d7;
+      border-radius: 0 0 16px 16px;
+    }
+    p {
+      margin: 16px;
+    }
+  }
+  .code-run {
+    position: absolute;
+    bottom: 128px;
+    z-index: 2;
+    left: 50%;
+    padding: 0.5rem 1rem;
+    border-radius: 16px;
+    background-color: #7d7979;
+    color: white;
+    transform: translate(-50%, 0);
+    font-weight: 600;
+    cursor: pointer;
+    &:hover {
+      background-color: #683382;
+    }
+  }
+}
+
