@@ -168,9 +168,9 @@ impl PartialEq for ExVal {
     }
 }
 
-impl Into<ExVal> for Value<'_> {
-    fn into(self) -> ExVal {
-        match self {
+impl From<Value<'_>> for ExVal {
+    fn from(value: Value<'_>) -> Self {
+        match value {
             Value::Nil => ExVal::Nil,
             Value::Integer(i) => ExVal::Integer(i),
             Value::Number(n) => ExVal::Number(n),
@@ -178,8 +178,8 @@ impl Into<ExVal> for Value<'_> {
             Value::Infinity(b) => ExVal::Infinity(b),
             Value::String(s) => ExVal::String(s),
             Value::Table(t) => ExVal::Table(t.borrow().to_exval()),
-            Value::Function(f) => ExVal::Meta(format!("{}", f).into()),
-            Value::Closure(c) => ExVal::Meta(format!("=>({})", c.function).into()),
+            Value::Function(f) => ExVal::Meta(format!("{}", f)),
+            Value::Closure(c) => ExVal::Meta(format!("=>({})", c.function)),
             Value::NativeFunction(_) => ExVal::Meta("native_function".to_string()),
             Value::UserData(u) => ExVal::UserData(format!("{} userdata", u.borrow().type_name())),
             #[cfg(feature = "vectors")]
@@ -187,6 +187,12 @@ impl Into<ExVal> for Value<'_> {
             #[cfg(feature = "vectors")]
             Value::Vec2(v) => ExVal::Vec2(v),
         }
+    }
+}
+
+impl From<()> for ExVal {
+    fn from(_: ()) -> Self {
+        ExVal::Nil
     }
 }
 
@@ -348,7 +354,7 @@ impl<'v> Value<'v> {
             let mut borrowed = udw.borrow_mut(mc);
             return borrowed.downcast_mut(apply);
         }
-        Err(SiltError::UDBadCast)
+        Err(SiltError::UDBadCall)
     }
 
     pub fn apply_userdata<T: UserData, F, R>(&self, apply: F) -> Result<R, SiltError>
@@ -360,7 +366,7 @@ impl<'v> Value<'v> {
             let borrowed = udw.borrow();
             return borrowed.downcast_ref(apply);
         }
-        Err(SiltError::UDBadCast)
+        Err(SiltError::UDBadCall)
     }
 
     pub fn clone(&self) -> Value<'v> {
@@ -487,6 +493,12 @@ macro_rules! base_val {
                 _: &Mutation<'gc>,
             ) -> Result<Self, SiltError> {
                 Ok(args.first().unwrap_or(&Value::Nil).into())
+            }
+        }
+
+        impl<'gc> ToLuaMulti<'gc> for $type {
+            fn to_lua_multi(self, _: &VM<'gc>, _: &Mutation<'gc>) -> ValuesResult<'gc> {
+                Ok(vec![self.into()])
             }
         }
     };
@@ -766,11 +778,7 @@ impl From<&Value<'_>> for bool {
     }
 }
 
-impl FromLua<'_> for bool {
-    fn from_lua(val: &Value<'_>, _: &VM<'_>, _: &Mutation<'_>) -> Result<Self, SiltError> {
-        Ok(val.into())
-    }
-}
+base_val!(bool);
 
 // impl<'lua, 'b> FromLua<'lua> for i64 {
 //     fn from_lua(val: &Value<'lua>, _: &VM<'lua>) -> Result<Self, SiltError> {
@@ -818,17 +826,7 @@ impl From<&ExVal> for String {
     }
 }
 
-impl FromLua<'_> for String {
-    fn from_lua(val: &Value<'_>, _: &VM<'_>, _: &Mutation<'_>) -> Result<Self, SiltError> {
-        Ok(val.into())
-    }
-}
-
-impl FromLuaMulti<'_> for String {
-    fn from_lua_multi(val: &[Value<'_>], _: &VM<'_>, _: &Mutation<'_>) -> Result<Self, SiltError> {
-        Ok(val.first().unwrap_or(&Value::Nil).into())
-    }
-}
+base_val!(String);
 
 // impl<T> FromLuaMulti<'_> for Option<T>
 // where
@@ -1026,6 +1024,18 @@ where
 //         Ok(vm.wrap_table(mc, t))
 //     }
 // }
+
+impl<'a, A> ToLua<'a> for Option<A>
+where
+    A: ToLua<'a>,
+{
+    fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
+        Ok(match self {
+            Some(v) => v.to_lua(vm, mc)?,
+            _ => Value::Nil,
+        })
+    }
+}
 
 impl<'a, T, const N: usize> ToLua<'a> for [T; N]
 where

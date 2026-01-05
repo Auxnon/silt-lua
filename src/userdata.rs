@@ -25,7 +25,7 @@ pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
 pub type ToInnerResult<'gc, V: ToLua<'gc>> = V;
 
 /// Trait for Rust types that can be used as Lua UserData
-pub trait UserData: Sized + 'static {
+pub trait UserData: Sized + Send + Sync + 'static {
     /// Returns a unique type name for this UserData type
     fn type_name() -> &'static str;
 
@@ -350,7 +350,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
             if let Ok(d) = ud.data.lock() {
                 return match d.downcast_ref() {
                     Some(typed_ud) => getter_fn(vm, mc, typed_ud),
-                    None => Err(SiltError::UDBadCast),
+                    None => Err(SiltError::UDBadCall),
                 };
             }
         }
@@ -369,7 +369,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
             if let Ok(mut d) = ud.data.lock() {
                 return match d.downcast_mut() {
                     Some(typed_ud) => setter_fn(vm, mc, typed_ud, value),
-                    None => Err(SiltError::UDBadCast),
+                    None => Err(SiltError::UDBadCall),
                 };
             }
         }
@@ -496,7 +496,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
                         Ok(rr) => rr,
-                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(SiltError::UDBadCall) => closure.call_method(vm, mc, None, args)?,
                         Err(e) => return Err(e),
                     }
                 } else {
@@ -530,7 +530,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
                         Ok(rr) => rr,
-                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(SiltError::UDBadCall) => closure.call_method(vm, mc, None, args)?,
                         Err(e) => return Err(e),
                     }
                 } else {
@@ -579,7 +579,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
                         Ok(rr) => rr,
-                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(SiltError::UDBadCall) => closure.call_method(vm, mc, None, args)?,
                         Err(e) => return Err(e),
                     }
                 } else {
@@ -681,7 +681,7 @@ unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
 
 /// A wrapper for UserData objects
 pub struct UserDataWrapper {
-    data: Arc<Mutex<dyn Any>>,
+    data: Arc<Mutex<dyn Any + Send + Sync>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -689,7 +689,7 @@ pub struct UserDataWrapper {
 }
 
 pub struct WeakWrapper {
-    data: Weak<Mutex<dyn Any>>,
+    data: Weak<Mutex<dyn Any + Send + Sync>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -819,7 +819,7 @@ impl UserDataWrapper {
         R: ToLua<'b>,
     {
         let mut i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
-        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCast)?;
+        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCall)?;
         apply(ud)
     }
 pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(
@@ -828,10 +828,9 @@ pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(
     ) -> Result<R, SiltError>
     where
         F: FnOnce(&T) -> Result<R, SiltError>,
-        R: ToLua<'b>,
     {
         let i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
-        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCast)?;
+        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCall)?;
         apply(ud)
     }
 
@@ -840,7 +839,7 @@ pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(
         F: FnOnce(&T) -> Result<R, SiltError>,
     {
         let i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
-        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCast)?;
+        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCall)?;
         apply(ud)
 
         // Ok(Value::Nil)
@@ -964,13 +963,14 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut("test", |_, _, this, _: ValueRef| {
+        methods.add_method_mut("test", |vm, mc, this, test: f64| {
             // let v = args.deref();
             println!(
                 "internal userdata method heehehehe (is self param userdata? {}!)",
                 this.is_some()
             );
-            Ok(Value::Integer(3))
+            let ve: Vec<(u8, i32)> = vec![];
+            Ok(ve)
         });
 
         methods.add_method_mut("iter", |vm, mc, this, args: Variadic| {

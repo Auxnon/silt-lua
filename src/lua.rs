@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, cell::RefCell, mem::take, ops::DerefMut, rc::Rc};
+use std::{borrow::BorrowMut, cell::RefCell, error::Error, mem::take, ops::DerefMut, rc::Rc};
 
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
@@ -296,9 +296,9 @@ impl<'gc> Lua {
     }
 
     /// enter into the VM state to modify the VM directly
-    pub fn enter<F>(&mut self, closure: F) -> Result<ExVal, Box<dyn std::error::Error>>
+    pub fn enter<F,T>(&mut self, closure: F) -> T
     where
-        F: for<'a> Fn(&mut VM<'a>, &Mutation<'a>) -> Result<ExVal, Box<dyn std::error::Error>>,
+        F: for<'a> Fn(&mut VM<'a>, &Mutation<'a>) -> T,
     {
         self.arena.mutate_root(move |mc, vm| {
             closure(vm, mc)
@@ -312,12 +312,12 @@ impl<'gc> Lua {
     /// vm.call(ref)
     pub fn load_fn(
         &mut self,
+        compiler: &mut Compiler,
         name: Option<String>,
         code: &str,
-        compiler: &mut Compiler,
     ) -> Result<usize, Vec<ErrorTuple>> {
         self.arena
-            .mutate_root(|mc, vm| vm.load_fn(mc, name, code, compiler))
+            .mutate_root(|mc, vm| vm.load_fn(mc, compiler, name, code ))
     }
 
     /// call an internal function by index provided from the load function. Ideally call this after
@@ -585,9 +585,9 @@ impl<'gc> VM<'gc> {
     pub fn load_fn<'a>(
         &mut self,
         mc: &'a Mutation<'gc>,
+        compiler: &mut Compiler,
         name: Option<String>,
         code: &str,
-        compiler: &mut Compiler,
     ) -> Result<usize, Vec<ErrorTuple>> {
         match compiler.try_compile(mc, name, code) {
             Ok(f) => {

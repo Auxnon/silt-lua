@@ -52,6 +52,7 @@ pub enum SiltError {
     // Userdata errors
     UDNoInitField,
     UDNoInitMethod,
+    UDBadCall,
     UDBadCast,
     UDNoMap,
     UDNoFieldGet,
@@ -75,6 +76,21 @@ pub enum SiltError {
     Network(String),
     IO(String),
 }
+
+impl std::error::Error for SiltError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            // SiltError::InvalidNumber(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+// impl From<SiltError> for Box<dyn std::error::Error> {
+//     fn from(err: SiltError) -> Self {
+//         Box::new(err)
+//     }
+// }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueTypes {
@@ -225,8 +241,10 @@ impl std::fmt::Display for SiltError {
             Self::VmCompileError => write!(f, "Error compiling chunk"),
             Self::VmRuntimeError => write!(f, "Runtime error for chunk"),
             Self::VmCorruptConstant => write!(f, "Constant store corrupted"),
-            Self::VmValBadConvert(t)=> write!(f, "Impossible to convert from \"{}\"",t),
-            Self::VmNativeParameterMismatch=>write!(f, "Cannot call native function with available parameters"), 
+            Self::VmValBadConvert(t) => write!(f, "Impossible to convert from \"{}\"", t),
+            Self::VmNativeParameterMismatch => {
+                write!(f, "Cannot call native function with available parameters")
+            }
 
             Self::Unknown => write!(f, "Unknown error"),
             SiltError::MetaMethodMissing(meta_method) => {
@@ -245,10 +263,13 @@ impl std::fmt::Display for SiltError {
             SiltError::UDTypeMismatch => {
                 write!(f, "UserData type mismatch during method or field access")
             }
+            SiltError::UDBadCall => {
+                write!(f, "UserData method called with non-userdata self, try :")
+            }
             SiltError::UDBadCast => write!(f, "UserData bad downcast"),
-            SiltError::Custom(s)=> write!(f, "{}",s),
-            SiltError::Network(s)=> write!(f, "Network Error; {}",s),
-            SiltError::IO(s)=> write!(f, "Input Output Error; {}",s),
+            SiltError::Custom(s) => write!(f, "{}", s),
+            SiltError::Network(s) => write!(f, "Network Error; {}", s),
+            SiltError::IO(s) => write!(f, "Input Output Error; {}", s),
         }
     }
 }
@@ -279,6 +300,12 @@ impl std::fmt::Display for ValueTypes {
 pub struct ErrorTuple {
     pub code: SiltError,
     pub location: TokenCell,
+}
+
+impl From<Vec<ErrorTuple>> for SiltError {
+    fn from(value: Vec<ErrorTuple>) -> Self {
+        value.into_iter().next().unwrap().code
+    }
 }
 
 impl std::fmt::Display for ErrorTuple {
