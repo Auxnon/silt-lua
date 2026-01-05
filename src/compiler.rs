@@ -1011,7 +1011,9 @@ pub fn lsp(source: &str, format: bool) -> String {
     let mut compiler = Compiler::new();
     let output = compiler.lsp(source, format);
     serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string())
+}
 
+impl Compiler {
     fn synchronize(&mut self) {
         // TODO should we unwind or just dump it all?
         // self.eat();
