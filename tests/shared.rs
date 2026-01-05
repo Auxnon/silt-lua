@@ -1,13 +1,15 @@
 use silt_lua::{Compiler, ExVal, Lua};
 
 #[allow(unused_macros)]
+#[macro_export]
 macro_rules! valeq {
-    ($source:literal, $val:expr) => {
+    ($source:expr, $val:expr) => {
         assert_eq!(simple($source), $val);
     };
 }
 
 #[allow(unused_macros)]
+#[macro_export]
 macro_rules! test_number {
     ($name:ident, $source:literal, $expected:expr) => {
         #[test]
@@ -18,6 +20,7 @@ macro_rules! test_number {
 }
 
 #[allow(unused_macros)]
+#[macro_export]
 macro_rules! test_string {
     ($name:ident, $source:literal, $expected:literal) => {
         #[test]

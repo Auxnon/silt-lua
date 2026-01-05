@@ -5,8 +5,16 @@ test_string!(simple_string, "return 'hello'", "hello");
 test_string!(double_quote_string, "return \"world\"", "world");
 test_string!(empty_string, "return ''", "");
 
-test_string!(string_concatenation, "return 'hello' .. ' ' .. 'world'", "hello world");
-test_string!(string_number_concat, "return 'number: ' .. 42", "number: 42");
+test_string!(
+    string_concatenation,
+    "return 'hello' .. ' ' .. 'world'",
+    "hello world"
+);
+test_string!(
+    string_number_concat,
+    "return 'number: ' .. 42",
+    "number: 42"
+);
 
 #[test]
 fn string_length() {
@@ -26,21 +34,32 @@ fn string_comparison() {
 
 #[test]
 fn multiline_string() {
-    let source = r#"
+    let expected = "This is a\nmultiline string\nwith several lines";
+    valeq!(
+        r#"
         local s = [[This is a
 multiline string
 with several lines]]
         return s
-    "#;
-    let expected = "This is a\nmultiline string\nwith several lines";
-    valeq!(source, ExVal::String(expected.to_string()));
+    "#,
+        ExVal::String(expected.to_string())
+    );
 }
 
 #[test]
 fn string_escape_sequences() {
-    valeq!(r#"return 'hello\nworld'"#, ExVal::String("hello\nworld".to_string()));
-    valeq!(r#"return 'tab\there'"#, ExVal::String("tab\there".to_string()));
-    valeq!(r#"return 'quote: \"here\"'"#, ExVal::String("quote: \"here\"".to_string()));
+    valeq!(
+        r#"return 'hello\nworld'"#,
+        ExVal::String("hello\nworld".to_string())
+    );
+    valeq!(
+        r#"return 'tab\there'"#,
+        ExVal::String("tab\there".to_string())
+    );
+    valeq!(
+        r#"return 'quote: \"here\"'"#,
+        ExVal::String("quote: \"here\"".to_string())
+    );
 }
 
 #[test]

@@ -3,24 +3,28 @@ use shared::*;
 
 #[test]
 fn simple_function() {
-    let source = r#"
+    valeq!(
+        r#"
         function add(a, b)
             return a + b
         end
         return add(3, 4)
-    "#;
-    valeq!(source, ExVal::Number(7.0));
+    "#,
+        ExVal::Number(7.0)
+    );
 }
 
 #[test]
 fn function_with_local() {
-    let source = r#"
+    valeq!(
+        r#"
         local function multiply(x, y)
             return x * y
         end
         return multiply(6, 7)
-    "#;
-    valeq!(source, ExVal::Number(42.0));
+    "#,
+        ExVal::Number(42.0)
+    );
 }
 
 #[test]

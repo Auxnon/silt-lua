@@ -3,11 +3,11 @@ use silt_lua::userdata::UserDataMethods;
 use silt_lua::error::ValueTypes;
 use silt_lua::gc_arena::Mutation;
 use silt_lua::userdata::{MetaMethod, UserData, UserDataFields};
-use silt_lua::{Compiler, ExVal};
 use silt_lua::Lua;
 use silt_lua::LuaError;
 use silt_lua::Value;
 use silt_lua::VM;
+use silt_lua::{Compiler, ExVal};
 
 // Example UserData struct
 struct Counter {
@@ -51,7 +51,7 @@ impl UserData for Counter {
                 let value = this.increment();
                 Ok(Value::Integer(value))
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
 
@@ -60,7 +60,7 @@ impl UserData for Counter {
                 let value = this.decrement();
                 Ok(Value::Integer(value))
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
 
@@ -69,7 +69,7 @@ impl UserData for Counter {
                 this.set_count(0);
                 Ok(Value::Nil)
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
 
@@ -77,23 +77,23 @@ impl UserData for Counter {
             if let Some(this) = counter {
                 Ok(Value::String(format!("Counter({})", this.get_count())))
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
 
-        methods.add_meta_method("__add", |_vm, m, counter, value| {
-            if let Some(v) = value.get(0) {
-                if let Value::Integer(n) = v {
-                    Ok(Value::Integer(counter.get_count() + n))
+        methods.add_meta_method("__add", |_vm, m, counter, value: Value| {
+            if let Some( this) =  counter {
+                if let Value::Integer(n) = value {
+                    Ok(Value::Integer(this.get_count() + n))
                 } else {
                     Err(LuaError::ExpOpValueWithValue(
                         ValueTypes::UserData,
                         MetaMethod::Add,
-                        v.to_error(),
+                        value.to_error(),
                     ))
                 }
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
     }
@@ -123,7 +123,6 @@ fn main() {
     let mut comp = Compiler::new();
     lua.enter(|vm, mc| {
         vm.register_native_function(mc, "make_counter", make_userdata);
-        Ok(ExVal::Nil)
     });
     let res = lua.run(
         r#"

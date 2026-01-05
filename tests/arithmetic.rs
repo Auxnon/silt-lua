@@ -1,5 +1,6 @@
 mod shared;
 use shared::*;
+use silt_lua::ExVal;
 
 test_number!(add_integers, "return 5 + 3", 8.0);
 test_number!(subtract_integers, "return 10 - 4", 6.0);
