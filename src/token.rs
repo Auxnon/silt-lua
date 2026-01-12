@@ -1,5 +1,4 @@
 use core::fmt::Display;
-use std::fmt::write;
 // implement clone
 
 #[derive(Debug, Clone, PartialEq)]

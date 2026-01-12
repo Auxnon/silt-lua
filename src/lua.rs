@@ -296,9 +296,9 @@ impl<'gc> Lua {
     }
 
     /// enter into the VM state to modify the VM directly
-    pub fn enter<F,T>(&mut self, closure: F) -> T
+    pub fn enter<F, T>(&mut self, mut closure: F) -> T
     where
-        F: for<'a> Fn(&mut VM<'a>, &Mutation<'a>) -> T,
+        F: for<'a> FnMut(&mut VM<'a>, &Mutation<'a>) -> T,
     {
         self.arena.mutate_root(move |mc, vm| {
             closure(vm, mc)
@@ -317,7 +317,7 @@ impl<'gc> Lua {
         code: &str,
     ) -> Result<usize, Vec<ErrorTuple>> {
         self.arena
-            .mutate_root(|mc, vm| vm.load_fn(mc, compiler, name, code ))
+            .mutate_root(|mc, vm| vm.load_fn(mc, compiler, name, code))
     }
 
     /// call an internal function by index provided from the load function. Ideally call this after
@@ -1981,6 +1981,27 @@ impl<'gc> VM<'gc> {
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
         self.globals.borrow_mut(mc).insert(name.into(), v);
+    }
+
+    pub fn register_native_function_to<A, F, R>(
+        &mut self,
+        // vm: &VM<'gc>,
+        mc: &Mutation<'gc>,
+        table: &mut Table<'gc>,
+        name: &str,
+        function: F,
+    ) where
+        A: FromLuaMulti<'gc>,
+        // <T as FromLuaMulti<'gc>>::Output
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, A) -> R + 'gc,
+        R: ToLua<'gc> + 'gc,
+    {
+        let raw = NativeFunctionRaw::new::<A, _, _>(function);
+
+        let f = WrappedFn { f: Rc::new(raw) };
+        // Value::NativeFunction(Gc::new(mc, f))
+        let v = Value::NativeFunction(Gc::new(mc, f));
+        table.insert(name.into(), v);
     }
     // pub fn register_native_function<T, R>(
     //     &mut self,

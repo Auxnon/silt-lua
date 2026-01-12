@@ -1,5 +1,6 @@
 use std::{
     collections::{hash_map::Iter, HashMap},
+    usize,
     vec::IntoIter,
 };
 
@@ -254,7 +255,6 @@ impl<'v> Table<'v> {
     pub fn iter(&self) -> Iter<'_, Value<'v>, Value<'v>> {
         self.data.iter()
     }
-    
 }
 
 impl ToString for Table<'_> {
@@ -282,13 +282,23 @@ impl ExTable {
     pub fn getn(&self, i: usize) -> Option<&ExVal> {
         self.data.get(&ExVal::Integer(i as i64))
     }
+
     pub fn pop_value(&mut self, i: usize) -> ExVal {
         self.data
             .remove(&ExVal::Integer(i as i64))
             .unwrap_or(ExVal::Nil)
     }
+
     pub fn get(&self, field: &str) -> Option<&ExVal> {
         self.data.get(&ExVal::String(field.to_owned()))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
     }
     // pub fn iter(&self) -> Iter<'_, ExVal, ExVal> {
     //     self.data.iter()

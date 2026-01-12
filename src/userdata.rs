@@ -25,7 +25,7 @@ pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
 pub type ToInnerResult<'gc, V: ToLua<'gc>> = V;
 
 /// Trait for Rust types that can be used as Lua UserData
-pub trait UserData: Sized + Send + Sync + 'static {
+pub trait UserData: Sized + Send + 'static {
     /// Returns a unique type name for this UserData type
     fn type_name() -> &'static str;
 
@@ -681,7 +681,7 @@ unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
 
 /// A wrapper for UserData objects
 pub struct UserDataWrapper {
-    data: Arc<Mutex<dyn Any + Send + Sync>>,
+    data: Arc<Mutex<dyn Any + Send  >>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -689,7 +689,7 @@ pub struct UserDataWrapper {
 }
 
 pub struct WeakWrapper {
-    data: Weak<Mutex<dyn Any + Send + Sync>>,
+    data: Weak<Mutex<dyn Any + Send  >>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
