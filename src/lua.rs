@@ -179,6 +179,16 @@ macro_rules! binary_op  {
     };
 }
 
+macro_rules! check_meta {
+    ( $lua:ident, $i:tt, $op:expr) => {
+        if let Some(table) = $lua.primative_meta_tables.get($i) {
+            table.borrow()
+        } else {
+            $op
+        }
+    };
+}
+
 macro_rules! table_meta_op {
     ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $table:ident, $right:ident, $opp:tt) => {{
         let a = $table.borrow().by_meta_method(MetaMethod::$opp);
@@ -391,6 +401,7 @@ pub struct VM<'gc> {
     /** Next empty location */
     // stack_top: *mut Value,
     pub globals: Gc<'gc, RefLock<Table<'gc>>>, // TODO store strings as identifer usize and use that as key
+    pub primative_meta_tables: Vec<Gc<'gc, RefLock<Table<'gc>>>>,
     // original CI code uses linked list, most recent closed upvalue is the first and links to previous closed values down the chain
     // allegedly performance of a linked list is heavier then an array and shifting values but is that true here or the opposite?
     // resizing a sequential array is faster then non sequential heap items, BUT since we'll USUALLY resolve the upvalue on the top of the list we're derefencing once to get our Upvalue vs an index lookup which is slightly slower.
@@ -489,6 +500,7 @@ impl<'gc> VM<'gc> {
             stack,
             // stack_top,
             globals: Gc::new(mc, RefLock::new(Table::new(0))), //Gc::new(mc, gtable),
+            primative_meta_tables: vec![],
             open_upvalues: vec![],
             table_counter: RefCell::new(1),
             userdata_registry: UserDataRegistry::new(),
@@ -967,6 +979,7 @@ impl<'gc> VM<'gc> {
                     // devout!("ident: {}", value);
                     if let Value::String(s) = value {
                         devout!("\"{}\"", s);
+
                         if let Some(v) = self.globals.borrow_mut(ep.mc).get(s) {
                             self.push(ep, v.clone());
                         } else {
@@ -1708,6 +1721,7 @@ impl<'gc> VM<'gc> {
     pub fn convert_table(&mut self, mc: &Mutation<'gc>, data: &ExTable) -> InnerResult<'gc> {
         let id = *self.table_counter.borrow();
         let t = Table::wrap_map(self, mc, id, data)?;
+        *self.table_counter.borrow_mut() += 1;
         Ok(Value::Table(Gc::new(mc, RefLock::new(t))))
     }
 
@@ -1980,6 +1994,7 @@ impl<'gc> VM<'gc> {
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
+        println!("borrow {}", name);
         self.globals.borrow_mut(mc).insert(name.into(), v);
     }
 
