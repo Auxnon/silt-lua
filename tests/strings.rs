@@ -1,5 +1,6 @@
 mod shared;
 use shared::*;
+use silt_lua::ExVal;
 
 test_string!(simple_string, "return 'hello'", "hello");
 test_string!(double_quote_string, "return \"world\"", "world");
@@ -25,11 +26,11 @@ fn string_length() {
 
 #[test]
 fn string_comparison() {
-    valeq!("return 'abc' == 'abc'", ExVal::Boolean(true));
-    valeq!("return 'abc' == 'def'", ExVal::Boolean(false));
-    valeq!("return 'abc' ~= 'def'", ExVal::Boolean(true));
-    valeq!("return 'abc' < 'def'", ExVal::Boolean(true));
-    valeq!("return 'def' > 'abc'", ExVal::Boolean(true));
+    valeq!("return 'abc' == 'abc'", ExVal::Bool(true));
+    valeq!("return 'abc' == 'def'", ExVal::Bool(false));
+    valeq!("return 'abc' ~= 'def'", ExVal::Bool(true));
+    valeq!("return 'abc' < 'def'", ExVal::Bool(true));
+    valeq!("return 'def' > 'abc'", ExVal::Bool(true));
 }
 
 #[test]

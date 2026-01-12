@@ -1,5 +1,6 @@
 mod shared;
 use shared::*;
+use silt_lua::ExVal;
 
 #[test]
 fn simple_function() {
@@ -9,7 +10,7 @@ fn simple_function() {
             return a + b
         end
         return add(3, 4)
-    "#,
+        "#,
         ExVal::Number(7.0)
     );
 }

@@ -1,5 +1,6 @@
 mod shared;
 use shared::*;
+use silt_lua::ExVal;
 
 test_number!(local_variable, "local x = 42; return x", 42.0);
 test_string!(local_string_var, "local name = 'hello'; return name", "hello");

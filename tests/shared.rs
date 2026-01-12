@@ -31,16 +31,18 @@ macro_rules! test_string {
 }
 
 #[allow(unused_macros)]
+#[macro_export]
 macro_rules! test_bool {
     ($name:ident, $source:literal, $expected:expr) => {
         #[test]
         fn $name() {
-            valeq!($source, ExVal::Boolean($expected));
+            valeq!($source, ExVal::Bool($expected));
         }
     };
 }
 
 #[allow(unused_macros)]
+#[macro_export]
 macro_rules! test_nil {
     ($name:ident, $source:literal) => {
         #[test]
