@@ -191,7 +191,7 @@ impl<'c> Lexer<'c> {
                         is_float = true;
                         self.eat();
                     }
-                    'a'..='z' | 'A'..='Z'  => {
+                    'a'..='z' | 'A'..='Z' => {
                         return self.error(SiltError::InvalidNumber(self.get_sofar()));
                     }
                     _ => break,
@@ -229,7 +229,7 @@ impl<'c> Lexer<'c> {
 
     fn string(&mut self, apos: bool) -> TokenOption {
         // start column at '"' not within string starter
-        self.column_start = self.column-1;
+        self.column_start = self.column - 1;
         self.eat();
         self.start_token = self.current;
         while self.current < self.end {
@@ -433,7 +433,13 @@ impl<'c> Lexer<'c> {
                     self.eat();
                     match self.peek() {
                         Some('0'..='9') => self.number(true),
-                        Some('.') => self.eat_send(Token::Op(Operator::Concat)),
+                        Some('.') => {
+                            self.eat();
+                            match self.peek() {
+                                Some('.') => self.eat_send(Token::VarArg),
+                                _ => self.send(Token::Op(Operator::Concat)),
+                            }
+                        }
                         _ => self.send(Token::Dot),
                     }
                 }
@@ -478,7 +484,7 @@ impl<'c> Lexer<'c> {
                                 }
 
                                 // self.current-=1;
-                                let t=self.send(Token::Comment);
+                                let t = self.send(Token::Comment);
                                 // self.current+=1;
                                 t
                             }

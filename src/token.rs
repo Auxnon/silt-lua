@@ -28,6 +28,7 @@ pub enum Token {
 
     // symbols
     Dot,
+    VarArg, // ...
     Assign, //Equal
 
     // operator
@@ -179,6 +180,7 @@ impl Display for Token {
             Token::CloseBracket => write!(f, "]"),
             // Token::EOF => write!(f, "EOF"),
             Token::Dot => write!(f, "call"),
+            Token::VarArg => write!(f, "..."),
             // Token::Bang => write!(f, "!"),
             Token::Type => write!(f, "type"),
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
