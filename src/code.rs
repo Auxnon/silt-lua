@@ -71,7 +71,9 @@ pub enum OpCode {
     PRINT,
     META(u8),
     /// Call function with n parameters, and r count of assignments desired
-     CALL(u8,u8),
+    CALL(u8,u8),
+    /// Push vararg values onto stack, with optional count limit
+    VARARG(u8),
     /// tell the VM we expect n values for next assignment before resetting, otherwise 1
     NEED(u8),
     REGISTER_UPVALUE {
@@ -115,6 +117,7 @@ impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::CALL(i,m) => write!(f, "OP_CALL({},{})", i,m),
+            Self::VARARG(n) => write!(f, "OP_VARARG({})", n),
             Self::REGISTER_UPVALUE {
                 index: i,
                 neighboring: n,

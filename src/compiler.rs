@@ -1480,18 +1480,36 @@ fn build_function<'c>(
     begin_functional_scope(this);
     expect_token!(this it OpenParen);
     let mut arity = 0;
-    if let Token::Identifier(_) = this.peek(it)? {
+    let mut is_variadic = false;
+    if let Token::Identifier(_) | Token::VarArg = this.peek(it)? {
         arity += 1;
-        build_param(this, it)?;
-
-        while let Token::Comma = this.peek(it)? {
-            this.eat(it);
-            arity += 1;
-            if arity > 255 {
-                // TODO we should use an arity value on the function object but let's make it only exist on compile time
-                return Err(this.error_at(SiltError::TooManyParameters));
+        is_variadic = build_param(this, it)?;
+        
+        if is_variadic {
+            // VarArg must be the last parameter
+            if let Token::Comma = this.peek(it)? {
+                // TODO: Add SiltError::VarArgMustBeLast to error types
+                return Err(this.error_at(SiltError::ExpectedLocalIdentifier)); // Placeholder
             }
-            build_param(this, it)?;
+        } else {
+            while let Token::Comma = this.peek(it)? {
+                this.eat(it);
+                arity += 1;
+                if arity > 255 {
+                    // TODO we should use an arity value on the function object but let's make it only exist on compile time
+                    return Err(this.error_at(SiltError::TooManyParameters));
+                }
+                is_variadic = build_param(this, it)?;
+                
+                if is_variadic {
+                    // VarArg must be the last parameter
+                    if let Token::Comma = this.peek(it)? {
+                        // TODO: Add SiltError::VarArgMustBeLast to error types
+                        return Err(this.error_at(SiltError::ExpectedLocalIdentifier)); // Placeholder
+                    }
+                    break;
+                }
+            }
         }
     }
 
@@ -1557,17 +1575,22 @@ fn build_function<'c>(
     Ok(())
 }
 
-fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
+fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Result<bool, ErrorTuple> {
     let (res, _) = this.pop(it);
     match res? {
         Token::Identifier(ident) => {
             add_local(this, it, ident)?;
+            Ok(false)
+        }
+        Token::VarArg => {
+            // VarArg parameter - mark function as variadic
+            add_local(this, it, "...".to_string())?;
+            Ok(true)
         }
         _ => {
             return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
         }
     }
-    Ok(())
 }
 
 fn statement<'c>(
@@ -2049,6 +2072,43 @@ fn variable(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign:
     // }
 
     named_variable(this, f, it, can_assign)?;
+    Ok(())
+}
+
+fn vararg_variable(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign: bool) -> Catch {
+    devnote!(this it "vararg_variable");
+    
+    if can_assign {
+        // TODO: Add SiltError::CannotAssignToVarArg to error types
+        return Err(this.error_at(SiltError::InvalidAssignment(Token::VarArg)));
+    }
+    
+    // Check if we're in a variadic function by looking for "..." in locals
+    let mut found_vararg = false;
+    for local in this.locals.iter().rev() {
+        if let Some(ref ident) = local.ident {
+            if ident == "..." {
+                found_vararg = true;
+                break;
+            }
+        }
+        // Stop searching if we hit a different functional depth
+        if local.functional_depth < this.functional_depth {
+            break;
+        }
+    }
+    
+    if !found_vararg {
+        // TODO: Add SiltError::VarArgNotInVariadicFunction to error types
+        return Err(this.error_at(SiltError::ExpectedLocalIdentifier)); // Placeholder
+    }
+    
+    // Emit VARARG opcode - 0 means push all available varargs
+    this.emit_at(f, OpCode::VARARG(0));
+    
+    // Set expression count to indicate multiple values may be pushed
+    this.expression_count = 255; // Special value indicating variable count
+    
     Ok(())
 }
 
@@ -2655,17 +2715,32 @@ fn arguments(
     } else {
         0
     };
+    let mut has_vararg = false;
+    
     devout!("{} {}", "start with ".red(), args);
     if !matches!(this.peek(it)?, &Token::CloseParen) {
         while {
-            expression_single(this, f, it, false)?;
-            devout!("{}", "yeah ADD 1".red());
-            args += 1;
-            if let &Token::Comma = this.peek(it)? {
-                this.eat(it);
-                true
+            // Check if this is a vararg expression
+            if let Token::VarArg = this.peek(it)? {
+                this.store(it); // consume the VarArg token
+                vararg_variable(this, f, it, false)?;
+                has_vararg = true;
+                // VarArg must be the last argument
+                if let Token::Comma = this.peek(it)? {
+                    // TODO: Add SiltError::VarArgMustBeLast to error types
+                    return Err(this.error_at(SiltError::ExpectedLocalIdentifier)); // Placeholder
+                }
+                false // Don't continue the loop
             } else {
-                false
+                expression_single(this, f, it, false)?;
+                devout!("{}", "yeah ADD 1".red());
+                args += 1;
+                if let &Token::Comma = this.peek(it)? {
+                    this.eat(it);
+                    true
+                } else {
+                    false
+                }
             }
         } {
             devout!("{} {}", "yeah done ading".red(), args);
@@ -2684,7 +2759,12 @@ fn arguments(
     );
     devout!("arguments count: {}", args);
 
-    Ok(args)
+    // If we have vararg, use special encoding to indicate variable argument count
+    if has_vararg {
+        Ok(255) // Special value indicating vararg call
+    } else {
+        Ok(args)
+    }
 }
 
 fn print(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
