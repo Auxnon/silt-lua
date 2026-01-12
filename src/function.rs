@@ -160,7 +160,8 @@ pub struct FunctionObject<'chnk> {
     pub chunk: Chunk<'chnk>,
     pub upvalue_count: u8,
     pub need: u8,
-    // pub arity: usize,
+    pub arity: u8,
+    pub is_variadic: bool,
 }
 
 impl<'chnk> FunctionObject<'chnk> {
@@ -171,6 +172,8 @@ impl<'chnk> FunctionObject<'chnk> {
             chunk: Chunk::new(),
             upvalue_count: 0,
             need: 1,
+            arity: 0,
+            is_variadic: false,
         }
     }
 
