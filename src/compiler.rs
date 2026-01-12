@@ -770,6 +770,7 @@ impl Compiler {
                 _ => rule!(void, void, None),
             },
             Token::Identifier(_) => rule!(variable, void, None),
+            Token::VarArg => rule!(vararg_variable, void, None),
             // Token::OpenBracket => rule!(void, indexer, Call),
             Token::Integer(_) => rule!(integer, void, None),
             Token::Number(_) => rule!(number, void, None),
