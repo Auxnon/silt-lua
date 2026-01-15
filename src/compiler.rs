@@ -1,5 +1,10 @@
 use std::{
-    cmp::Ordering, collections::HashMap, fmt::{Display, Formatter}, iter::Peekable, println, vec
+    cmp::Ordering,
+    collections::HashMap,
+    fmt::{Display, Formatter},
+    iter::Peekable,
+    os::linux::raw::stat,
+    println, vec,
 };
 
 use gc_arena::{Gc, Mutation};
@@ -284,6 +289,19 @@ struct UpLocal {
     universal_ident: u8,
 }
 
+struct FunctionalState {
+    pub up_values: Vec<UpLocal>,
+    pub is_vararg: bool,
+}
+impl FunctionalState {
+    pub fn new() -> Self {
+        FunctionalState {
+            up_values: vec![],
+            is_vararg: false,
+        }
+    }
+}
+
 type FnRef<'a, 'c> = &'a mut FunctionObject<'c>;
 
 pub struct Compiler {
@@ -296,7 +314,7 @@ pub struct Compiler {
     scope_depth: usize,
     functional_depth: usize,
     // TODO we need a fail catch if we exceed a local variable amount of up values as well
-    up_values: Vec<Vec<UpLocal>>,
+    functional_states: Vec<FunctionalState>,
     local_offset: Vec<usize>,
     /** an offset tracker each time we descend into a new functional scope. For instance if we drop 1 level down from the root level that had 3 locals prior [A,B,C] then our stack looks like [root, A, B, C, fn] then we'll store 3 at this field's index 0 since the calling function is always at the bottom of the stack */
     local_functional_offset: Vec<usize>,
@@ -324,9 +342,10 @@ pub struct Compiler {
     var_set_stack: Vec<(OpCode, OpCode)>,
     // TODO this is a decent stopgap to fix our multivar headaches BUT this will definitely break
     // in our implicit returns as they're treated as setters and wouldnt collapse expressions
-    // correctly. If we walk our setters all the way to find an assignment (:=) 
+    // correctly. If we walk our setters all the way to find an assignment (:=)
     /// can we gather multivars for setters? multivar return or gets must skip this
     can_multivar_set: bool,
+    vararg_function: bool,
 }
 
 impl Compiler {
@@ -342,7 +361,7 @@ impl Compiler {
             valid: true,
             scope_depth: 0,
             functional_depth: 0,
-            up_values: vec![vec![]],
+            functional_states: vec![],
             locals: vec![Local {
                 ident: None,
                 depth: 0,
@@ -365,6 +384,7 @@ impl Compiler {
             var_stack: Vec::with_capacity(4),
             var_set_stack: Vec::with_capacity(4),
             can_multivar_set: true,
+            vararg_function: false,
         }
     }
 
@@ -1222,6 +1242,7 @@ fn _add_local(
     // } else {
     //     0
     // };
+
     let i = this.local_count; //- offset;
     if i == 255 {
         return Err(this.error_at(SiltError::TooManyLocals));
@@ -1274,7 +1295,7 @@ fn resolve_local(
                     // MARK we're passing in a target depth of 0, huh?? that's global isnt it? our upvals dont exist there
                     Some((
                         resolve_upvalue(
-                            &mut this.up_values,
+                            &mut this.functional_states,
                             ident_byte,
                             offset_ident,
                             this.functional_depth,
@@ -1299,13 +1320,14 @@ fn resolve_local(
 
 /** check if upvalue is registered at this closest level and decend down until reach destination, registiner upvalues as we go if not already*/
 fn resolve_upvalue(
-    up_values: &mut Vec<Vec<UpLocal>>,
+    functional_states: &mut Vec<FunctionalState>,
     ident: u8,
     scoped_ident: u8,
     level: usize,
     target: usize,
 ) -> u8 {
-    let m = &mut up_values[level];
+    let state = &mut functional_states[level];
+    let m = &mut state.up_values;
     for (u, i) in m.iter().enumerate() {
         if i.universal_ident == ident {
             return u as u8;
@@ -1321,8 +1343,9 @@ fn resolve_upvalue(
         (m.len() - 1) as u8
     } else {
         // drop(m);
-        let higher = resolve_upvalue(up_values, ident, scoped_ident, level - 1, target);
-        let m = &mut up_values[level];
+        let higher = resolve_upvalue(functional_states, ident, scoped_ident, level - 1, target);
+        let state = &mut functional_states[level];
+        let m = &mut state.up_values;
         m.push(UpLocal {
             ident: higher,
             universal_ident: ident,
@@ -1480,16 +1503,13 @@ fn build_function<'c>(
     begin_functional_scope(this);
     expect_token!(this it OpenParen);
     let mut arity = 0;
-    let mut is_variadic = false;
     if let Token::Identifier(_) | Token::VarArg = this.peek(it)? {
         arity += 1;
-        is_variadic = build_param(this, it)?;
-        
-        if is_variadic {
-            // VarArg must be the last parameter
+        build_param(this, it)?;
+
+        if this.vararg_function {
             if let Token::Comma = this.peek(it)? {
-                // TODO: Add SiltError::VarArgMustBeLast to error types
-                return Err(this.error_at(SiltError::ExpectedLocalIdentifier)); // Placeholder
+                return Err(this.error_at(SiltError::InvalidVarArgParam));
             }
         } else {
             while let Token::Comma = this.peek(it)? {
@@ -1499,13 +1519,11 @@ fn build_function<'c>(
                     // TODO we should use an arity value on the function object but let's make it only exist on compile time
                     return Err(this.error_at(SiltError::TooManyParameters));
                 }
-                is_variadic = build_param(this, it)?;
-                
-                if is_variadic {
-                    // VarArg must be the last parameter
+                build_param(this, it)?;
+
+                if this.vararg_function {
                     if let Token::Comma = this.peek(it)? {
-                        // TODO: Add SiltError::VarArgMustBeLast to error types
-                        return Err(this.error_at(SiltError::ExpectedLocalIdentifier)); // Placeholder
+                        return Err(this.error_at(SiltError::InvalidVarArgParam));
                     }
                     break;
                 }
@@ -1544,11 +1562,11 @@ fn build_function<'c>(
     // }
 
     end_scope(this, fr2, true);
-    let upvals = end_functional_scope(this);
+    let state = end_functional_scope(this);
     // When we're done compiling the function object we drop the current body function back in and push the compiled func as a constant within that body
     // this.swap_function(&mut sidelined_func);
     // swap(f, &mut sidelined_func);
-    f2.upvalue_count = upvals.len() as u8;
+    f2.upvalue_count = state.up_values.len() as u8;
     let func_value = Value::Function(Gc::new(mc, f2));
     if true {
         // need closure
@@ -1556,7 +1574,7 @@ fn build_function<'c>(
         this.emit_at(f, OpCode::CLOSURE { constant });
         // emit upvalues
 
-        for val in upvals.iter() {
+        for val in state.up_values.iter() {
             // TODO is it worth specifying difference between first function enclosure from higher functional enclosure?
             this.emit_at(
                 f,
@@ -1575,22 +1593,25 @@ fn build_function<'c>(
     Ok(())
 }
 
-fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Result<bool, ErrorTuple> {
+fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
     let (res, _) = this.pop(it);
     match res? {
         Token::Identifier(ident) => {
             add_local(this, it, ident)?;
-            Ok(false)
         }
         Token::VarArg => {
-            // VarArg parameter - mark function as variadic
+            if this.vararg_function {
+                return Err(this.error_at(SiltError::InvalidVarArgParam));
+            }
+
+            this.vararg_function = true;
             add_local(this, it, "...".to_string())?;
-            Ok(true)
         }
         _ => {
             return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
         }
     }
+    Ok(())
 }
 
 fn statement<'c>(
@@ -1605,7 +1626,7 @@ fn statement<'c>(
     this.last_was_expression = false;
     this.expression_count = 1;
     // we can now set multivars again, x,y=...
-    this.can_multivar_set=true;
+    this.can_multivar_set = true;
 
     match this.peek(it)? {
         Token::Print => print(this, f, it)?,
@@ -1655,7 +1676,7 @@ fn begin_scope(this: &mut Compiler) {
 /** Descend into a function's scope and start a new upvalue vec representing required values a level above us */
 fn begin_functional_scope(this: &mut Compiler) {
     this.functional_depth += 1;
-    this.up_values.push(vec![]);
+    this.functional_states.push(FunctionalState::new());
     let cumulative: usize = this.local_functional_offset.iter().sum();
     this.local_functional_offset
         .push(this.local_count + cumulative - 1);
@@ -1709,7 +1730,7 @@ fn end_scope(this: &mut Compiler, f: FnRef, skip_code: bool) {
 }
 
 /** raise functional depth */
-fn end_functional_scope(this: &mut Compiler) -> Vec<UpLocal> {
+fn end_functional_scope(this: &mut Compiler) -> FunctionalState {
     this.functional_depth -= 1;
     this.local_functional_offset.pop();
     this.local_count = match this.local_offset.pop() {
@@ -1717,7 +1738,7 @@ fn end_functional_scope(this: &mut Compiler) -> Vec<UpLocal> {
         None => 1,
     };
 
-    this.up_values.pop().unwrap()
+    this.functional_states.pop().unwrap()
 }
 
 fn if_statement<'c>(
@@ -1839,7 +1860,7 @@ fn for_statement<'c>(
 fn generic_for_statement() {}
 
 fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
-    this.can_multivar_set=false;
+    this.can_multivar_set = false;
     devnote!(this it "return_statement");
     devout!("{} {}", "HERE".on_red(), this.expression_count);
     this.eat(it);
@@ -1851,7 +1872,7 @@ fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> 
         expression(this, f, it, false)?;
         // expression() will set this.expression_count to the number of comma-separated expressions
     }
-    this.can_multivar_set=true;
+    this.can_multivar_set = true;
 
     // For multiple return values, all expressions are already on the stack
     this.emit_at(f, OpCode::RETURN(this.expression_count));
@@ -2075,40 +2096,41 @@ fn variable(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign:
     Ok(())
 }
 
-fn vararg_variable(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign: bool) -> Catch {
+/// This is the second concept of vararg, the usage of, not the param.
+fn vararg_variable(
+    this: &mut Compiler,
+    f: FnRef,
+    _it: &mut Peekable<Lexer>,
+    can_assign: bool,
+) -> Catch {
     devnote!(this it "vararg_variable");
-    
+
     if can_assign {
-        // TODO: Add SiltError::CannotAssignToVarArg to error types
-        return Err(this.error_at(SiltError::InvalidAssignment(Token::VarArg)));
+        return Err(this.error_at(SiltError::InvalidVarArgAssignment));
     }
-    
-    // Check if we're in a variadic function by looking for "..." in locals
-    let mut found_vararg = false;
-    for local in this.locals.iter().rev() {
-        if let Some(ref ident) = local.ident {
-            if ident == "..." {
-                found_vararg = true;
-                break;
-            }
-        }
-        // Stop searching if we hit a different functional depth
-        if local.functional_depth < this.functional_depth {
-            break;
-        }
+
+    // let mut found_vararg = false;
+    // for local in this.locals.iter().rev() {
+    //     if let Some(ref ident) = local.ident {
+    //         if ident == "..." {
+    //             found_vararg = true;
+    //             break;
+    //         }
+    //     }
+    //     // Stop searching if we hit a different functional depth
+    //     if local.functional_depth < this.functional_depth {
+    //         break;
+    //     }
+    // }
+
+    if this.functional_depth > 0 && !this.functional_states[this.functional_depth].is_vararg {
+        return Err(this.error_at(SiltError::InvalidVarArgUsage));
     }
-    
-    if !found_vararg {
-        // TODO: Add SiltError::VarArgNotInVariadicFunction to error types
-        return Err(this.error_at(SiltError::ExpectedLocalIdentifier)); // Placeholder
-    }
-    
-    // Emit VARARG opcode - 0 means push all available varargs
-    this.emit_at(f, OpCode::VARARG(0));
-    
-    // Set expression count to indicate multiple values may be pushed
-    this.expression_count = 255; // Special value indicating variable count
-    
+
+    let index = this.local_count as u8;
+
+    this.emit_at(f, OpCode::VARARG { index, count: 0 });
+
     Ok(())
 }
 
@@ -2227,7 +2249,7 @@ fn named_variable(
                     return Err(this.error_at(SiltError::InvalidAssignment(t.clone())));
                 }
                 // we at least know multivar setting has ended
-                this.can_multivar_set=false;
+                this.can_multivar_set = false;
 
                 // For retrieval context, we need to drain the getters we've collected so far
                 // and then continue parsing as a regular expression
@@ -2716,7 +2738,7 @@ fn arguments(
         0
     };
     let mut has_vararg = false;
-    
+
     devout!("{} {}", "start with ".red(), args);
     if !matches!(this.peek(it)?, &Token::CloseParen) {
         while {
@@ -2728,7 +2750,8 @@ fn arguments(
                 // VarArg must be the last argument
                 if let Token::Comma = this.peek(it)? {
                     // TODO: Add SiltError::VarArgMustBeLast to error types
-                    return Err(this.error_at(SiltError::ExpectedLocalIdentifier)); // Placeholder
+                    return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
+                    // Placeholder
                 }
                 false // Don't continue the loop
             } else {

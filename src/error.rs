@@ -25,6 +25,9 @@ pub enum SiltError {
     TooManyLocals,
     TooManyOperations,
     TooManyParameters,
+    InvalidVarArgParam,
+    InvalidVarArgUsage,
+    InvalidVarArgAssignment,
     ChunkCorrupt,
 
     //expression errors
@@ -183,6 +186,9 @@ impl std::fmt::Display for SiltError {
             ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
             Self::TooManyParameters => write!(f, "Too many parameters, limited to 255"),
+            Self::InvalidVarArgParam => write!(f, "vararg is not last param in function"),
+            Self::InvalidVarArgUsage => write!(f, "vararg used outside of vararg function"),
+            Self::InvalidVarArgAssignment => write!(f, "cannot assign to a vararg"),
             Self::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
             Self::NotANumber(s) => write!(f, "Not a number: {}", s),
             Self::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),

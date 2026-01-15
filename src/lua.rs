@@ -652,7 +652,7 @@ impl<'gc> VM<'gc> {
     pub(crate) fn pushn(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
-        values: Vec<Value<'gc>>,
+        values: &[Value<'gc>],
         need: usize,
     ) {
         devout!(" | push_n: values x {}, need {}", values.len(), need);
@@ -671,7 +671,7 @@ impl<'gc> VM<'gc> {
 
             if let Some(v) = vv.next() {
                 devout!("pushn -> {}", v);
-                unsafe { ep.ip.write(v) };
+                unsafe { ep.ip.write(v.clone()) };
             };
             ep.ip = unsafe { ep.ip.add(1) };
         }
@@ -872,7 +872,8 @@ impl<'gc> VM<'gc> {
                     let multi_return = frame.multi_return;
                     // if  || frame.need>1 {
                     if multi_return > 1 && count > 1 {
-                        let vres = self.popn(ep, count);
+                        // TODO seriously stupid to make a Vec and then slice it
+                        let vres = &self.popn(ep, count);
 
                         // TODO this paragraph is a dupe of the one below, i hate this whole logic
                         // segment. Pushing stack values to a new vec, reversing it, then iterating
@@ -999,6 +1000,12 @@ impl<'gc> VM<'gc> {
                     // self.push(frame.stack[*index as usize].clone());
                     // TODO ew cloning, is our cloning optimized yet?
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
+                }
+                OpCode::VARARG {index,count}=>{
+                    // TODO compiler should ignore count ==1
+                    let raw= frame.get_vals(*index, *count);
+                    self.pushn(ep, raw, *count as usize );
+
                 }
                 OpCode::NEED(_) => {}
                 OpCode::DEFINE_LOCAL { constant: _ } => todo!(),

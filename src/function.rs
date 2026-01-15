@@ -21,11 +21,12 @@ pub struct CallFrame<'gc> {
     pub function: Gc<'gc, Closure<'gc>>, // pointer
     // ip: *const OpCode
     // pub base: usize,
-    // pointer point sinto VM values stack
+    // pointer points into VM values stack
     pub stack_snapshot: usize,
     pub local_stack: *mut Value<'gc>,
     pub ip: *const OpCode,
     // pub need: u8,
+    /// Call frame is made aware of how many variables need a return and will pop that amount until nil on return
     pub multi_return: u8,
     // pub mark: usize
 }
@@ -81,6 +82,18 @@ impl<'frame> CallFrame<'frame> {
         // println!("top: {}", unsafe { &*self.local_stack });
         unsafe { &*self.local_stack.add(index as usize) }
     }
+
+    pub fn get_vals(&self, index: u8, count: u8) -> &[Value<'frame>] {
+        // &self.stack[index as usize]
+        // println!("get_val: {}", index);
+        // println!("top: {}", unsafe { &*self.local_stack });
+        unsafe {
+            let i = self.local_stack.add(index as usize);
+            std::slice::from_raw_parts(i, count as usize)
+        }
+    }
+
+    // get_vararg
 
     pub fn get_val_mut(&mut self, index: u8) -> &mut Value<'frame> {
         unsafe { &mut *self.local_stack.add(index as usize) }

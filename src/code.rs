@@ -70,10 +70,14 @@ pub enum OpCode {
     GREATER_EQUAL,
     PRINT,
     META(u8),
-    /// Call function with n parameters, and r count of assignments desired
-    CALL(u8,u8),
-    /// Push vararg values onto stack, with optional count limit
-    VARARG(u8),
+    /// Call function with CALL.0 parameters, and CALL.1 count of desired assignments. On call frame return, pops
+    /// stack until CALL.1 is met, even if nils
+    CALL(u8, u8),
+    /// Push vararg values onto stack from starting point
+    VARARG {
+        index: u8,
+        count: u8,
+    },
     /// tell the VM we expect n values for next assignment before resetting, otherwise 1
     NEED(u8),
     REGISTER_UPVALUE {
@@ -116,8 +120,8 @@ pub enum OpCode {
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CALL(i,m) => write!(f, "OP_CALL({},{})", i,m),
-            Self::VARARG(n) => write!(f, "OP_VARARG({})", n),
+            Self::CALL(i, m) => write!(f, "OP_CALL({},{})", i, m),
+            Self::VARARG{ index, count } => write!(f, "OP_VARARG({},{})", index,count),
             Self::REGISTER_UPVALUE {
                 index: i,
                 neighboring: n,
@@ -152,8 +156,8 @@ impl Display for OpCode {
             Self::DEFINE_LOCAL { constant } => {
                 write!(f, "OP_DEFINE_LOCAL {}", constant)
             }
-            Self::NEED(u) => write!(f, "OP_NEED {}",u),
-            Self::RETURN(u) => write!(f, "OP_RETURNx{}",u),
+            Self::NEED(u) => write!(f, "OP_NEED {}", u),
+            Self::RETURN(u) => write!(f, "OP_RETURNx{}", u),
             Self::POP => write!(f, "OP_POP"),
             Self::POPS(n) => {
                 write!(f, "OP_POPx{}", n)
@@ -185,7 +189,7 @@ impl Display for OpCode {
                 write!(f, "OP_LITERAL {} {}", dest, literal)
             }
             Self::NIL => write!(f, "OP_NIL"),
-            Self::NILS(n) => write!(f, "OP_NILS x{}",n),
+            Self::NILS(n) => write!(f, "OP_NILS x{}", n),
             Self::TRUE => write!(f, "OP_TRUE"),
             Self::FALSE => write!(f, "OP_FALSE"),
             Self::NOT => write!(f, "OP_NOT"),
@@ -226,11 +230,11 @@ impl Display for OpCode {
     }
 }
 
-impl PartialEq for OpCode{
+impl PartialEq for OpCode {
     fn eq(&self, other: &Self) -> bool {
-        match (self,other){
+        match (self, other) {
             (Self::POP, Self::POP) => true,
-                _=>false
+            _ => false,
         }
     }
 }
