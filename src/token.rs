@@ -186,7 +186,7 @@ impl Display for Token {
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
             Token::Global => write!(f, "global"),
             Token::Flag(ref flag) => write!(f, "flag({})", flag),
-            Self::Comment=> write!(f, "--"),
+            Self::Comment => write!(f, "--"),
             Self::EOF => write!(f, "EOF"),
         }
     }

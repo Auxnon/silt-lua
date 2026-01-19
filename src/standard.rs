@@ -3,7 +3,7 @@ use gc_arena::Mutation;
 use crate::{
     prelude::VM,
     userdata::{InnerResult, TestEnt},
-    value::{Value, FromLuaMulti},
+    value::{FromLuaMulti, Value},
 };
 
 pub fn clock<'lua>(_: &mut VM<'lua>, _: &Mutation<'lua>, _: ()) -> InnerResult<'lua> {

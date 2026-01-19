@@ -28,6 +28,8 @@ pub struct CallFrame<'gc> {
     // pub need: u8,
     /// Call frame is made aware of how many variables need a return and will pop that amount until nil on return
     pub multi_return: u8,
+    // how many values we're calling the function with, potential for varargs
+    pub call_arity: u8,
     // pub mark: usize
 }
 
@@ -35,6 +37,7 @@ impl<'frame> CallFrame<'frame> {
     pub fn new<'a>(
         function: Gc<'frame, Closure<'frame>>,
         stack_snapshot: usize,
+        call_arity: u8,
         multi_return: u8,
     ) -> Self {
         let ip = function.function.chunk.code.as_ptr();
@@ -43,6 +46,7 @@ impl<'frame> CallFrame<'frame> {
             ip,
             local_stack: std::ptr::null_mut(),
             stack_snapshot,
+            call_arity,
             multi_return,
         }
     }
@@ -85,10 +89,10 @@ impl<'frame> CallFrame<'frame> {
 
     pub fn get_vals(&self, index: u8, count: u8) -> &[Value<'frame>] {
         // &self.stack[index as usize]
-        // println!("get_val: {}", index);
-        // println!("top: {}", unsafe { &*self.local_stack });
+        println!("get_val index: {} count: {}", index, count);
         unsafe {
-            let i = self.local_stack.add(index as usize);
+            let i = self.local_stack.add((index) as usize);
+            println!(" VAL: {}",  &*i);
             std::slice::from_raw_parts(i, count as usize)
         }
     }
@@ -175,6 +179,7 @@ pub struct FunctionObject<'chnk> {
     pub need: u8,
     pub arity: u8,
     pub is_variadic: bool,
+    pub varidic_index: u8,
 }
 
 impl<'chnk> FunctionObject<'chnk> {
@@ -187,6 +192,7 @@ impl<'chnk> FunctionObject<'chnk> {
             need: 1,
             arity: 0,
             is_variadic: false,
+            varidic_index: 0,
         }
     }
 
@@ -245,7 +251,7 @@ impl<'chnk> FunctionObject<'chnk> {
         ep: &mut Ephemeral<'_, 'a>,
     ) {
         let frame_top = unsafe { ep.ip.sub(arity + 1) };
-        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1, 0);
+        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1, arity as u8, 0);
         frames.push(new_frame);
         frame = frames.last_mut().unwrap();
         frame.local_stack = frame_top;
@@ -413,6 +419,14 @@ impl<'chnk> Closure<'chnk> {
     ) -> Self {
         Self { function, upvalues }
     }
+
+    pub fn is_variadic(&self) -> bool {
+        self.function.is_variadic
+    }
+    pub fn get_variadic(&self) -> u8 {
+        self.function.varidic_index
+    }
+
     pub fn print_upvalues(&self) {
         self.upvalues.iter().enumerate().for_each(|(i, f)| {
             println!("fn-up {}:{}", i, f.borrow());

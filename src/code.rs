@@ -75,7 +75,8 @@ pub enum OpCode {
     CALL(u8, u8),
     /// Push vararg values onto stack from starting point
     VARARG {
-        index: u8,
+        /// is the argument of a function call or a table, not assignment
+        is_arg: bool,
         count: u8,
     },
     /// tell the VM we expect n values for next assignment before resetting, otherwise 1
@@ -121,7 +122,7 @@ impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::CALL(i, m) => write!(f, "OP_CALL({},{})", i, m),
-            Self::VARARG{ index, count } => write!(f, "OP_VARARG({},{})", index,count),
+            Self::VARARG { is_arg, count } => write!(f, "OP_VARARG({},{})", is_arg, count),
             Self::REGISTER_UPVALUE {
                 index: i,
                 neighboring: n,

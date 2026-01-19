@@ -3,10 +3,10 @@ use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
     iter::Peekable,
-    os::linux::raw::stat,
     println, vec,
 };
 
+use colored::Colorize;
 use gc_arena::{Gc, Mutation};
 
 use crate::{
@@ -18,8 +18,8 @@ use crate::{
     value::Value,
 };
 
-#[cfg(feature = "dev-out")]
-use colored::Colorize;
+// #[cfg(feature = "dev-out")]
+// use colored::Colorize;
 #[cfg(feature = "wasm")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "wasm")]
@@ -291,13 +291,16 @@ struct UpLocal {
 
 struct FunctionalState {
     pub up_values: Vec<UpLocal>,
-    pub is_vararg: bool,
+    pub vararg: u8,
+    /// Are we walking arguments for a function call or table build? Changes vararg stack behavior
+    pub argument_mode: bool,
 }
 impl FunctionalState {
     pub fn new() -> Self {
         FunctionalState {
             up_values: vec![],
-            is_vararg: false,
+            vararg: 0,
+            argument_mode: false,
         }
     }
 }
@@ -340,12 +343,16 @@ pub struct Compiler {
     var_stack: Vec<(OpCode, OpCode)>,
     /// men will do anything to not have to allocate a new vec
     var_set_stack: Vec<(OpCode, OpCode)>,
+    expected_multi: u8,
     // TODO this is a decent stopgap to fix our multivar headaches BUT this will definitely break
     // in our implicit returns as they're treated as setters and wouldnt collapse expressions
     // correctly. If we walk our setters all the way to find an assignment (:=)
     /// can we gather multivars for setters? multivar return or gets must skip this
     can_multivar_set: bool,
-    vararg_function: bool,
+    /// tracks argument mode even if outside of functional scope (root level) this is a bit of a
+    /// hack
+    root_argument_mode: bool,
+    // vararg_function: bool,
 }
 
 impl Compiler {
@@ -383,8 +390,9 @@ impl Compiler {
             expression_count: 0,
             var_stack: Vec::with_capacity(4),
             var_set_stack: Vec::with_capacity(4),
+            expected_multi: 0,
             can_multivar_set: true,
-            vararg_function: false,
+            root_argument_mode: false,
         }
     }
 
@@ -564,8 +572,8 @@ impl Compiler {
 
     fn drain_setters(&mut self, f: FnRef) {
         let vv = self.var_set_stack.drain(..).rev();
-        let mut it = vv.peekable();
-        while let Some(v) = it.next() {
+        let it = vv.peekable();
+        for v in it {
             f.chunk.write_code(v.0, self.current_location);
             f.chunk.write_code(OpCode::POP, self.current_location);
         }
@@ -749,6 +757,39 @@ impl Compiler {
             None => true,
             _ => false,
         }
+    }
+
+    fn is_vararg_function(&self) -> bool {
+        self.functional_depth > 0 && self.functional_states[self.functional_depth - 1].vararg > 0
+    }
+
+    fn is_arg_mode(&self) -> bool {
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].argument_mode
+        } else {
+            self.root_argument_mode
+        }
+    }
+
+    fn set_arg_mode(&mut self, bool: bool) {
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].argument_mode = bool;
+        } else {
+            self.root_argument_mode = bool;
+        }
+    }
+
+    fn set_vararg(&mut self) {
+        if self.functional_depth > 0 {
+            // println!("{} {}", "Set local count".on_red(), self.local_count);
+            self.functional_states[self.functional_depth - 1].vararg = (self.local_count) as u8;
+        }
+    }
+    fn get_vararg(&self) -> u8 {
+        if self.functional_depth > 0 {
+            return self.functional_states[self.functional_depth - 1].vararg;
+        }
+        0
     }
 
     /** replaces the conents of func with the compilers body */
@@ -1507,27 +1548,14 @@ fn build_function<'c>(
         arity += 1;
         build_param(this, it)?;
 
-        if this.vararg_function {
-            if let Token::Comma = this.peek(it)? {
-                return Err(this.error_at(SiltError::InvalidVarArgParam));
+        while let Token::Comma = this.peek(it)? {
+            this.eat(it);
+            arity += 1;
+            if arity > 255 {
+                // TODO we should use an arity value on the function object but let's make it only exist on compile time
+                return Err(this.error_at(SiltError::TooManyParameters));
             }
-        } else {
-            while let Token::Comma = this.peek(it)? {
-                this.eat(it);
-                arity += 1;
-                if arity > 255 {
-                    // TODO we should use an arity value on the function object but let's make it only exist on compile time
-                    return Err(this.error_at(SiltError::TooManyParameters));
-                }
-                build_param(this, it)?;
-
-                if this.vararg_function {
-                    if let Token::Comma = this.peek(it)? {
-                        return Err(this.error_at(SiltError::InvalidVarArgParam));
-                    }
-                    break;
-                }
-            }
+            build_param(this, it)?;
         }
     }
 
@@ -1567,6 +1595,13 @@ fn build_function<'c>(
     // this.swap_function(&mut sidelined_func);
     // swap(f, &mut sidelined_func);
     f2.upvalue_count = state.up_values.len() as u8;
+    f2.is_variadic = state.vararg > 0;
+    f2.varidic_index = if state.vararg > 0 {
+        state.vararg - 1
+    } else {
+        0
+    };
+
     let func_value = Value::Function(Gc::new(mc, f2));
     if true {
         // need closure
@@ -1600,11 +1635,12 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
             add_local(this, it, ident)?;
         }
         Token::VarArg => {
-            if this.vararg_function {
+            if this.is_vararg_function() {
+                devout!("{} {}", "TIME TO ERROR".blue(), this.functional_depth);
                 return Err(this.error_at(SiltError::InvalidVarArgParam));
             }
 
-            this.vararg_function = true;
+            this.set_vararg();
             add_local(this, it, "...".to_string())?;
         }
         _ => {
@@ -2100,13 +2136,17 @@ fn variable(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign:
 fn vararg_variable(
     this: &mut Compiler,
     f: FnRef,
-    _it: &mut Peekable<Lexer>,
+    it: &mut Peekable<Lexer>,
     can_assign: bool,
 ) -> Catch {
+    devout!("{}", "we hit here".green());
     devnote!(this it "vararg_variable");
 
     if can_assign {
-        return Err(this.error_at(SiltError::InvalidVarArgAssignment));
+        if let Token::Assign = this.peek(it)? {
+            devout!("{}", "we error".red());
+            return Err(this.error_at(SiltError::InvalidVarArgAssignment));
+        }
     }
 
     // let mut found_vararg = false;
@@ -2122,14 +2162,26 @@ fn vararg_variable(
     //         break;
     //     }
     // }
+    let vararg = this.get_vararg();
 
-    if this.functional_depth > 0 && !this.functional_states[this.functional_depth].is_vararg {
+    if this.functional_depth > 0 && vararg == 0 {
+        devout!("{} {}", "we error".on_red(), vararg);
         return Err(this.error_at(SiltError::InvalidVarArgUsage));
     }
 
-    let index = this.local_count as u8;
+    let index = if vararg > 0 { vararg - 1 } else { 0 };
+    let count = this.expected_multi;
+    let is_arg = this.is_arg_mode();
+    print!(
+        "{} exp#:{}  {} {} c: {} // ",
+        "PIZZA TIME".on_purple(),
+        is_arg,
+        index,
+        vararg,
+        count
+    );
 
-    this.emit_at(f, OpCode::VARARG { index, count: 0 });
+    this.emit_at(f, OpCode::VARARG { is_arg, count });
 
     Ok(())
 }
@@ -2298,6 +2350,7 @@ fn named_variable(
             if can_assign {
                 this.eat(it);
                 let assign_need = this.var_stack.len() as isize;
+                this.expected_multi = assign_need as u8;
                 this.expression_count = 1;
                 // if assign_need > 1 {
                 //     this.emit_at(f, OpCode::NEED(assign_need as u8));
@@ -2333,6 +2386,11 @@ fn named_variable(
                                 // devout!("{} {}", "modify call to ".red(), remainder + 1);
                                 f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8));
                             }
+                            // we have exception for vararg because they set their own stack lengths and dont need nil padding
+                            OpCode::VARARG {
+                                is_arg: _,
+                                count: _,
+                            } => {}
                             _ => this.emit_at(f, OpCode::NILS(remainder as u8)),
                         }
                     }
@@ -2425,6 +2483,7 @@ fn tabulate(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign
     this.emit_at(f, OpCode::NEW_TABLE);
     // not immediately closed
     if !matches!(this.peek(it)?, &Token::CloseBrace) {
+        this.set_arg_mode(true);
         let mut count = 0;
         // check if index provided via brackets or ident, otherwise increment our count to build array at the end
         while {
@@ -2481,6 +2540,7 @@ fn tabulate(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign
         if count > 0 {
             this.emit_at(f, OpCode::TABLE_BUILD(count));
         }
+        this.set_arg_mode(false);
     }
 
     expect_token!(
@@ -2729,6 +2789,7 @@ fn arguments(
     start: TokenCell,
 ) -> Result<u8, ErrorTuple> {
     devnote!(this it "arguments");
+    this.set_arg_mode(true);
     this.can_multivar_set = false;
     // self was pushed on the stack recently, include it and turn off
     let mut args = if this.self_arg {
@@ -2746,6 +2807,7 @@ fn arguments(
             if let Token::VarArg = this.peek(it)? {
                 this.store(it); // consume the VarArg token
                 vararg_variable(this, f, it, false)?;
+                args += 1;
                 has_vararg = true;
                 // VarArg must be the last argument
                 if let Token::Comma = this.peek(it)? {
@@ -2772,6 +2834,7 @@ fn arguments(
             }
         }
     }
+    this.set_arg_mode(false);
     this.can_multivar_set = true;
 
     expect_token!(
@@ -2782,12 +2845,12 @@ fn arguments(
     );
     devout!("arguments count: {}", args);
 
-    // If we have vararg, use special encoding to indicate variable argument count
-    if has_vararg {
-        Ok(255) // Special value indicating vararg call
-    } else {
-        Ok(args)
-    }
+    // if has_vararg {
+    //     Ok(255) // Special value indicating vararg call
+    // } else {
+    //     Ok(args)
+    // }
+    Ok(args)
 }
 
 fn print(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {

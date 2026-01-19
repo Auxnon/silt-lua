@@ -681,7 +681,7 @@ unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
 
 /// A wrapper for UserData objects
 pub struct UserDataWrapper {
-    data: Arc<Mutex<dyn Any + Send  >>,
+    data: Arc<Mutex<dyn Any + Send>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -689,7 +689,7 @@ pub struct UserDataWrapper {
 }
 
 pub struct WeakWrapper {
-    data: Weak<Mutex<dyn Any + Send  >>,
+    data: Weak<Mutex<dyn Any + Send>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -822,10 +822,7 @@ impl UserDataWrapper {
         let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCall)?;
         apply(ud)
     }
-pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(
-        &'a self,
-        apply: F,
-    ) -> Result<R, SiltError>
+    pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(&'a self, apply: F) -> Result<R, SiltError>
     where
         F: FnOnce(&T) -> Result<R, SiltError>,
     {
