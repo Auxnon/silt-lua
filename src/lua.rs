@@ -880,10 +880,11 @@ impl<'gc> VM<'gc> {
                     let count = *c;
                     frame_count -= 1;
                     if frame_count <= 0 {
-                        if self.stack_count <= 1 {
-                            return Ok(ExVal::Nil);
-                        }
-                        let out: ExVal = self.safe_pop().into();
+                        let out = self.pop(ep).into();
+                        // if self.stack_count <= 1 {
+                        //     return Ok(ExVal::Nil);
+                        // }
+                        // let out: ExVal = self.safe_pop().into();
                         return Ok(out);
                     }
 
@@ -928,10 +929,11 @@ impl<'gc> VM<'gc> {
                         frames.pop();
                         frame = frames.last_mut().unwrap();
                         devout!("next instruction {}", frame.current_instruction());
+                        println!("yeah push {}", res);
+                        self.push(ep, res);
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
 
-                        self.push(ep, res);
                         // if frame.need > 1 {
                         //     for _ in 1..frame.need {
                         //         self.push(ep, Value::Nil);
@@ -1025,7 +1027,7 @@ impl<'gc> VM<'gc> {
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
                 OpCode::VARARG { is_arg, count } => {
-                    let arity = frame.call_arity ;
+                    let arity = frame.call_arity;
                     let index = frame.function.get_variadic();
                     let non_nils = arity - index;
 
@@ -1054,11 +1056,11 @@ impl<'gc> VM<'gc> {
                     raw.iter().for_each(|v| println!("val: {},", v.to_string()));
                     // PUSH EQUAL amount of NILS to amtch count
                     self.pushn(ep, raw, *count as usize, false);
-                    // if *count > non_nils {
-                    //     let extra = count - non_nils;
-                    //     println!("push {} nils", extra);
-                    //     self.push_nils(ep, extra.into());
-                    // }
+                    if *count > non_nils {
+                        let extra = count - non_nils;
+                        //     println!("push {} nils", extra);
+                        self.push_nils(ep, extra.into());
+                    }
                 }
                 OpCode::NEED(_) => {}
                 OpCode::DEFINE_LOCAL { constant: _ } => todo!(),

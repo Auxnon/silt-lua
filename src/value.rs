@@ -195,6 +195,11 @@ impl From<()> for ExVal {
         ExVal::Nil
     }
 }
+impl From<i64> for ExVal {
+    fn from(value: i64) -> Self {
+        ExVal::Integer(value)
+    }
+}
 
 impl Hash for ExVal {
     fn hash<H: Hasher>(&self, state: &mut H) {

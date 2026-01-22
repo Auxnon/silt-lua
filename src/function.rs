@@ -92,7 +92,7 @@ impl<'frame> CallFrame<'frame> {
         println!("get_val index: {} count: {}", index, count);
         unsafe {
             let i = self.local_stack.add((index) as usize);
-            println!(" VAL: {}",  &*i);
+            println!(" VAL: {}", &*i);
             std::slice::from_raw_parts(i, count as usize)
         }
     }
