@@ -879,7 +879,7 @@ impl Compiler {
             // Token::OpenBracket => rule!(void, indexer, Call),
             Token::Integer(_) => rule!(integer, void, None),
             Token::Number(_) => rule!(number, void, None),
-            Token::StringLiteral(_) => rule!(string, call_string, None),
+            Token::StringLiteral(_) => rule!(string, void, None),
             Token::Nil => rule!(literal, void, None),
             Token::True => rule!(literal, void, None),
             Token::False => rule!(literal, void, None),
@@ -2205,9 +2205,11 @@ fn variable(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign:
     // } else {
     //     this.emit(OpCode::LITERAL { dest: ident, literal: ident }, t.1);
     // }
-
-    named_variable(this, f, it, can_assign)?;
-    Ok(())
+    match this.peek(it)? {
+        Token::StringLiteral(_) => call_string(this, f, it, can_assign),
+        Token::OpenBrace => todo!(),
+        _ => named_variable(this, f, it, can_assign),
+    }
 }
 
 /// This is the second concept of vararg, the usage of, not the param.
@@ -2880,7 +2882,16 @@ fn call_string(
     it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
-    todo!();
+    let start = this.current_location;
+
+    this.set_arg_mode(true);
+    this.set_can_multivar_set(false);
+
+    expression_single(this, f, it, false)?;
+
+    this.set_arg_mode(false);
+    this.set_can_multivar_set(true);
+    this.emit(f, OpCode::CALL(1, 0), start);
     Ok(())
 }
 
@@ -2893,6 +2904,7 @@ fn arguments(
     devnote!(this it "arguments");
     this.set_arg_mode(true);
     this.set_can_multivar_set(false);
+
     // self was pushed on the stack recently, include it and turn off
     let mut args = if this.self_arg {
         this.self_arg = false;

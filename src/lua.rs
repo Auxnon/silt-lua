@@ -2082,7 +2082,7 @@ impl<'gc> VM<'gc> {
         // println!("borrow {}", name);
         self.globals.borrow_mut(mc).insert(name.into(), v);
     }
-//
+    //
     pub fn register_native_function_to<A, F, R>(
         &mut self,
         // vm: &VM<'gc>,

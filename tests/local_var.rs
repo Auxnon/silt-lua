@@ -1,6 +1,6 @@
 use silt_lua::{Compiler, ExVal, Lua};
 mod shared;
-use shared:: simple;
+use shared::simple;
 #[macro_use]
 extern crate silt_lua;
 
