@@ -929,7 +929,7 @@ impl<'gc> VM<'gc> {
                         frames.pop();
                         frame = frames.last_mut().unwrap();
                         devout!("next instruction {}", frame.current_instruction());
-                        println!("yeah push {}", res);
+                        // println!("yeah push {}", res);
                         self.push(ep, res);
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
@@ -1314,7 +1314,7 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::CALL(arity, multi) => {
-                    println!("CALL {} {} ", arity, multi);
+                    // println!("CALL {} {} ", arity, multi);
                     let value = self.peekn(ep, *arity);
                     devout!(" | -> {}", value);
                     match value {
@@ -1347,14 +1347,14 @@ impl<'gc> VM<'gc> {
 
                             let frame_top = unsafe { ep.ip.sub(offset + 1) };
                             let t = unsafe { frame_top.as_mut().unwrap() };
-                            println!(
-                                "{} top is {} (offset: {} var: {} ar: {}  )",
-                                "TOP IS".on_white().black(),
-                                t,
-                                arity,
-                                c.get_variadic(),
-                                offset
-                            );
+                            // println!(
+                            //     "{} top is {} (offset: {} var: {} ar: {}  )",
+                            //     "TOP IS".on_white().black(),
+                            //     t,
+                            //     arity,
+                            //     c.get_variadic(),
+                            //     offset
+                            // );
 
                             let new_frame = CallFrame::new(
                                 c.clone(),
@@ -2079,10 +2079,10 @@ impl<'gc> VM<'gc> {
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
-        println!("borrow {}", name);
+        // println!("borrow {}", name);
         self.globals.borrow_mut(mc).insert(name.into(), v);
     }
-
+//
     pub fn register_native_function_to<A, F, R>(
         &mut self,
         // vm: &VM<'gc>,

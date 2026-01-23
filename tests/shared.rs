@@ -4,7 +4,11 @@ use silt_lua::{Compiler, ExVal, Lua};
 #[macro_export]
 macro_rules! valeq {
     ($source:expr, $val:expr) => {
-        assert_eq!(simple($source), $val);
+        assert_eq!(
+            simple($source),
+            $val.into(),
+            "output does not match expected value"
+        );
     };
 }
 
@@ -64,5 +68,6 @@ pub fn simple(source: &str) -> ExVal {
 pub fn run_lua(source: &str) -> Result<ExVal, Vec<String>> {
     let mut compiler = Compiler::new();
     let mut lua = Lua::new_with_standard();
-    lua.run(source, &mut compiler).map_err(|e| e.iter().map(|err| err.to_string()).collect())
+    lua.run(source, &mut compiler)
+        .map_err(|e| e.iter().map(|err| err.to_string()).collect())
 }

@@ -306,6 +306,7 @@ impl FunctionalState {
 }
 
 type FnRef<'a, 'c> = &'a mut FunctionObject<'c>;
+type OpOpCode = Option<OpCode>;
 
 pub struct Compiler {
     // pub body: FunctionObject<'chnk>,
@@ -323,7 +324,8 @@ pub struct Compiler {
     local_functional_offset: Vec<usize>,
     locals: Vec<Local>,
     local_count: usize,
-    local_mode: bool,
+    /// This statement is a local declaration
+    local_declare_mode: bool,
     labels: HashMap<String, usize>,
     // location: (usize, usize),
     // previous: TokenTuple,
@@ -341,9 +343,9 @@ pub struct Compiler {
     /** tracks the number of values on the stack from comma-separated expressions */
     expression_count: u8,
     /// used for multi var assignment, start small, expand if really necessary
-    var_stack: Vec<(OpCode, OpCode)>,
+    var_stack: Vec<Option<(OpCode, OpCode)>>,
     /// men will do anything to not have to allocate a new vec
-    var_set_stack: Vec<(OpCode, OpCode)>,
+    var_set_stack: Vec<Option<(OpCode, OpCode)>>,
     expected_multi: u8,
     // TODO this is a decent stopgap to fix our multivar headaches BUT this will definitely break
     // in our implicit returns as they're treated as setters and wouldnt collapse expressions
@@ -379,7 +381,7 @@ impl Compiler {
             local_functional_offset: vec![],
             local_offset: vec![],
             local_count: 1,
-            local_mode: false,
+            local_declare_mode: false,
             labels: HashMap::new(),
             pending_gotos: vec![],
             // location: (0, 0),
@@ -454,6 +456,11 @@ impl Compiler {
 
     pub fn pop_errors(&mut self) -> Vec<ErrorTuple> {
         std::mem::replace(&mut self.errors, vec![])
+    }
+
+    fn set_can_multivar_set(&mut self, value: bool) {
+        self.can_multivar_set = value;
+        // println!("multi set to {}", value);
     }
 
     // fn get_chunk(&self,e: &'a mut Emphereal) -> &'chnk Chunk {
@@ -573,14 +580,16 @@ impl Compiler {
         }
     }
 
-    fn drain_setters(&mut self, f: FnRef, local: bool) {
+    fn drain_setters(&mut self, f: FnRef) {
         let vv = self.var_set_stack.drain(..).rev();
         let it = vv.peekable();
         for v in it {
-            println!("we writting code here {} {}", v.0, local);
-            f.chunk.write_code(v.0, self.current_location);
-            if !local {
+            if let Some(s) = v {
+                // println!("we writting code here {} {}", v.0, local);
+                f.chunk.write_code(s.0, self.current_location);
+                // if !local {
                 f.chunk.write_code(OpCode::POP, self.current_location);
+                // }
             }
         }
     }
@@ -588,11 +597,16 @@ impl Compiler {
     fn drain_getters(&mut self, f: FnRef) {
         devout!("{}", "drain getters".green());
         for v in self.var_stack.drain(..) {
-            f.chunk.write_code(v.1, self.current_location);
+            if let Some(s) = v {
+                // println!("⭐⭐⭐DRAIN GETTERS {}",s.1);
+                f.chunk.write_code(s.1, self.current_location);
+            }
         }
     }
     fn pull_getter(&mut self, f: FnRef) -> OpCode {
-        self.var_stack.first().unwrap().1.clone()
+        let o = self.var_stack.first().unwrap();
+        let oo = o.clone().unwrap();
+        oo.1
     }
 
     /** only use after peek */
@@ -1222,13 +1236,13 @@ fn declaration_keyword<'a, 'c: 'a>(
     already_function: bool,
 ) -> Catch {
     devnote!(this it "declaration_keyword");
-    this.local_mode = local;
+    this.local_declare_mode = local;
     this.eat(it);
-    let (res, location) = this.pop(it);
-    // let (r, l) = this.peek_triple(it)?;
-    // let location =l.clone();
-    // let res =r.clone();
-    match res? {
+    // let (res, location) = this.pop(it);
+    let (r, l) = this.peek_triple(it)?;
+    let location = l.clone();
+    let res = r.clone();
+    match res {
         Token::Identifier(ident) => {
             pre_statement(this);
             if this.scope_depth > 0 && local {
@@ -1241,7 +1255,7 @@ fn declaration_keyword<'a, 'c: 'a>(
                 typing(this, f, it, None)?;
             } else {
                 let ident = this.identifer_constant(f, ident.to_string());
-                typing(this, f, it, Some((ident, location)))?;
+                typing(this, f, it, Some((ident, (location.line, location.col))))?;
                 // typing(this, f, it, Some((ident, (location.line,location.col))))?;
             }
         }
@@ -1354,8 +1368,15 @@ fn resolve_local(
     it: &mut Peekable<Lexer>,
     ident: &String,
 ) -> Option<(u8, bool)> {
+    // println!("❓resolve_local {}", ident);
     devnote!(this it "resolve_local");
     for (i, l) in this.locals.iter_mut().enumerate().rev() {
+        // println!(
+        //     " ⭐ test {} ({}) against {}",
+        //     l.ident.clone().unwrap_or("_".to_string()),
+        //     i,
+        //     ident
+        // );
         if let Some(local_ident) = &l.ident {
             if local_ident == ident {
                 #[cfg(feature = "dev-out")]
@@ -1481,7 +1502,7 @@ fn typing<'a, 'c: 'a>(
             // Statement::InvalidStatement
         }
     } else {
-        println!("we got here {}", ident_tuple.unwrap_or((0, (0, 0))).0);
+        // println!("we got here {}", ident_tuple.unwrap_or((0, (0, 0))).0);
         expression_statement(this, f, it)?;
         // named_variable(this, f, it, can_assign)?;
         // define_declaration(this, f, it, ident_tuple)?;
@@ -1701,7 +1722,7 @@ fn pre_statement(this: &mut Compiler) {
     this.last_was_expression = false;
     this.expression_count = 1;
     // we can now set multivars again, x,y=...
-    this.can_multivar_set = true;
+    this.set_can_multivar_set(true);
 }
 
 fn statement<'c>(
@@ -1739,6 +1760,7 @@ fn statement<'c>(
         // }
         _ => expression_statement(this, f, it)?, // This will set last_was_expression = true
     }
+
     Ok(())
 }
 
@@ -1946,7 +1968,7 @@ fn for_statement<'c>(
 fn generic_for_statement() {}
 
 fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
-    this.can_multivar_set = false;
+    this.set_can_multivar_set(false);
     devnote!(this it "return_statement");
     devout!("{} {}", "HERE".on_red(), this.expression_count);
     this.eat(it);
@@ -1958,7 +1980,7 @@ fn return_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> 
         expression(this, f, it, false)?;
         // expression() will set this.expression_count to the number of comma-separated expressions
     }
-    this.can_multivar_set = true;
+    this.set_can_multivar_set(true);
 
     // For multiple return values, all expressions are already on the stack
     this.emit_at(f, OpCode::RETURN(this.expression_count));
@@ -2136,6 +2158,10 @@ fn expression_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>)
         "At (expression statement start)".on_cyan(),
         this.expression_count
     );
+    let i = it.peek().unwrap();
+    let i2 = (*i).clone()?;
+    let i3 = i2.0.clone();
+    // println!("we start at {}", i3);
 
     expression(this, f, it, false)?;
 
@@ -2158,6 +2184,8 @@ fn expression_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>)
             this.emit_at(f, OpCode::POP);
         }
     }
+
+    this.local_declare_mode = false;
     devnote!(this it "expression_statement end");
     Ok(())
 }
@@ -2269,13 +2297,17 @@ fn resolve_etters(
     }
 }
 
-fn print_var_stack(_v: &[(OpCode, OpCode)]) {
+fn print_var_stack(_v: &[Option<(OpCode, OpCode)>]) {
     #[cfg(feature = "dev-out")]
     {
         println!(":::::::::::::::::::::::::::::::::::::");
         print!("var stack -> ");
-        for v in _v.iter() {
-            print!("({},{})", v.0, v.1)
+        for o in _v.iter() {
+            if let Some(v) = o {
+                print!("({},{})", v.0, v.1)
+            } else {
+                print!("( -, - )")
+            }
         }
         println!();
         println!(":::::::::::::::::::::::::::::::::::::");
@@ -2304,7 +2336,8 @@ fn named_variable(
             // short declare
             add_local(this, it, ident)?;
             this.override_pop = true;
-            this.local_mode = true;
+
+            this.local_declare_mode = true;
             // this.eat(it);
             // expression(this, f, it, false)?;
         } else {
@@ -2318,7 +2351,8 @@ fn named_variable(
 
     let ops = if let Token::Identifier(ident) = t {
         // devout!("assigning to identifier: {}", ident);
-        if this.local_mode {
+        if this.local_declare_mode {
+            // println!("💡we added ident {} here", ident);
             add_local(this, it, ident.clone())?;
             // this.eat(it);
         }
@@ -2327,15 +2361,17 @@ fn named_variable(
         unreachable!()
     };
 
-    println!("and then it's {} {}", ops.0, this.can_multivar_set);
-    this.var_stack.push(ops);
+    // println!("and then it's {} {}", ops.0, this.can_multivar_set);
+    this.var_stack.push(if !this.local_declare_mode {
+        Some(ops)
+    } else {
+        None
+    });
     if this.can_multivar_set {
-        println!("multivar drain 3");
         // These commas are intended for multivar setting aka what to assign to. x,y= ...
         // Check for additional variables in multi-variable context
         while let Token::Comma = this.peek(it)? {
             devnote!(this it "-> multi_var comma walk");
-            println!("yeahwalk");
             add!(this);
             this.eat(it);
             if let Token::Identifier(_) = this.peek(it)? {
@@ -2343,7 +2379,7 @@ fn named_variable(
                 this.current_location = t.1;
 
                 let ops = if let Token::Identifier(ident) = t.0? {
-                    if this.local_mode {
+                    if this.local_declare_mode {
                         add_local(this, it, ident.clone())?;
                         // this.eat(it);
                     }
@@ -2351,7 +2387,11 @@ fn named_variable(
                 } else {
                     unreachable!()
                 };
-                this.var_stack.push(ops);
+                this.var_stack.push(if !this.local_declare_mode {
+                    Some(ops)
+                } else {
+                    None
+                });
             } else {
                 // We encountered a non-identifier after comma
                 // This means we have a mixed expression like "a, 5" or "a, func()"
@@ -2364,7 +2404,7 @@ fn named_variable(
                 }
                 // we at least know multivar setting has ended
                 println!("ended multi");
-                this.can_multivar_set = false;
+                this.set_can_multivar_set(false);
 
                 // For retrieval context, we need to drain the getters we've collected so far
                 // and then continue parsing as a regular expression
@@ -2420,11 +2460,11 @@ fn named_variable(
                 // }
                 // println!("=============== pre setters {}", this.peek(it)?);
                 std::mem::swap(&mut this.var_stack, &mut this.var_set_stack);
-                println!("set stack is {}", this.var_set_stack.len());
+                // println!("set stack is {}", this.var_set_stack.len());
                 this.override_pop = true;
-                this.can_multivar_set = false;
+                this.set_can_multivar_set(false);
                 expression(this, f, it, false)?;
-                this.can_multivar_set = true;
+                this.set_can_multivar_set(true);
                 // println!("=============== setters? {}", this.var_stack.len());
                 print_var_stack(&this.var_set_stack);
                 print_var_stack(&this.var_stack);
@@ -2468,7 +2508,7 @@ fn named_variable(
                 // }
 
                 // println!("multivar drain 2");
-                this.drain_setters(f, this.local_mode);
+                this.drain_setters(f);
             } else {
                 // this.return_count = this.var_stack.len() as u8;
                 this.drain_getters(f);
@@ -2852,7 +2892,7 @@ fn arguments(
 ) -> Result<u8, ErrorTuple> {
     devnote!(this it "arguments");
     this.set_arg_mode(true);
-    this.can_multivar_set = false;
+    this.set_can_multivar_set(false);
     // self was pushed on the stack recently, include it and turn off
     let mut args = if this.self_arg {
         this.self_arg = false;
@@ -2897,7 +2937,7 @@ fn arguments(
         }
     }
     this.set_arg_mode(false);
-    this.can_multivar_set = true;
+    this.set_can_multivar_set(true);
 
     expect_token!(
         this,

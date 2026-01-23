@@ -115,6 +115,7 @@ pub enum ValueTypes {
     Vec2,
 }
 
+#[derive(Clone)]
 pub struct TokenTriple {
     pub line: usize,
     pub col: usize,
