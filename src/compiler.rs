@@ -242,6 +242,8 @@ const WORD_MAP: [&str; 7] = [
 ];
 
 // type LSPIndent =(usize, usize);
+// todo!("make this work");
+// todo!("add types feature");
 // start, length, type
 type LSPFormatMark = (usize, usize, u8);
 
@@ -854,7 +856,7 @@ impl Compiler {
 
         match token {
             Token::OpenParen => rule!(grouping, call, Call),
-            Token::OpenBrace => rule!(tabulate, call_table, None),
+            Token::OpenBrace => rule!(tabulate, void, None),
             Token::Assign => rule!(void, void, None),
             Token::Op(op) => match op {
                 Operator::Sub => rule!(unary, binary, Term),
@@ -2207,7 +2209,7 @@ fn variable(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign:
     // }
     match this.peek(it)? {
         Token::StringLiteral(_) => call_string(this, f, it, can_assign),
-        Token::OpenBrace => todo!(),
+        Token::OpenBrace => call_table(this, f, it, can_assign),
         _ => named_variable(this, f, it, can_assign),
     }
 }
@@ -2871,8 +2873,18 @@ fn call(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bo
     Ok(())
 }
 
-fn call_table(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
-    todo!();
+fn call_table(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, can_assign: bool) -> Catch {
+    let start = this.current_location;
+
+    this.set_arg_mode(true);
+    this.set_can_multivar_set(false);
+
+    this.eat(it);
+    tabulate(this, f, it, can_assign)?;
+
+    this.set_arg_mode(false);
+    this.set_can_multivar_set(true);
+    this.emit(f, OpCode::CALL(1, 0), start);
     Ok(())
 }
 

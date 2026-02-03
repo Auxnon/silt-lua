@@ -35,66 +35,78 @@ macro_rules! devout {
 
 }
 
+macro_rules! bubble {
+    ($arg:expr) => {
+        match $arg {
+            Ok(o) => o,
+            Err(e) => break Err(e),
+        }
+    };
+}
+
 macro_rules! str_op_str{
     ($left:ident $op:tt $right:ident $enu:ident )=>{
-        (||{
+        ({
+            let mut out=Value::Nil;
             if let Ok(n1) = $left.parse::<i64>() {
                 if let Ok(n2) = $right.parse::<i64>() {
-                    return Ok(Value::Integer(n1 $op n2));
+                    out=Value::Integer(n1 $op n2)
+                }else if let Ok(n2) = $right.parse::<f64>() {
+                    out=Value::Number(int2f!(n1) $op n2)
                 }
+            }else if let Ok(n1) = $left.parse::<f64>() {
                 if let Ok(n2) = $right.parse::<f64>() {
-                    return Ok(Value::Number(int2f!(n1) $op n2));
+                    out=(Value::Number(n1 $op n2));
                 }
             }
-            if let Ok(n1) = $left.parse::<f64>() {
-                if let Ok(n2) = $right.parse::<f64>() {
-                    return Ok(Value::Number(n1 $op n2));
-                }
-            }
-            return Err(SiltError::ExpOpValueWithValue(
+
+            if out==Value::Nil{
+                break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
                 MetaMethod::$enu,
                 ValueTypes::String,
-            ));
-        })()
+                ));
+            }
+            out
+        })
     }
 }
 
 macro_rules! str_op_int{
     ($left:ident $op:tt $right:ident $enu:ident)=>{
-        (||{
+        {
             if let Ok(n1) = $left.parse::<i64>() {
-                    return Ok(Value::Integer(n1 $op $right));
-
+                    Value::Integer(n1 $op $right)
             }
-            if let Ok(n1) = $left.parse::<f64>() {
-                    return Ok(Value::Number(n1 $op int2f!($right)));
-            }
-            return Err(SiltError::ExpOpValueWithValue(
+            else if let Ok(n1) = $left.parse::<f64>() {
+                    Value::Number(n1 $op int2f!($right))
+            }else{
+            break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
                 MetaMethod::$enu,
                 ValueTypes::Integer,
             ));
-        })()
+            }
+        }
     }
 }
 
 macro_rules! int_op_str{
     ($left:ident $op:tt $right:ident  $enu:ident)=>{
-        (||{
+        {
             if let Ok(n1) = $right.parse::<i64>() {
-                    return Ok(Value::Integer($left $op n1));
+                    Value::Integer($left $op n1)
 
-            }
-            if let Ok(n1) = $right.parse::<f64>() {
-                    return Ok(Value::Number((int2f!($left) $op n1)));
-            }
-            return Err(SiltError::ExpOpValueWithValue(
+            }else if let Ok(n1) = $right.parse::<f64>() {
+                    Value::Number(int2f!($left) $op n1)
+            }else {
+            break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::Integer,
                 MetaMethod::$enu,
                 ValueTypes::String,
             ));
-        })()
+            }
+        }
     }
 }
 
@@ -113,7 +125,7 @@ macro_rules! str_op_num{
         if let Ok(n1) = $left.parse::<f64>() {
             Value::Number(n1 $op $right)
         }else {
-            return Err(SiltError::ExpOpValueWithValue(
+            break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
                 MetaMethod::$enu,
                 ValueTypes::String,
@@ -127,7 +139,7 @@ macro_rules! num_op_str{
         if let Ok(n1) = $right.parse::<f64>() {
             Value::Number($left $op n1)
         }else{
-            return Err(SiltError::ExpOpValueWithValue(
+            break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::Number,
                 MetaMethod::$enu,
                 ValueTypes::String,
@@ -156,9 +168,9 @@ macro_rules! binary_op  {
             (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
             (Value::Number(left), Value::Integer(right)) => (Value::Number(left $op right as f64)),
             (Value::Integer(left), Value::Number(right)) =>(Value::Number(left as f64 $op right)),
-            (Value::String(left), Value::String(right)) => str_op_str!(left $op right $opp)?,
-            (Value::String(left), Value::Integer(right)) => str_op_int!(left $op right $opp)?,
-            (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp)?,
+            (Value::String(left), Value::String(right)) => str_op_str!(left $op right $opp),
+            (Value::String(left), Value::Integer(right)) => str_op_int!(left $op right $opp),
+            (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp),
             (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
             (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
             (Value::Table(left), rr ) => {
@@ -168,14 +180,14 @@ macro_rules! binary_op  {
                 let er = right.to_error(); // just in case, cheap op
                 match $lua.handle_userdata_binary_op($ep, left, MetaMethod::$opp, right) {
                     Ok(result) => result,
-                    Err(_) => return Err(SiltError::ExpOpValueWithValue(
+                    Err(_) => break Err(SiltError::ExpOpValueWithValue(
                         ValueTypes::UserData,
                         MetaMethod::$opp,
                         er
                     ))
                 }
             },
-            (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
+            (ll,rr) => break Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
         }
     };
 }
@@ -223,7 +235,7 @@ macro_rules! table_meta_op {
                 // Value::Nil
                 $right
             }
-            Err(e) => return Err(e),
+            Err(e) => break Err(e),
         }
     }};
 }
@@ -518,10 +530,7 @@ impl<'gc> VM<'gc> {
     ) -> Result<ExVal, Vec<ErrorTuple>> {
         match self.execute(mc, object) {
             Ok(v) => Ok(v),
-            Err(e) => Err(vec![ErrorTuple {
-                code: e,
-                location: (0, 0),
-            }]),
+            Err(e) => Err(vec![e]),
         }
 
         // Ok(ExVal::Nil)
@@ -551,10 +560,7 @@ impl<'gc> VM<'gc> {
     pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, Vec<ErrorTuple>> {
         match self.execute(mc, self.root) {
             Ok(v) => Ok(v),
-            Err(e) => Err(vec![ErrorTuple {
-                code: e,
-                location: (0, 0),
-            }]),
+            Err(e) => Err(vec![e]),
         }
     }
 
@@ -563,7 +569,7 @@ impl<'gc> VM<'gc> {
         &mut self,
         mc: &Mutation<'gc>,
         object: Gc<'gc, FunctionObject<'gc>>,
-    ) -> Result<ExVal, SiltError> {
+    ) -> Result<ExVal, ErrorTuple> {
         // TODO param is a reference of &'a
         // self.ip = object.chunk.code.as_ptr();
         // frame.ip = object.chunk.code.as_ptr();
@@ -859,7 +865,7 @@ impl<'gc> VM<'gc> {
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
         mut frames: Vec<CallFrame<'gc>>,
-    ) -> Result<ExVal, SiltError> {
+    ) -> Result<ExVal, ErrorTuple> {
         // let mut last = Value::Nil; // TODO temporary for testing
         // let stack_pointer = self.stack.as_mut_ptr();
         // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
@@ -868,7 +874,7 @@ impl<'gc> VM<'gc> {
         /// monkey patch for variadic as an argument since CALL op tries to count varibles used
         let mut var_extra = 0;
         // body.chunk.print_chunk(None);
-        loop {
+        let results: Result<ExVal, SiltError> = loop {
             let instruction = frame.current_instruction();
 
             // devout!("ip: {:p} | {}", self.ip, instruction);
@@ -970,7 +976,7 @@ impl<'gc> VM<'gc> {
                         // let v = self.pop();
                         self.globals.borrow_mut(ep.mc).insert(s.into(), v);
                     } else {
-                        return Err(SiltError::VmCorruptConstant);
+                        break Err(SiltError::VmCorruptConstant);
                     }
                 }
 
@@ -997,7 +1003,7 @@ impl<'gc> VM<'gc> {
                         // devout!("0SET_GLOBAL: {}", value);
                         #[cfg(feature = "dev-out")]
                         self.body.chunk.print_constants();
-                        return Err(SiltError::VmCorruptConstant);
+                        break Err(SiltError::VmCorruptConstant);
                     }
                 }
                 OpCode::GET_GLOBAL { constant } => {
@@ -1012,7 +1018,7 @@ impl<'gc> VM<'gc> {
                             self.push(ep, Value::Nil);
                         }
                     } else {
-                        return Err(SiltError::VmCorruptConstant);
+                        break Err(SiltError::VmCorruptConstant);
                     }
                 }
                 OpCode::SET_LOCAL { index } => {
@@ -1098,7 +1104,7 @@ impl<'gc> VM<'gc> {
                             self.push(ep, v);
                         }
                         (l, r) => {
-                            return Err(SiltError::ExpOpValueWithValue(
+                            break Err(SiltError::ExpOpValueWithValue(
                                 l.to_error(),
                                 MetaMethod::Div,
                                 r.to_error(),
@@ -1120,7 +1126,7 @@ impl<'gc> VM<'gc> {
                             self.push(ep, Value::Integer(f))
                         }
                         // None => Err(SiltError::EarlyEndOfFile)?,
-                        c => Err(SiltError::ExpInvalidNegation(c.to_error()))?,
+                        c => break Err(SiltError::ExpInvalidNegation(c.to_error())),
                     }
                     // TODO  test this vs below: unsafe { *ep.ip = -*ep.ip };
                 }
@@ -1145,22 +1151,22 @@ impl<'gc> VM<'gc> {
                 OpCode::LESS => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(Self::is_less(&l, &r)?));
+                    self.push(ep, Value::Bool(bubble!(Self::is_less(&l, &r))));
                 }
                 OpCode::LESS_EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(!Self::is_greater(&l, &r)?));
+                    self.push(ep, Value::Bool(!bubble!(Self::is_greater(&l, &r))));
                 }
                 OpCode::GREATER => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(Self::is_greater(&l, &r)?));
+                    self.push(ep, Value::Bool(bubble!(Self::is_greater(&l, &r))));
                 }
                 OpCode::GREATER_EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(!Self::is_less(&l, &r)?));
+                    self.push(ep, Value::Bool(!bubble!(Self::is_less(&l, &r))));
                 }
                 OpCode::CONCAT => {
                     let r = self.pop(ep);
@@ -1227,7 +1233,7 @@ impl<'gc> VM<'gc> {
                     // let increment = self.grab(1);
                     let iterator = unsafe { &mut *ep.ip.sub(3) };
                     let compare = self.grab(ep, 2);
-                    if Self::is_greater(iterator, compare)? {
+                    if bubble!(Self::is_greater(iterator, compare)) {
                         frame.forward(*skip);
                     } else {
                         self.push(ep, iterator.clone())
@@ -1240,7 +1246,7 @@ impl<'gc> VM<'gc> {
                 OpCode::INCREMENT { index } => {
                     let value = frame.get_val_mut(*index);
                     let step = self.peek(ep);
-                    value.increment(step)?;
+                    bubble!(value.increment(step));
                 }
 
                 OpCode::CLOSURE { constant } => {
@@ -1286,7 +1292,7 @@ impl<'gc> VM<'gc> {
                         //     frame.shift(f.upvalue_count as usize);
                         // }
 
-                        FunctionObject::push_closure(f.clone(), self, frame, ep)?;
+                        bubble!(FunctionObject::push_closure(f.clone(), self, frame, ep));
                     }
                 }
 
@@ -1398,13 +1404,13 @@ impl<'gc> VM<'gc> {
                             if let Value::NativeFunction(f) = args.remove(0) {
                                 let res = f.f.call(self, ep.mc, &args);
                                 // self.popn_drop(*param_count);
-                                self.push(ep, res?);
+                                self.push(ep, bubble!(res));
                             } else {
                                 unreachable!();
                             }
                         }
                         _ => {
-                            return Err(SiltError::NotCallable(format!("Value: {}", value)));
+                            break Err(SiltError::NotCallable(format!("Value: {}", value)));
                         }
                     }
                 }
@@ -1422,7 +1428,7 @@ impl<'gc> VM<'gc> {
                     match value {
                         Value::String(s) => self.push(ep, Value::Integer(s.len() as i64)),
                         Value::Table(t) => self.push(ep, Value::Integer(t.borrow().len() as i64)),
-                        _ => Err(SiltError::ExpInvalidLength(value.to_error()))?,
+                        _ => break Err(SiltError::ExpInvalidLength(value.to_error())),
                     }
                 }
                 OpCode::NEW_TABLE => {
@@ -1430,14 +1436,18 @@ impl<'gc> VM<'gc> {
                     *self.table_counter.borrow_mut() += 1;
                 }
                 OpCode::TABLE_INSERT { offset } => {
-                    self.insert_immediate_table(ep, *offset)?;
+                    if let Err(e) = self.insert_immediate_table(ep, *offset) {
+                        break Err(e);
+                    }
                 }
                 OpCode::TABLE_BUILD(n) => {
-                    self.build_table(ep, *n)?;
+                    if let Err(e) = self.build_table(ep, *n) {
+                        break Err(e);
+                    }
                 }
                 OpCode::TABLE_SET { depth } => {
                     let value = self.pop(ep);
-                    match self.grab(ep, *depth as usize + 1) {
+                    bubble!(match self.grab(ep, *depth as usize + 1) {
                         Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
                         Value::UserData(u) => {
                             let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
@@ -1458,7 +1468,7 @@ impl<'gc> VM<'gc> {
                             }
                         }
                         _ => Err(SiltError::MetaMethodMissing(MetaMethod::Index)),
-                    }?;
+                    });
                 }
                 // OpCode::TABLE_SET_BY_CONSTANT { constant } => {
                 //     let value = self.pop();
@@ -1480,7 +1490,7 @@ impl<'gc> VM<'gc> {
                     match value {
                         Value::Table(_) => match self.operate_table(ep, *depth, None) {
                             Ok(_) => {}
-                            Err(e) => return Err(e),
+                            Err(e) => break Err(e),
                         },
                         Value::UserData(ud) => {
                             let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
@@ -1500,10 +1510,10 @@ impl<'gc> VM<'gc> {
                                     unsafe { ep.ip = ep.ip.sub(u - 1) };
                                     unsafe { table_point.replace(value) };
                                 }
-                                Err(e) => return Err(e),
+                                Err(e) => break Err(e),
                             }
                         }
-                        _ => return Err(SiltError::VmNonTableOperations(value.to_error())),
+                        _ => break Err(SiltError::VmNonTableOperations(value.to_error())),
                     }
                 }
                 OpCode::TABLE_GET_FROM { index: _ } => {
@@ -1529,7 +1539,7 @@ impl<'gc> VM<'gc> {
                         // let v:Value = t.borrow().get_value(&key);
                         self.push(ep, v);
                     } else {
-                        return Err(SiltError::VmNonTableOperations(table.to_error()));
+                        break Err(SiltError::VmNonTableOperations(table.to_error()));
                     }
                 }
             }
@@ -1540,6 +1550,13 @@ impl<'gc> VM<'gc> {
                 self.print_stack();
                 println!("--------------------------------------");
             }
+        };
+        match results {
+            Ok(o) => Ok(o),
+            Err(e) => Err(ErrorTuple {
+                code: e,
+                location: frame.get_loc_by_count(self.stack_count),
+            }),
         }
     }
 
