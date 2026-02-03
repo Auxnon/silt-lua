@@ -3,7 +3,11 @@ use shared::*;
 use silt_lua::ExVal;
 
 test_number!(local_variable, "local x = 42; return x", 42.0);
-test_string!(local_string_var, "local name = 'hello'; return name", "hello");
+test_string!(
+    local_string_var,
+    "local name = 'hello'; return name",
+    "hello"
+);
 test_bool!(local_boolean_var, "local flag = true; return flag", true);
 test_nil!(local_nil_var, "local empty; return empty");
 
@@ -55,5 +59,13 @@ fn variable_shadowing() {
     valeq!(source, ExVal::String("outer".to_string()));
 }
 
-test_number!(arithmetic_with_variables, "local a = 5; local b = 3; return a * b + 2", 17.0);
-test_string!(string_concatenation_vars, "local first = 'Hello'; local second = 'World'; return first .. ' ' .. second", "Hello World");
+test_number!(
+    arithmetic_with_variables,
+    "local a = 5; local b = 3; return a * b + 2",
+    17.0
+);
+test_string!(
+    string_concatenation_vars,
+    "local first = 'Hello'; local second = 'World'; return first .. ' ' .. second",
+    "Hello World"
+);
