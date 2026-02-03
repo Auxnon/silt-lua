@@ -11,7 +11,7 @@ use gc_arena::{Gc, Mutation};
 
 use crate::{
     code::OpCode,
-    error::{ErrorTuple, SiltError, TokenCell, TokenTriple},
+    error::{ErrorOut, ErrorTuple, SiltError, TokenCell, TokenTriple},
     function::FunctionObject,
     lexer::Lexer,
     token::{Operator, Token},
@@ -893,7 +893,7 @@ impl Compiler {
     fn compile<'c>(
         &mut self,
         mc: &Mutation<'c>,
-        name: Option<String>,
+        name: Option<&str>,
         source: &str,
     ) -> FunctionObject<'c> {
         #[cfg(feature = "dev-out")]
@@ -907,7 +907,7 @@ impl Compiler {
             });
         }
         let lexer = Lexer::new(source);
-        let mut body = FunctionObject::new(name, true);
+        let mut body = FunctionObject::new(to_op_string(name), true);
         let mut iter = lexer.peekable();
 
         while iter.peek().is_some() {
@@ -941,14 +941,17 @@ impl Compiler {
     pub fn try_compile<'c>(
         &mut self,
         mc: &Mutation<'c>,
-        name: Option<String>,
+        name: Option<&str>,
         source: &str,
-    ) -> Result<FunctionObject<'c>, Vec<ErrorTuple>> {
+    ) -> Result<FunctionObject<'c>, ErrorOut> {
         let obj = self.compile(mc, name, source);
         if obj.chunk.is_valid() {
             Ok(obj)
         } else {
-            Err(self.pop_errors())
+            Err(ErrorOut {
+                errors: self.pop_errors(),
+                source: to_op_string(name),
+            })
         }
     }
 
@@ -2990,6 +2993,13 @@ fn print(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
 pub fn void(_this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
     devnote!(_this it "void");
     Ok(())
+}
+
+pub(crate) fn to_op_string(name: Option<&str>) -> Option<String> {
+    match name {
+        Some(o) => Some(o.to_string()),
+        None => None,
+    }
 }
 
 // pub fn invalid(_: &mut Compiler) { // TODO

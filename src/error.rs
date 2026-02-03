@@ -309,6 +309,58 @@ pub struct ErrorTuple {
     pub location: TokenCell,
 }
 
+impl Default for ErrorTuple{
+    fn default() -> Self {
+        Self{
+            code: SiltError::Unknown,
+            location: (0,0),
+        }
+    }
+}
+impl Default for &ErrorTuple{
+    fn default() -> Self {
+        &ErrorTuple{
+            code: SiltError::Unknown,
+            location: (0,0),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ErrorOut{
+    pub errors: Vec<ErrorTuple>,
+    pub source: Option<String>,
+}
+
+impl ToString for ErrorOut{
+    fn to_string(&self) -> String {
+        let source= self.source.clone().unwrap_or("unknown".to_string());
+            if self.errors.len()>1{
+
+            let failed=self.errors
+        .iter()
+        .enumerate()
+        .map(|(i, item)| format!("{}. {}", i + 1, item.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+        format!("{} failed with:\n{}",source,failed)
+            }else{
+            format!("{} failed with: {}",source,self.errors.first().unwrap_or_default())
+            }
+    }
+}
+
+impl ErrorOut{
+    pub fn get_first(&self)-> SiltError{
+        let f=self.errors.first();
+        match f{
+            Some(e)=>e.code.clone(),
+            None=> SiltError::Unknown
+        }
+    }
+}
+
+
 impl From<Vec<ErrorTuple>> for SiltError {
     fn from(value: Vec<ErrorTuple>) -> Self {
         value.into_iter().next().unwrap().code

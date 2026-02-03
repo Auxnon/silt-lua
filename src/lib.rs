@@ -1,5 +1,3 @@
-use error::ErrorTuple;
-
 mod chunk;
 mod code;
 mod compiler;
@@ -16,6 +14,8 @@ pub mod userdata;
 pub mod value;
 pub extern crate gc_arena;
 
+use crate::error::ErrorOut;
+
 pub use self::{
     compiler::Compiler, error::SiltError as LuaError, lua::Lua, lua::VM, value::ExVal, value::Value,
 };
@@ -29,18 +29,18 @@ use wasm_bindgen::prelude::*;
 fn simple(source: &str) -> ExVal {
     let mut compiler = Compiler::new();
     let mut lua = Lua::new_with_standard();
-    match lua.run(source, &mut compiler) {
+    match lua.run(None, source, &mut compiler) {
         Ok(v) => v,
-        Err(e) => ExVal::String(e[0].to_string()),
+        Err(e) => ExVal::String(e.to_string()),
     }
 }
 
-fn complex(source: &str) -> Result<ExVal, ErrorTuple> {
+fn complex(source: &str) -> Result<ExVal, ErrorOut> {
     let mut compiler = Compiler::new();
     let mut lua = Lua::new_with_standard();
-    match lua.run(source, &mut compiler) {
+    match lua.run(None,source, &mut compiler) {
         Ok(v) => Ok(v),
-        Err(e) => Err(e.get(0).unwrap().clone()),
+        Err(e) => Err(e),
     }
     //
     // let mut vm = VM::new();
@@ -98,7 +98,7 @@ macro_rules! fails {
     ($source:literal, $val:expr) => {{
         match complex($source) {
             Ok(_) => panic!("Expected error"),
-            Err(e) => assert_eq!(e.code, $val),
+            Err(e) => assert_eq!(e.get_first(), $val),
         }
     }};
 }

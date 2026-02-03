@@ -6,7 +6,7 @@ use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 use crate::{
     code::OpCode,
     compiler::Compiler,
-    error::{ErrorTuple, SiltError, ValueTypes},
+    error::{ErrorOut, ErrorTuple, SiltError, ValueTypes},
     function::{CallFrame, Closure, FunctionObject, NativeFunctionRaw, UpValue, WrappedFn},
     prelude::UserData,
     table::{ExTable, Table},
@@ -240,7 +240,7 @@ macro_rules! table_meta_op {
     }};
 }
 
-type LuaResult = Result<ExVal, Vec<ErrorTuple>>;
+type LuaResult = Result<ExVal, ErrorOut>;
 type InnerUserData<'a> = Gc<'a, RefLock<UserDataWrapper>>;
 pub struct UDVec(pub Vec<WeakWrapper>);
 
@@ -280,12 +280,10 @@ impl<'gc> Lua {
         Self { arena }
     }
 
-    pub fn run(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
+    pub fn run(&mut self,name: Option<&str>, code: &str, compiler: &mut Compiler) -> LuaResult {
         let out = self.arena.mutate_root(|mc, root| {
-            match compiler.try_compile(mc, None, code) {
+            match compiler.try_compile(mc, name, code) {
                 Ok(f) => {
-                    // let v: &VM=root.borrow();
-                    // f.borrow().print();
                     let res: LuaResult = root.borrow_mut().run(mc, Gc::new(mc, f));
 
                     // let res=root..run(mc, Gc::new(mc,f));
@@ -294,23 +292,18 @@ impl<'gc> Lua {
                 Err(er) => Err(er),
             }
 
-            // let obj = Gc::new(mc, object);
-            // let ret=root.run(mc, obj);
-            // ret
         });
-        // o
-        // Ok(ExVal::Nil)
         out
     }
 
-    pub fn compile(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
+    pub fn compile(&mut self, name: Option<&str>, code: &str, compiler: &mut Compiler) -> LuaResult {
         self.arena
-            .mutate_root(|mc, vm| match compiler.try_compile(mc, None, code) {
+            .mutate_root(|mc, vm| match compiler.try_compile(mc, name, code) {
                 Ok(f) => {
                     vm.borrow_mut().root = Gc::new(mc, f);
                     Ok(ExVal::Nil)
                 }
-                Err(er) => Err(er),
+                Err(err) => Err(err),
             })
     }
 
@@ -336,9 +329,9 @@ impl<'gc> Lua {
     pub fn load_fn(
         &mut self,
         compiler: &mut Compiler,
-        name: Option<String>,
+        name: Option<&str>,
         code: &str,
-    ) -> Result<usize, Vec<ErrorTuple>> {
+    ) -> Result<usize, ErrorOut> {
         self.arena
             .mutate_root(|mc, vm| vm.load_fn(mc, compiler, name, code))
     }
@@ -346,18 +339,18 @@ impl<'gc> Lua {
     /// call an internal function by index provided from the load function. Ideally call this after
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
-    pub fn call(&mut self, index: usize) -> LuaResult {
-        self.call_with_params::<Vec<()>>(index, vec![])
+    pub fn call(&mut self,name: Option<&str>, index: usize) -> LuaResult {
+        self.call_with_params::<Vec<()>>(name,index, vec![])
         // Ok(ExVal::Nil)
     }
 
     /// call an internal function by index with parameters
-    pub fn call_with_params<T>(&mut self, index: usize, params: T) -> LuaResult
+    pub fn call_with_params<T>(&mut self,name: Option<&str>, index: usize, params: T) -> LuaResult
     where
         T: for<'e> ToLuaMulti<'e>,
     {
         self.arena
-            .mutate_root(|mc, vm| vm.call_fn(mc, index, params))
+            .mutate_root(|mc, vm| vm.call_fn(mc, name, index, params))
         // rr
         // Ok(ExVal::Nil)
     }
@@ -527,24 +520,18 @@ impl<'gc> VM<'gc> {
         &mut self,
         mc: &Mutation<'gc>,
         object: Gc<'gc, FunctionObject<'gc>>,
-    ) -> Result<ExVal, Vec<ErrorTuple>> {
-        match self.execute(mc, object) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(vec![e]),
-        }
-
-        // Ok(ExVal::Nil)
-        // out
+    ) -> Result<ExVal, ErrorOut> {
+        self.execute(mc, object) 
     }
 
     /// compile and run lua once
     pub fn build_and_run(
         &mut self,
         mc: &Mutation<'gc>,
-        name: Option<String>,
+        name: Option<&str>,
         code: &str,
         compiler: &mut Compiler,
-    ) -> Result<ExVal, Vec<ErrorTuple>> {
+    ) -> Result<ExVal, ErrorOut> {
         match compiler.try_compile(mc, name, code) {
             Ok(f) => {
                 let fun = Gc::new(mc, f);
@@ -557,11 +544,8 @@ impl<'gc> VM<'gc> {
     /// run through the full program again, keeping previous state. This will redeclare top level
     /// code too. Ideally you will want to directly run a function via call_by_index after load_fn
     /// or store_fn
-    pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, Vec<ErrorTuple>> {
-        match self.execute(mc, self.root) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(vec![e]),
-        }
+    pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, ErrorOut> {
+        self.execute(mc, self.root)
     }
 
     /// Identical to run (mostly), set a built Function Object as root and run it
@@ -569,7 +553,7 @@ impl<'gc> VM<'gc> {
         &mut self,
         mc: &Mutation<'gc>,
         object: Gc<'gc, FunctionObject<'gc>>,
-    ) -> Result<ExVal, ErrorTuple> {
+    ) -> Result<ExVal, ErrorOut> {
         // TODO param is a reference of &'a
         // self.ip = object.chunk.code.as_ptr();
         // frame.ip = object.chunk.code.as_ptr();
@@ -605,9 +589,9 @@ impl<'gc> VM<'gc> {
         &mut self,
         mc: &'a Mutation<'gc>,
         compiler: &mut Compiler,
-        name: Option<String>,
+        name: Option<&str>,
         code: &str,
-    ) -> Result<usize, Vec<ErrorTuple>> {
+    ) -> Result<usize, ErrorOut> {
         match compiler.try_compile(mc, name, code) {
             Ok(f) => {
                 let fun = Gc::new(mc, f);
@@ -865,7 +849,7 @@ impl<'gc> VM<'gc> {
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
         mut frames: Vec<CallFrame<'gc>>,
-    ) -> Result<ExVal, ErrorTuple> {
+    ) -> Result<ExVal, ErrorOut> {
         // let mut last = Value::Nil; // TODO temporary for testing
         // let stack_pointer = self.stack.as_mut_ptr();
         // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
@@ -1553,10 +1537,16 @@ impl<'gc> VM<'gc> {
         };
         match results {
             Ok(o) => Ok(o),
-            Err(e) => Err(ErrorTuple {
-                code: e,
-                location: frame.get_loc_by_count(self.stack_count),
-            }),
+            Err(e) => {
+                let t = ErrorTuple {
+                    code: e,
+                    location: frame.get_loc_by_count(self.stack_count),
+                };
+                Err(ErrorOut {
+                    errors: vec![t],
+                    source: frame.function.function.name.clone(),
+                })
+            }
         }
     }
 
@@ -1653,17 +1643,17 @@ impl<'gc> VM<'gc> {
     // }
 
     /// call a previously stored function by it's index with optional parameters
-    pub fn call_fn<T>(&mut self, mc: &Mutation<'gc>, u: usize, params: T) -> LuaResult
+    pub fn call_fn<T>(&mut self, mc: &Mutation<'gc>, name: Option<&str>,u: usize , params: T) -> LuaResult
     where
         T: for<'e> ToLuaMulti<'e>,
     {
         let res = match params.to_lua_multi(self, mc) {
             Ok(v) => v,
             Err(e) => {
-                return Err(vec![ErrorTuple {
+                return Err(ErrorOut{errors:vec![ErrorTuple {
                     code: e,
                     location: (0, 0),
-                }])
+                }],source: match name{Some(o)=>Some(o.to_string()),None=>None}})
             }
         };
 
@@ -1677,10 +1667,10 @@ impl<'gc> VM<'gc> {
 
                 self.run(mc, *f)
             }
-            None => Err(vec![ErrorTuple {
+            None => Err(ErrorOut{errors: vec![ErrorTuple {
                 code: SiltError::Unknown,
                 location: (0, 0),
-            }]),
+            }],source: to_op_string(name)}),
         }
         // Ok(ExVal::Nil)
 
@@ -2193,4 +2183,8 @@ impl<'gc> VM<'gc> {
         println!("▒░");
         // println!("---");
     }
+}
+
+pub(crate) fn to_op_string(name: Option<&str>)-> Option<String>{
+    match name{Some(o)=>Some(o.to_string()),None=>None}
 }

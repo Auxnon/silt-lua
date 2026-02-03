@@ -1,6 +1,6 @@
 use silt_lua::{Compiler, Lua};
 
-const FALLBACK_FILE: &str = "scripts/multi-assign.lua";
+const FALLBACK_FILE: &str = "scripts/vararg.lua";
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     {
@@ -246,7 +246,7 @@ fn main() {
         match std::fs::read_to_string(args[1].as_str()) {
             Ok(f) => f,
             Err(e) => {
-                println!("Invalid file path {}",e.to_string());
+                println!("Invalid file path {}", e.to_string());
                 return;
             }
         }
@@ -334,13 +334,14 @@ fn main() {
     //     "#;
     let mut compiler = Compiler::new_with_flags(true, false, false);
     let mut lua = Lua::new_with_standard();
-    match lua.run(source_in, &mut compiler) {
+    match lua.run(None,source_in, &mut compiler) {
         Ok(o) => {
             println!("-----------------");
             println!(">> {}", o);
         }
         Err(e) => {
-            e.iter().for_each(|e| println!("!!Err: {}", e));
+            // e.iter().for_each(|e| println!("!!Err: {}", e));
+            println!("!!Err: {}",e.to_string());
         }
     }
 }
