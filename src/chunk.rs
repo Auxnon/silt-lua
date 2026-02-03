@@ -165,4 +165,8 @@ impl<'chnk> Chunk<'chnk> {
         self.constants.clear();
         self.locations.clear();
     }
+
+    pub fn get_loc(&self, index: usize) -> (usize, usize) {
+        self.locations[index]
+    }
 }

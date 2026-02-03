@@ -1,6 +1,7 @@
 use std::{
     fmt::Display,
     ops::{Deref, Index},
+    panic::Location,
     rc::Rc,
 };
 
@@ -167,6 +168,10 @@ impl<'frame> CallFrame<'frame> {
         // self.ip -= offset as usize;
         self.ip = unsafe { self.ip.sub(offset as usize) };
         // println!("rewind: {}", unsafe { &*self.ip });
+    }
+    pub fn get_loc_by_count(&self, count: usize) -> (usize, usize) {
+        let i = count - self.stack_snapshot;
+        self.function.function.chunk.get_loc(i)
     }
 }
 #[derive(Default, Collect)]
