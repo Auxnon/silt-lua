@@ -29,6 +29,62 @@ pub fn print<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> In
     Ok(Value::Nil)
 }
 
+pub fn table_insert<'lua>(
+    _: &mut VM,
+    mc: &Mutation<'lua>,
+    args: (Value<'lua>, Value<'lua>, Option<Value<'lua>>),
+) -> InnerResult<'lua> {
+    match &args.0 {
+        Value::Table(t) => {
+            let mut table = t.borrow_mut(mc);
+            match args.2 {
+                Some(v) => {
+                    let key = args.1;
+                    return table.insert(key,v);
+                }
+                None => {
+                    table.push(args.1);
+                }
+            }
+        }
+        _ => return Err(crate::LuaError::VmNonTableOperations(args.0.to_error())),
+    }
+    Ok(Value::Nil)
+}
+
+pub fn table_remove<'lua>(
+    _: &mut VM,
+    mc: &Mutation<'lua>,
+    args: (Value<'lua>, Option<Value<'lua>>),
+) ->InnerResult<'lua>{
+    
+    // let key = Value::Integer(self.counter);
+    // let value = self.data.remove(&key);
+    // self.counter -= 1;
+
+
+match &args.0 {
+        Value::Table(t) => {
+            let mut table = t.borrow_mut(mc);
+            match args.1 {
+                Some(key) => {
+                    return table.insert(key, args.0)
+                    // let v1 = args.1;
+                    // if let Some(ret) = table.set(v1, v2) {
+                    //     return Ok(ret);
+                    // }
+                }
+                None => {
+                    // table.push(args.1);
+                    table.push(args.0);
+                }
+            }
+        }
+        _ => return Err(crate::LuaError::VmNonTableOperations(args.0.to_error())),
+    }
+    Ok(Value::Nil)
+}
+
 pub fn setmetatable<'lua>(
     _: &mut VM,
     mc: &Mutation<'lua>,

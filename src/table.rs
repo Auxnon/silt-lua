@@ -57,10 +57,6 @@ impl<'v> Table<'v> {
         })
     }
 
-    pub fn insert<'f>(&mut self, key: Value<'v>, value: Value<'v>) {
-        self.data.insert(key, value);
-    }
-
     // same as get but accepts reference Into<&Value> which is better
     pub fn getr<'f, T>(&self, key: T) -> Option<&Value<'v>>
     where
@@ -125,13 +121,50 @@ impl<'v> Table<'v> {
         }
     }
 
-    pub fn set<'f, K, V>(&mut self, key: K, val: V) -> Option<Value<'v>>
+    /// set at key without checking re-evaluating indicies
+    pub fn raw_set<'f, K, V>(&mut self, key: K, val: V) -> Option<Value<'v>>
     where
         'v: 'f,
         K: Into<Value<'v>>,
         V: Into<Value<'v>>,
     {
         self.data.insert(key.into(), val.into())
+    }
+
+    pub fn raw_push<'f, V>(&mut self, val: V) -> Option<Value<'v>>
+    where
+        'v: 'f,
+        V: Into<Value<'v>>,
+    {
+        self.counter += 1;
+        let key = self.counter;
+        self.data.insert(key.into(), val.into())
+    }
+
+    fn recursion(&mut self, i: i64) {
+        let prev = i - 1;
+        if self.data.contains_key(&prev.into()) {
+            if self.counter == prev {
+                self.counter = i;
+            } else {
+                self.recursion(prev);
+            }
+        }
+    }
+
+    pub fn set_and_check<'f, K, V>(&mut self, key: K, val: V) -> Option<Value<'v>>
+    where
+        'v: 'f,
+        K: Into<Value<'v>>,
+        V: Into<Value<'v>>,
+    {
+        let key = key.into();
+        if let Ok(i) = key.strict_int() {
+            if i >= self.counter {
+                self.recursion(i);
+            }
+        }
+        self.data.insert(key, val.into())
     }
 
     pub fn to_array<'f, T, const N: usize>(&self) -> [T; N]
@@ -186,15 +219,59 @@ impl<'v> Table<'v> {
     }
 
     /** push by counter's current index, if it aready exists keep incrementing until empty position is found */
-    pub fn push(&mut self, value: Value<'v>) {
-        // DEV this just feels clunky to replicate lua's behavior
-        self.counter += 1;
-        let mut key = Value::Integer(self.counter);
-        while self.data.contains_key(&key) {
+    pub fn insert(&mut self, key: Value<'v>, value: Value<'v>) -> Result<Value<'v>, SiltError> {
+        // let key = key.strict_int()?;
+        //
+        // // DEV this just feels clunky to replicate lua's behavior
+        // self.counter += 1;
+        // let mut key = Value::Integer(self.counter);
+        // while self.data.contains_key(&key) {
+        //     self.counter += 1;
+        //     key.force_to_int(self.counter);
+        // }
+        // self.data.insert(key, value);
+        // Ok(())
+
+        let i = key.strict_int()?;
+        if i >= self.counter {
+            self.recursion(i);
+        } else {
+            // push instead
+            for it in self.counter..i {
+                let v = self.data.remove(&it.into()).unwrap_or_default();
+                // TODO should we
+                self.data.insert((it + 1).into(), v);
+            }
             self.counter += 1;
-            key.force_to_int(self.counter);
         }
+
+        Ok(self.data.insert(key, value.into()).unwrap_or_default())
+    }
+
+    pub fn push(&mut self, value: Value<'v>) {
+        let key = self.counter.into();
         self.data.insert(key, value);
+    }
+
+    pub fn remove(&mut self, key: Value<'v>,value: Value<'v>) -> Result<Value<'v>, SiltError> {
+        let i = key.strict_int()?;
+        let ret = self.data.remove(&value).unwrap_or_default();
+
+        if i >= self.counter {
+        } else {
+            for it in i..self.counter {
+                let v = self.data.remove(&(it + 1).into()).unwrap_or_default();
+                self.data.insert(it.into(), v);
+            }
+        }
+        self.counter -= 1;
+        Ok(ret)
+    }
+
+    pub fn pop(&mut self) -> Value<'v> {
+        let k = self.counter.into();
+        self.counter -= 1;
+        self.data.remove(&k).unwrap_or_default()
     }
 
     pub fn concat_array<A, I>(&mut self, array: I)

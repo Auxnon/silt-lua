@@ -51,6 +51,7 @@ pub enum SiltError {
     // Return(Value),
     MetaMethodMissing(MetaMethod),
     MetaMethodNotCallable(MetaMethod),
+    CoerceInt,
 
     // Userdata errors
     UDNoInitField,
@@ -260,7 +261,9 @@ impl std::fmt::Display for SiltError {
             SiltError::MetaMethodNotCallable(meta_method) => {
                 write!(f, "Value for meta method '{}' is not callable", meta_method)
             }
-
+            SiltError::CoerceInt=>{
+                write!(f,"Value can't be strictly coerced to an integer")
+            },
             SiltError::UDNoInitField => write!(f, "UserData field not setup"),
             SiltError::UDNoInitMethod => write!(f, "UserData method not setup"),
             SiltError::UDNoMap => write!(f, "UserData map not setup"),
@@ -343,7 +346,7 @@ impl ToString for ErrorOut{
         .map(|(i, item)| format!("{}. {}", i + 1, item.to_string()))
         .collect::<Vec<_>>()
         .join("\n");
-        format!("{} failed with:\n{}",source,failed)
+        format!("source [{}] failed with:\n{}",source,failed)
             }else{
             format!("{} failed with: {}",source,self.errors.first().unwrap_or_default())
             }

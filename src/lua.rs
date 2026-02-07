@@ -21,12 +21,6 @@ macro_rules! int2f {
     };
 }
 
-// macro_rules! intr2f {
-//     ($left:ident) => {
-//         *$left as f64
-//     };
-// }
-
 macro_rules! devout {
     ($($arg:tt)*) => {
         #[cfg(feature = "dev-out")]
@@ -1855,7 +1849,7 @@ impl<'gc> VM<'gc> {
             // push in reverse
             for i in (0..n).rev() {
                 let value = unsafe { ep.ip.sub(i as usize + 1).replace(Value::Nil) };
-                b.push(value);
+                b.raw_push(value);
             }
 
             self.stack_count -= offset - 1;
@@ -2052,6 +2046,11 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "setmetatable", crate::standard::setmetatable);
         self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", crate::standard::test_ent);
+
+
+        let mut table=self.raw_table();
+        self.register_native_function_to(mc, &mut table,"insert", crate::standard::table_insert);
+        self.register_native_function_to(mc, &mut table,"remove", crate::standard::table_remove);
 
         // Example of closure without turbofish
         // let test = Box::new(5);

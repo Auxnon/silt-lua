@@ -319,10 +319,40 @@ impl<'v> Value<'v> {
             Value::Table(_) => "table".to_string(),
         }
     }
+
+    /// gently coerce value to an integer no matter what with some creative liberty
+    pub fn coerce_int(&self) -> i64 {
+        self.into()
+        // match self{
+        //     Value::String(s) => s.parse::<i64>().unwrap_or_default(),
+        //     Value::Bool()
+        //         _=>0
+        // }
+    }
+
+    /// enforce strict integer conversion and throw error for any accuracy. Used by table iteration
+    pub fn strict_int(&self) -> Result<i64, SiltError> {
+        match self {
+            Value::Number(f) => {
+                if f.fract() == 0.0 {
+                    Ok(*f as i64)
+                } else {
+                    Err(SiltError::CoerceInt)
+                }
+            }
+            Value::Integer(i) => Ok(*i),
+            Value::String(s) => s.parse::<i64>().map_err(|_| SiltError::CoerceInt),
+            _ => Err(SiltError::CoerceInt),
+        }
+    }
+
+    /// force this value to an integer in-place
     pub fn force_to_int(&mut self, n: i64) {
         *self = Value::Integer(n);
     }
-    pub fn force_to_float(&mut self, n: f64) {
+
+    /// force this value to a number in-place
+    pub fn force_to_num(&mut self, n: f64) {
         *self = Value::Number(n);
     }
 
@@ -1080,10 +1110,12 @@ where
     A: ToLua<'a>,
     B: ToLua<'a>,
 {
+    // TODO making an entire table is dumb for a tuple, we need a multireturn! should to_lua also
+    // have a slice or vec we can append to?
     fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
         let mut t = vm.raw_table();
-        t.set(1, self.0.to_lua(vm, mc)?);
-        t.set(2, self.1.to_lua(vm, mc)?);
+        t.set_and_check(1, self.0.to_lua(vm, mc)?);
+        t.set_and_check(2, self.1.to_lua(vm, mc)?);
         Ok(vm.wrap_table(mc, t))
     }
 }
