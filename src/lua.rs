@@ -945,14 +945,16 @@ impl<'gc> VM<'gc> {
                 OpCode::DEFINE_GLOBAL { constant } => {
                     let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
-                        devout!("\"{}\"", s);
+                        // devout!("\"{}\"", _);
                         // DEV inline pop due to self lifetime nonsense
                         self.stack_count -= 1;
                         unsafe { ep.ip = ep.ip.sub(1) };
                         let v = unsafe { ep.ip.read() };
 
                         // let v = self.pop();
-                        self.globals.borrow_mut(ep.mc).insert(s.into(), v);
+                        // self.globals.borrow_mut(ep.mc).set::< K:Value<'gc>, V:Value<'gc>>(s.into(), v);
+                        self.globals.borrow_mut(ep.mc).set(s, v);
+                        
                     } else {
                         break Err(SiltError::VmCorruptConstant);
                     }
@@ -987,6 +989,7 @@ impl<'gc> VM<'gc> {
                 OpCode::GET_GLOBAL { constant } => {
                     let value = Self::get_chunk(frame).get_constant(*constant);
                     // devout!("ident: {}", value);
+                    // println!(" we have keys {}",self.globals.borrow().list_keys());
                     if let Value::String(s) = value {
                         devout!("\"{}\"", s);
 
@@ -2051,6 +2054,8 @@ impl<'gc> VM<'gc> {
         let mut table=self.raw_table();
         self.register_native_function_to(mc, &mut table,"insert", crate::standard::table_insert);
         self.register_native_function_to(mc, &mut table,"remove", crate::standard::table_remove);
+        let t=self.wrap_table(mc,table);
+        self.globals.borrow_mut(mc).set("table", t);
 
         // Example of closure without turbofish
         // let test = Box::new(5);
@@ -2085,8 +2090,8 @@ impl<'gc> VM<'gc> {
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
-        // println!("borrow {}", name);
-        self.globals.borrow_mut(mc).insert(name.into(), v);
+        // println!("add native {}, {}", name,v);
+        self.globals.borrow_mut(mc).set(name, v);
     }
     //
     pub fn register_native_function_to<A, F, R>(

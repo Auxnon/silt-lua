@@ -122,13 +122,16 @@ impl<'v> Table<'v> {
     }
 
     /// set at key without checking re-evaluating indicies
-    pub fn raw_set<'f, K, V>(&mut self, key: K, val: V) -> Option<Value<'v>>
+    pub fn set<'f, K, V>(&mut self, key: K, val: V) -> Option<Value<'v>>
     where
         'v: 'f,
         K: Into<Value<'v>>,
         V: Into<Value<'v>>,
     {
-        self.data.insert(key.into(), val.into())
+        let k=key.into();
+        let v=val.into();
+        // println!(" WE SET {} {}",k.clone(),v.clone());
+        self.data.insert(k,v)
     }
 
     pub fn raw_push<'f, V>(&mut self, val: V) -> Option<Value<'v>>
@@ -239,13 +242,13 @@ impl<'v> Table<'v> {
             // push instead
             for it in self.counter..i {
                 let v = self.data.remove(&it.into()).unwrap_or_default();
-                // TODO should we
+                // TODO we need to do this as an array instead
                 self.data.insert((it + 1).into(), v);
             }
             self.counter += 1;
         }
 
-        Ok(self.data.insert(key, value.into()).unwrap_or_default())
+        Ok(self.data.insert(key, value).unwrap_or_default())
     }
 
     pub fn push(&mut self, value: Value<'v>) {
@@ -331,6 +334,11 @@ impl<'v> Table<'v> {
     }
     pub fn iter(&self) -> Iter<'_, Value<'v>, Value<'v>> {
         self.data.iter()
+    }
+
+    pub fn list_keys(&self)-> String{
+        self.data.keys().map(|k| k.to_string()).collect::<Vec<String>>().join(",")
+        
     }
 }
 

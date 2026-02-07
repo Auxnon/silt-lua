@@ -348,7 +348,7 @@ impl ToString for ErrorOut{
         .join("\n");
         format!("source [{}] failed with:\n{}",source,failed)
             }else{
-            format!("{} failed with: {}",source,self.errors.first().unwrap_or_default())
+            format!("source [{}] failed with: {}",source,self.errors.first().unwrap_or_default())
             }
     }
 }
