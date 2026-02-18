@@ -1,7 +1,4 @@
-use std::{
-    collections::{hash_map::Iter, HashMap},
-    vec::IntoIter,
-};
+use std::collections::HashMap;
 
 use gc_arena::{Collect, Mutation};
 
@@ -15,7 +12,10 @@ use crate::{
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct Table<'v> {
-    data: HashMap<Value<'v>, Value<'v>>,
+    /** Array part: stores values indexed by integers starting from 1 (Lua convention) */
+    array: Vec<Value<'v>>,
+    /** Hash part: stores all non-integer keys and out-of-bounds integer keys */
+    hash: HashMap<Value<'v>, Value<'v>>,
     meta: Option<Value<'v>>,
     // data: RefLock<HashMap<String, String>>,
     /** replicate standard lua behavior */
@@ -26,10 +26,24 @@ pub struct Table<'v> {
 impl<'v> Table<'v> {
     pub fn new(id: usize) -> Self {
         Table {
-            data: HashMap::new(),
+            array: Vec::new(),
+            hash: HashMap::new(),
             meta: None,
             counter: 0,
             id,
+        }
+    }
+
+    /// Helper: determines if an integer key should use the array part
+    /// Returns Some(index) if it should use array (0-based), None if it should use hash
+    fn array_index(&self, i: i64) -> Option<usize> {
+        if i >= 1 && i <= self.array.len() as i64 {
+            Some((i - 1) as usize)
+        } else if i == (self.array.len() + 1) as i64 && i <= 1024 {
+            // Allow extending array up to a reasonable size
+            Some(i as usize - 1)
+        } else {
+            None
         }
     }
 
@@ -42,22 +56,44 @@ impl<'v> Table<'v> {
 // where
         // T: ToLua<'v>,
     {
-        let mut data = HashMap::new();
+        let mut table = Table::new(id);
         for (k, v) in input.into_iter() {
             let kk: Value = k.into_value(vm, mc)?;
             let vv = v.into_value(vm, mc)?;
-            data.insert(kk, vv);
+            
+            // Route to array or hash based on key type
+            if let Value::Integer(i) = kk {
+                if i >= 1 && i <= 1024 {
+                    // Extend array if needed
+                    let idx = (i - 1) as usize;
+                    if idx >= table.array.len() {
+                        table.array.resize(idx + 1, Value::Nil);
+                    }
+                    table.array[idx] = vv;
+                    table.counter = table.counter.max(i);
+                } else {
+                    table.hash.insert(kk, vv);
+                }
+            } else {
+                table.hash.insert(kk, vv);
+            }
         }
-        Ok(Table {
-            data,
-            meta: None,
-            counter: 0,
-            id,
-        })
+        Ok(table)
     }
 
     pub fn insert<'f>(&mut self, key: Value<'v>, value: Value<'v>) {
-        self.data.insert(key, value);
+        if let Value::Integer(i) = key {
+            if let Some(idx) = self.array_index(i) {
+                // Extend array if needed
+                if idx >= self.array.len() {
+                    self.array.resize(idx + 1, Value::Nil);
+                }
+                self.array[idx] = value;
+                self.counter = self.counter.max(i);
+                return;
+            }
+        }
+        self.hash.insert(key, value);
     }
 
     // same as get but accepts reference Into<&Value> which is better
@@ -66,7 +102,18 @@ impl<'v> Table<'v> {
         'v: 'f,
         T: Into<&'f Value<'v>>,
     {
-        self.data.get(key.into())
+        let k = key.into();
+        if let Value::Integer(i) = k {
+            if let Some(idx) = self.array_index(*i) {
+                if idx < self.array.len() {
+                    let val = &self.array[idx];
+                    if !matches!(val, Value::Nil) {
+                        return Some(val);
+                    }
+                }
+            }
+        }
+        self.hash.get(k)
     }
 
     pub fn get<'f, T>(&self, key: T) -> Option<&Value<'v>>
@@ -74,19 +121,42 @@ impl<'v> Table<'v> {
         'v: 'f,
         T: Into<Value<'v>>,
     {
-        self.data.get(&key.into())
+        let k = key.into();
+        if let Value::Integer(i) = k {
+            if let Some(idx) = self.array_index(i) {
+                if idx < self.array.len() {
+                    let val = &self.array[idx];
+                    if !matches!(val, Value::Nil) {
+                        return Some(val);
+                    }
+                }
+            }
+        }
+        self.hash.get(&k)
     }
 
     pub fn getn(&self, i: usize) -> Option<&Value<'v>> {
-        self.data.get(&Value::Integer(i as i64))
+        let idx_i64 = i as i64;
+        if let Some(idx) = self.array_index(idx_i64) {
+            if idx < self.array.len() {
+                let val = &self.array[idx];
+                if !matches!(val, Value::Nil) {
+                    return Some(val);
+                }
+            }
+        }
+        self.hash.get(&Value::Integer(idx_i64))
     }
 
     pub fn get_value(&self, key: &Value<'v>) -> Value<'v> {
-        let r = self.data.get(key);
-        match r {
-            Some(v) => v.clone(),
-            None => Value::Nil,
+        if let Value::Integer(i) = key {
+            if let Some(idx) = self.array_index(*i) {
+                if idx < self.array.len() {
+                    return self.array[idx].clone();
+                }
+            }
         }
+        self.hash.get(key).cloned().unwrap_or(Value::Nil)
     }
 
     pub fn get_number<'f, T>(&self, key: T) -> f64
@@ -94,7 +164,15 @@ impl<'v> Table<'v> {
         'v: 'f,
         T: Into<Value<'v>>,
     {
-        match self.data.get(&key.into()) {
+        let k = key.into();
+        if let Value::Integer(i) = k {
+            if let Some(idx) = self.array_index(i) {
+                if idx < self.array.len() {
+                    return (&self.array[idx]).into();
+                }
+            }
+        }
+        match self.hash.get(&k) {
             Some(v) => v.into(),
             _ => 0.,
         }
@@ -106,14 +184,39 @@ impl<'v> Table<'v> {
         K: Into<Value<'v>>,
         V: Into<Value<'v>>,
     {
-        self.data.insert(key.into(), val.into())
+        let k = key.into();
+        let v = val.into();
+        
+        if let Value::Integer(i) = k {
+            if let Some(idx) = self.array_index(i) {
+                // Extend array if needed
+                if idx >= self.array.len() {
+                    self.array.resize(idx + 1, Value::Nil);
+                }
+                let old = std::mem::replace(&mut self.array[idx], v);
+                self.counter = self.counter.max(i);
+                return if matches!(old, Value::Nil) { None } else { Some(old) };
+            }
+        }
+        self.hash.insert(k, v)
     }
 
     pub fn to_exval(&self) -> ExTable {
         let mut map = HashMap::new();
-        for (k, v) in self.data.iter() {
+        
+        // Add array part (1-indexed)
+        for (idx, v) in self.array.iter().enumerate() {
+            if !matches!(v, Value::Nil) {
+                let key = ExVal::Integer((idx + 1) as i64);
+                map.insert(key, v.clone().into());
+            }
+        }
+        
+        // Add hash part
+        for (k, v) in self.hash.iter() {
             map.insert(k.clone().into(), v.clone().into());
         }
+        
         ExTable {
             id: self.id,
             data: map,
@@ -121,11 +224,11 @@ impl<'v> Table<'v> {
     }
 
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.array.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.array.is_empty() && self.hash.is_empty()
     }
 
     // pub fn display(&self){
@@ -133,14 +236,8 @@ impl<'v> Table<'v> {
 
     /** push by counter's current index, if it aready exists keep incrementing until empty position is found */
     pub fn push(&mut self, value: Value<'v>) {
-        // DEV this just feels clunky to replicate lua's behavior
-        self.counter += 1;
-        let mut key = Value::Integer(self.counter);
-        while self.data.contains_key(&key) {
-            self.counter += 1;
-        }
-        key.force_to_int(self.counter);
-        self.data.insert(key, value);
+        self.array.push(value);
+        self.counter = self.array.len() as i64;
     }
 
     pub fn concat_array<A, I>(&mut self, array: I)
@@ -148,12 +245,10 @@ impl<'v> Table<'v> {
         I: IntoIterator<Item = A>,
         A: Into<Value<'v>>,
     {
-        self.counter += 1;
         for v in array.into_iter() {
-            let key = Value::Integer(self.counter);
-            self.data.insert(key, A::into(v));
-            self.counter += 1;
+            self.array.push(A::into(v));
         }
+        self.counter = self.array.len() as i64;
     }
 
     pub fn set_metatable(&mut self, metatable: Value<'v>) {
@@ -184,22 +279,61 @@ impl<'v> Table<'v> {
         }
         Err(SiltError::MetaMethodMissing(method))
     }
-    pub fn iter(&self) -> Iter<'_, Value<'v>, Value<'v>> {
-        self.data.iter()
+    pub fn iter(&self) -> TableIterator<'_, 'v> {
+        TableIterator {
+            table: self,
+            array_index: 0,
+            hash_iter: self.hash.iter(),
+        }
+    }
+}
+
+pub struct TableIterator<'t, 'v> {
+    table: &'t Table<'v>,
+    array_index: usize,
+    hash_iter: std::collections::hash_map::Iter<'t, Value<'v>, Value<'v>>,
+}
+
+impl<'t, 'v> Iterator for TableIterator<'t, 'v> {
+    type Item = (Value<'v>, &'t Value<'v>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // First iterate over array part
+        while self.array_index < self.table.array.len() {
+            let idx = self.array_index;
+            self.array_index += 1;
+            let val = &self.table.array[idx];
+            if !matches!(val, Value::Nil) {
+                return Some((Value::Integer((idx + 1) as i64), val));
+            }
+        }
+        
+        // Then iterate over hash part
+        self.hash_iter.next().map(|(k, v)| (k.clone(), v))
     }
 }
 
 impl ToString for Table<'_> {
     fn to_string(&self) -> String {
+        let mut entries = Vec::new();
+        
+        // Add array entries
+        for (idx, v) in self.array.iter().enumerate() {
+            if !matches!(v, Value::Nil) {
+                entries.push(format!("{}: {}", idx + 1, v));
+            }
+        }
+        
+        // Add hash entries
+        for (k, v) in self.hash.iter() {
+            entries.push(format!("{}: {}", k, v));
+        }
+        
         format!(
             "table{}[{}]{{{}}}",
             self.id,
-            self.data.len(),
-            self.data
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<String>>()
-                .join(", ")
+            self.array.len() + self.hash.len(),
+            entries.join(", ")
         )
     }
 }
