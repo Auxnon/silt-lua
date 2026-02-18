@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gc_arena::{Collect, Mutation};
 
@@ -205,23 +205,61 @@ impl<'v> Table<'v> {
     }
 
     pub fn to_exval(&self) -> ExTable {
+        let mut visited = HashSet::new();
+        self.to_exval_with_visited(&mut visited)
+    }
+
+    /// Convert table to ExTable with cycle detection using a DAG approach.
+    /// If a cycle is detected (table references itself or creates a cycle),
+    /// the cyclic reference will be replaced with a special marker ExVal::Meta("cyclic_ref").
+    fn to_exval_with_visited(&self, visited: &mut HashSet<usize>) -> ExTable {
         let mut array = Vec::new();
         let mut hash = HashMap::new();
         
+        // Mark this table as visited
+        visited.insert(self.id);
+        
         // Add array part - preserve all values including Nil to maintain indices
         for v in self.array.iter() {
-            array.push(v.clone().into());
+            array.push(self.value_to_exval(v, visited));
         }
         
         // Add hash part
         for (k, v) in self.hash.iter() {
-            hash.insert(k.clone().into(), v.clone().into());
+            hash.insert(
+                self.value_to_exval(k, visited),
+                self.value_to_exval(v, visited)
+            );
         }
+        
+        // Unmark this table (allow it to appear in other branches of the tree)
+        visited.remove(&self.id);
         
         ExTable {
             id: self.id,
             array,
             hash,
+        }
+    }
+
+    /// Convert a Value to ExVal with cycle detection
+    fn value_to_exval(&self, value: &Value<'v>, visited: &mut HashSet<usize>) -> ExVal {
+        match value {
+            Value::Table(t) => {
+                let table_ref = t.borrow();
+                let table_id = table_ref.id;
+                
+                // Check if we've already visited this table (cycle detected)
+                if visited.contains(&table_id) {
+                    // Return a marker for cyclic reference
+                    ExVal::Meta(format!("cyclic_ref:table{}", table_id))
+                } else {
+                    // Recursively convert the table
+                    ExVal::Table(table_ref.to_exval_with_visited(visited))
+                }
+            },
+            // For all other value types, use the standard conversion
+            _ => value.clone().into(),
         }
     }
 
@@ -322,19 +360,39 @@ impl<'t, 'v> Iterator for TableIterator<'t, 'v> {
 
 impl ToString for Table<'_> {
     fn to_string(&self) -> String {
+        let mut visited = HashSet::new();
+        self.to_string_with_visited(&mut visited)
+    }
+}
+
+impl Table<'_> {
+    /// Convert table to string with cycle detection
+    fn to_string_with_visited(&self, visited: &mut HashSet<usize>) -> String {
+        // Check for cycles
+        if visited.contains(&self.id) {
+            return format!("table{}[cyclic]", self.id);
+        }
+        
+        visited.insert(self.id);
+        
         let mut entries = Vec::new();
         
         // Add array entries
         for (idx, v) in self.array.iter().enumerate() {
             if !matches!(v, Value::Nil) {
-                entries.push(format!("{}: {}", idx + 1, v));
+                let v_str = self.value_to_string(v, visited);
+                entries.push(format!("{}: {}", idx + 1, v_str));
             }
         }
         
         // Add hash entries
         for (k, v) in self.hash.iter() {
-            entries.push(format!("{}: {}", k, v));
+            let k_str = self.value_to_string(k, visited);
+            let v_str = self.value_to_string(v, visited);
+            entries.push(format!("{}: {}", k_str, v_str));
         }
+        
+        visited.remove(&self.id);
         
         format!(
             "table{}[{}]{{{}}}",
@@ -342,6 +400,16 @@ impl ToString for Table<'_> {
             self.array.len() + self.hash.len(),
             entries.join(", ")
         )
+    }
+    
+    /// Convert a value to string with cycle detection for nested tables
+    fn value_to_string(&self, value: &Value, visited: &mut HashSet<usize>) -> String {
+        match value {
+            Value::Table(t) => {
+                t.borrow().to_string_with_visited(visited)
+            },
+            _ => value.to_string(),
+        }
     }
 }
 
