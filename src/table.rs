@@ -204,11 +204,9 @@ impl<'v> Table<'v> {
         let mut array = Vec::new();
         let mut hash = HashMap::new();
         
-        // Add array part (1-indexed)
+        // Add array part - preserve all values including Nil to maintain indices
         for v in self.array.iter() {
-            if !matches!(v, Value::Nil) {
-                array.push(v.clone().into());
-            }
+            array.push(v.clone().into());
         }
         
         // Add hash part
@@ -524,8 +522,10 @@ impl<'a> Iterator for ExTableIterMut<'a> {
             self.array_index += 1;
             // Skip nil entries
             if !matches!(self.array[idx], ExVal::Nil) {
-                // Use unsafe to split the mutable borrow
-                // SAFETY: We never return the same array element twice because we increment array_index
+                // SAFETY: This is sound because:
+                // 1. We increment array_index before returning, so the same element is never accessed twice
+                // 2. The lifetime 'a is tied to the array reference, not to self
+                // 3. We never create aliasing mutable references as we only return one per call
                 let val_ptr = &mut self.array[idx] as *mut ExVal;
                 unsafe {
                     return Some((ExVal::Integer((idx + 1) as i64), &mut *val_ptr));
