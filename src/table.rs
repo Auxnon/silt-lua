@@ -414,6 +414,7 @@ impl Table<'_> {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExTable {
     id: usize,
     /** Array part: stores values indexed by integers starting from 1 (Lua convention) */

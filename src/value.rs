@@ -85,6 +85,7 @@ pub enum Value<'gc> {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExVal {
     Nil,
     Integer(i64),
