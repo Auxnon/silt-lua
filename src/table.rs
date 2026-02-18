@@ -23,6 +23,10 @@ pub struct Table<'v> {
     id: usize,
 }
 
+/// Maximum size for the array part of a table before values go into the hash part
+/// This limit helps prevent excessive memory allocation for sparse arrays
+const MAX_ARRAY_SIZE: i64 = 1024;
+
 impl<'v> Table<'v> {
     pub fn new(id: usize) -> Self {
         Table {
@@ -39,8 +43,8 @@ impl<'v> Table<'v> {
     fn array_index(&self, i: i64) -> Option<usize> {
         if i >= 1 && i <= self.array.len() as i64 {
             Some((i - 1) as usize)
-        } else if i == (self.array.len() + 1) as i64 && i <= 1024 {
-            // Allow extending array by one position, up to size 1024
+        } else if i == (self.array.len() + 1) as i64 && i <= MAX_ARRAY_SIZE {
+            // Allow extending array by one position, up to MAX_ARRAY_SIZE
             Some(i as usize - 1)
         } else {
             None
