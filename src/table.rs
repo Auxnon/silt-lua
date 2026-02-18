@@ -201,24 +201,25 @@ impl<'v> Table<'v> {
     }
 
     pub fn to_exval(&self) -> ExTable {
-        let mut map = HashMap::new();
+        let mut array = Vec::new();
+        let mut hash = HashMap::new();
         
         // Add array part (1-indexed)
-        for (idx, v) in self.array.iter().enumerate() {
+        for v in self.array.iter() {
             if !matches!(v, Value::Nil) {
-                let key = ExVal::Integer((idx + 1) as i64);
-                map.insert(key, v.clone().into());
+                array.push(v.clone().into());
             }
         }
         
         // Add hash part
         for (k, v) in self.hash.iter() {
-            map.insert(k.clone().into(), v.clone().into());
+            hash.insert(k.clone().into(), v.clone().into());
         }
         
         ExTable {
             id: self.id,
-            data: map,
+            array,
+            hash,
         }
     }
 
@@ -345,24 +346,35 @@ impl ToString for Table<'_> {
 #[derive(Debug, Clone)]
 pub struct ExTable {
     id: usize,
-    data: HashMap<ExVal, ExVal>,
+    /** Array part: stores values indexed by integers starting from 1 (Lua convention) */
+    array: Vec<ExVal>,
+    /** Hash part: stores all non-integer keys and out-of-bounds integer keys */
+    hash: HashMap<ExVal, ExVal>,
 }
 
 impl ExTable {
+    /// Access array by 1-indexed integer
     pub fn getn(&self, i: usize) -> Option<&ExVal> {
-        self.data.get(&ExVal::Integer(i as i64))
+        if i >= 1 && i <= self.array.len() {
+            Some(&self.array[i - 1])
+        } else {
+            self.hash.get(&ExVal::Integer(i as i64))
+        }
     }
+    
+    /// Remove from array by 1-indexed integer
     pub fn pop_value(&mut self, i: usize) -> ExVal {
-        self.data
-            .remove(&ExVal::Integer(i as i64))
-            .unwrap_or(ExVal::Nil)
+        if i >= 1 && i <= self.array.len() {
+            std::mem::replace(&mut self.array[i - 1], ExVal::Nil)
+        } else {
+            self.hash.remove(&ExVal::Integer(i as i64)).unwrap_or(ExVal::Nil)
+        }
     }
+    
+    /// Access by string key from hash
     pub fn get(&self, field: &str) -> Option<&ExVal> {
-        self.data.get(&ExVal::String(field.to_owned()))
+        self.hash.get(&ExVal::String(field.to_owned()))
     }
-    // pub fn iter(&self) -> Iter<'_, ExVal, ExVal> {
-    //     self.data.iter()
-    // }
 
 }
 
@@ -374,15 +386,25 @@ impl PartialEq for ExTable {
 
 impl ToString for ExTable {
     fn to_string(&self) -> String {
+        let mut entries = Vec::new();
+        
+        // Add array entries (1-indexed)
+        for (idx, v) in self.array.iter().enumerate() {
+            if !matches!(v, ExVal::Nil) {
+                entries.push(format!("{}: {}", idx + 1, v));
+            }
+        }
+        
+        // Add hash entries
+        for (k, v) in self.hash.iter() {
+            entries.push(format!("{}: {}", k, v));
+        }
+        
         format!(
             "table{}[{}]{{{}}}",
             self.id,
-            self.data.len(),
-            self.data
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<String>>()
-                .join(", ")
+            self.array.len() + self.hash.len(),
+            entries.join(", ")
         )
     }
 }
@@ -397,29 +419,122 @@ impl ToString for ExTable {
 // }
 impl IntoIterator for ExTable {
     type Item = (ExVal, ExVal);
-    type IntoIter = std::collections::hash_map::IntoIter<ExVal, ExVal>;
+    type IntoIter = ExTableIntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.data.into_iter()
+        ExTableIntoIter {
+            array: self.array,
+            array_index: 0,
+            hash_iter: self.hash.into_iter(),
+        }
+    }
+}
+
+pub struct ExTableIntoIter {
+    array: Vec<ExVal>,
+    array_index: usize,
+    hash_iter: std::collections::hash_map::IntoIter<ExVal, ExVal>,
+}
+
+impl Iterator for ExTableIntoIter {
+    type Item = (ExVal, ExVal);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // First iterate over array part (1-indexed)
+        while self.array_index < self.array.len() {
+            let idx = self.array_index;
+            self.array_index += 1;
+            let val = &self.array[idx];
+            // Skip nil entries
+            if !matches!(val, ExVal::Nil) {
+                return Some((ExVal::Integer((idx + 1) as i64), val.clone()));
+            }
+        }
+        
+        // Then iterate over hash part
+        self.hash_iter.next()
     }
 }
 
 impl<'a> IntoIterator for &'a ExTable {
-    type Item = (&'a ExVal, &'a ExVal);
-    type IntoIter = std::collections::hash_map::Iter<'a, ExVal, ExVal>;
+    type Item = (ExVal, &'a ExVal);
+    type IntoIter = ExTableIter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.data.iter()
+        ExTableIter {
+            table: self,
+            array_index: 0,
+            hash_iter: self.hash.iter(),
+        }
+    }
+}
+
+pub struct ExTableIter<'a> {
+    table: &'a ExTable,
+    array_index: usize,
+    hash_iter: std::collections::hash_map::Iter<'a, ExVal, ExVal>,
+}
+
+impl<'a> Iterator for ExTableIter<'a> {
+    type Item = (ExVal, &'a ExVal);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // First iterate over array part (1-indexed)
+        while self.array_index < self.table.array.len() {
+            let idx = self.array_index;
+            self.array_index += 1;
+            let val = &self.table.array[idx];
+            // Skip nil entries
+            if !matches!(val, ExVal::Nil) {
+                return Some((ExVal::Integer((idx + 1) as i64), val));
+            }
+        }
+        
+        // Then iterate over hash part
+        self.hash_iter.next().map(|(k, v)| (k.clone(), v))
     }
 }
 
 impl<'a> IntoIterator for &'a mut ExTable {
-    type Item = (&'a ExVal, &'a mut ExVal);
-    type IntoIter = std::collections::hash_map::IterMut<'a, ExVal, ExVal>;
+    type Item = (ExVal, &'a mut ExVal);
+    type IntoIter = ExTableIterMut<'a>;
 
-    
     fn into_iter(self) -> Self::IntoIter {
-        self.data.iter_mut()
+        ExTableIterMut {
+            array: &mut self.array,
+            array_index: 0,
+            hash_iter: self.hash.iter_mut(),
+        }
+    }
+}
+
+pub struct ExTableIterMut<'a> {
+    array: &'a mut Vec<ExVal>,
+    array_index: usize,
+    hash_iter: std::collections::hash_map::IterMut<'a, ExVal, ExVal>,
+}
+
+impl<'a> Iterator for ExTableIterMut<'a> {
+    type Item = (ExVal, &'a mut ExVal);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // First iterate over array part (1-indexed)
+        while self.array_index < self.array.len() {
+            let idx = self.array_index;
+            self.array_index += 1;
+            // Skip nil entries
+            if !matches!(self.array[idx], ExVal::Nil) {
+                // Use unsafe to split the mutable borrow
+                // SAFETY: We never return the same array element twice because we increment array_index
+                let val_ptr = &mut self.array[idx] as *mut ExVal;
+                unsafe {
+                    return Some((ExVal::Integer((idx + 1) as i64), &mut *val_ptr));
+                }
+            }
+        }
+        
+        // Then iterate over hash part
+        self.hash_iter.next().map(|(k, v)| (k.clone(), v))
     }
 }
 
@@ -454,6 +569,6 @@ where
     B: From<ExVal>,
 {
     fn from(value: &mut ExTable) -> Self {
-        (value.pop_value(0).into(), value.pop_value(1).into())
+        (value.pop_value(1).into(), value.pop_value(2).into())
     }
 }
