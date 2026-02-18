@@ -40,7 +40,7 @@ impl<'v> Table<'v> {
         if i >= 1 && i <= self.array.len() as i64 {
             Some((i - 1) as usize)
         } else if i == (self.array.len() + 1) as i64 && i <= 1024 {
-            // Allow extending array up to a reasonable size
+            // Allow extending array by one position, up to size 1024
             Some(i as usize - 1)
         } else {
             None
@@ -63,14 +63,12 @@ impl<'v> Table<'v> {
             
             // Route to array or hash based on key type
             if let Value::Integer(i) = kk {
-                if i >= 1 && i <= 1024 {
-                    // Extend array if needed
-                    let idx = (i - 1) as usize;
+                if let Some(idx) = table.array_index(i) {
+                    // Use array_index helper for consistency
                     if idx >= table.array.len() {
                         table.array.resize(idx + 1, Value::Nil);
                     }
                     table.array[idx] = vv;
-                    table.counter = table.counter.max(i);
                 } else {
                     table.hash.insert(kk, vv);
                 }
@@ -78,6 +76,7 @@ impl<'v> Table<'v> {
                 table.hash.insert(kk, vv);
             }
         }
+        table.counter = table.array.len() as i64;
         Ok(table)
     }
 
@@ -89,7 +88,7 @@ impl<'v> Table<'v> {
                     self.array.resize(idx + 1, Value::Nil);
                 }
                 self.array[idx] = value;
-                self.counter = self.counter.max(i);
+                self.counter = self.array.len() as i64;
                 return;
             }
         }
@@ -194,7 +193,7 @@ impl<'v> Table<'v> {
                     self.array.resize(idx + 1, Value::Nil);
                 }
                 let old = std::mem::replace(&mut self.array[idx], v);
-                self.counter = self.counter.max(i);
+                self.counter = self.array.len() as i64;
                 return if matches!(old, Value::Nil) { None } else { Some(old) };
             }
         }
@@ -223,6 +222,8 @@ impl<'v> Table<'v> {
         }
     }
 
+    /// Returns the length of the array part (Lua # operator behavior).
+    /// Note: This only counts the array part, not the total key-value pairs in the table.
     pub fn len(&self) -> usize {
         self.array.len()
     }
@@ -288,6 +289,8 @@ impl<'v> Table<'v> {
     }
 }
 
+/// Iterator over table entries. Iterates over array part first (1-indexed keys),
+/// then hash part. Skips Value::Nil entries in the array part.
 pub struct TableIterator<'t, 'v> {
     table: &'t Table<'v>,
     array_index: usize,
@@ -303,6 +306,7 @@ impl<'t, 'v> Iterator for TableIterator<'t, 'v> {
             let idx = self.array_index;
             self.array_index += 1;
             let val = &self.table.array[idx];
+            // Skip nil entries (Lua semantics: nil means no value)
             if !matches!(val, Value::Nil) {
                 return Some((Value::Integer((idx + 1) as i64), val));
             }
