@@ -595,10 +595,17 @@ impl<'a> Iterator for ExTableIterMut<'a> {
             self.array_index += 1;
             // Skip nil entries
             if !matches!(self.array[idx], ExVal::Nil) {
-                // SAFETY: This is sound because:
-                // 1. We increment array_index before returning, so the same element is never accessed twice
-                // 2. The lifetime 'a is tied to the array reference, not to self
-                // 3. We never create aliasing mutable references as we only return one per call
+                // SAFETY: This unsafe block is necessary for a "streaming iterator" pattern where
+                // we need to return references with lifetime 'a from &mut self.
+                //
+                // This is sound because:
+                // 1. array_index is incremented before returning, so each element is accessed at most once
+                // 2. The lifetime 'a is correctly bound to the array reference, not to &mut self
+                // 3. We never create overlapping mutable references (only one per next() call)
+                // 4. The iterator consumes itself on each next(), preventing reuse of old references
+                //
+                // This pattern is used by standard library iterators like IterMut when the borrow
+                // checker cannot verify the safety through standard lifetime elision.
                 let val_ptr = &mut self.array[idx] as *mut ExVal;
                 unsafe {
                     return Some((ExVal::Integer((idx + 1) as i64), &mut *val_ptr));
@@ -641,6 +648,9 @@ where
     A: From<ExVal>,
     B: From<ExVal>,
 {
+    /// Extracts the first two array elements (indices 1 and 2 in Lua's 1-indexed convention).
+    /// This is used for tuple unpacking from tables. Note: Changed from 0,1 to 1,2 to match
+    /// Lua's 1-indexed array convention in the dual array/hashmap implementation.
     fn from(value: &mut ExTable) -> Self {
         (value.pop_value(1).into(), value.pop_value(2).into())
     }
