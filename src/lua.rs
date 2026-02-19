@@ -978,7 +978,7 @@ impl<'gc> VM<'gc> {
                         //     self.globals.insert(s.to_string(), v);
                         // }
                         // devout!("set original: {}", value);
-                        self.globals.borrow_mut(ep.mc).insert(s.into(), v);
+                        self.globals.borrow_mut(ep.mc).set(s, v);
                     } else {
                         // devout!("0SET_GLOBAL: {}", value);
                         #[cfg(feature = "dev-out")]
@@ -1874,7 +1874,7 @@ impl<'gc> VM<'gc> {
         if let Value::Table(t) = table {
             let value = self.pop(ep);
             let key = self.pop(ep);
-            (*t).borrow_mut(ep.mc).insert(key, value);
+            (*t).borrow_mut(ep.mc).set(key, value);
             Ok(())
         } else {
             Err(SiltError::ChunkCorrupt) // shouldn't happen unless our compiler really screwed up
@@ -1913,7 +1913,7 @@ impl<'gc> VM<'gc> {
                     // assert!(ep.ip == table_point);
                     match set {
                         Some(value) => {
-                            current.borrow_mut(ep.mc).insert(key, value);
+                            current.borrow_mut(ep.mc).set(key, value);
                             unsafe { table_point.replace(Value::Nil) };
                         }
                         None => {
@@ -2112,7 +2112,7 @@ impl<'gc> VM<'gc> {
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
-        table.insert(name.into(), v);
+        table.set(name, v);
     }
     // pub fn register_native_function<T, R>(
     //     &mut self,
