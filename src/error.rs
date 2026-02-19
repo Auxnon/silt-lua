@@ -217,7 +217,7 @@ impl std::fmt::Display for SiltError {
             Self::VmNonTableOperations(v) => {
                 write!(
                     f,
-                    "Cannot perform table operations on a non-table value: {}",
+                    "Cannot perform table operations on a non-table value ({})",
                     v
                 )
             }

@@ -2257,14 +2257,6 @@ fn vararg_variable(
     let index = if vararg > 0 { vararg - 1 } else { 0 };
     let count = this.expected_multi;
     let is_arg = this.is_arg_mode();
-    print!(
-        "{} exp#:{}  {} {} c: {} // ",
-        "??PIZZA TIME".on_purple(),
-        is_arg,
-        index,
-        vararg,
-        count
-    );
 
     this.emit_at(f, OpCode::VARARG { is_arg, count });
 
@@ -2293,7 +2285,7 @@ fn resolve_etters(
             }
         }
         None => {
-            // println!("============== we in {}", ident);
+            // println!("============== we're in {}", ident);
             let ident = this.identifer_constant(f, ident);
             // add_upvalue(this, ident, this.scope_depth);
             (

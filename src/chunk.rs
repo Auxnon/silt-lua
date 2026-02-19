@@ -1,11 +1,7 @@
 use std::vec;
 
-use crate::{
-    code::OpCode,
-    error::{TokenCell, TokenTriple},
-    value::Value,
-};
-use gc_arena::{Collect, Gc};
+use crate::{code::OpCode, error::TokenCell, value::Value};
+use gc_arena::Collect;
 
 // TODO benchmark/compare to using a manually resized array
 #[derive(Default, Collect)]
@@ -71,7 +67,7 @@ impl<'chnk> Chunk<'chnk> {
     // TODO lets change to a hashmap, cant see an advantage not to so far
     /** for global identifiers we attempt to resolve to an existing global variable if it exists and return that index */
     pub fn write_identifier(&mut self, identifier: String) -> usize {
-        match self.constants.iter().enumerate().position(|(i, x)| {
+        match self.constants.iter().enumerate().position(|(_i, x)| {
             if let Value::String(s) = x {
                 s == &identifier
             } else {
@@ -89,7 +85,6 @@ impl<'chnk> Chunk<'chnk> {
     }
 
     pub fn get_constant(&self, index: u8) -> &Value<'chnk> {
-        // println!("get constant (size is {})", self.constants.len());
         &self.constants[index as usize]
     }
 
@@ -167,6 +162,11 @@ impl<'chnk> Chunk<'chnk> {
     }
 
     pub fn get_loc(&self, index: usize) -> (usize, usize) {
-        self.locations[index]
+        // TODO there are circumstances where this overflows, why? Are we getting bad error
+        // handling? this match is a panic resolver
+        match self.locations.get(index) {
+            Some(s) => *s,
+            None => (0, 0),
+        }
     }
 }
