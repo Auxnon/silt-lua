@@ -2029,6 +2029,23 @@ impl<'gc> VM<'gc> {
         )
     }
 
+    /// Create a UserData wrapper without creating a value object
+    pub fn create_userdata_tuple<T: UserData>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        data: T,
+    ) -> (Value<'gc>, WeakWrapper) {
+
+        let (ud, weak)=crate::userdata::vm_integration::create_userdata_tuple(
+            &mut self.userdata_registry,
+            mc,
+            data,
+        );
+
+        let ud_gc = Gc::new(mc, RefLock::new(ud));
+        (Value::UserData(ud_gc),weak)
+    }
+
     /** Load standard library functions */
     pub fn load_standard_library<'a>(&'a mut self, mc: &Mutation<'gc>) {
         // macro_rules! register_native_fn {

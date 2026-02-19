@@ -1283,19 +1283,14 @@ pub mod vm_integration {
     use super::*;
     use crate::lua::{UDVec, VM};
 
-    /// Create a new UserData value
+    /// Create a new UserData value while registering it's type and storing it on the UD stack
     pub fn create_userdata_raw<'gc, T: UserData>(
         reg: &mut UserDataRegistry<'gc>,
         mc: &Mutation<'gc>,
         data: T,
         userdata_stack: &mut Option<UDVec>,
     ) -> UserDataWrapper {
-        // Register the type if it hasn't been registered yet
-        let type_name = T::type_name();
-        if !reg.maps.contains_key(type_name) {
-            // println!(" register userdata");
-            reg.register::<T>(mc);
-        }
+        register_userdata::<T>(reg, mc);
 
         // Create the UserData wrapper
         let mut wrapper = UserDataWrapper::new(data);
@@ -1310,8 +1305,31 @@ pub mod vm_integration {
             stack.0.push(weak_wrapper);
         };
         wrapper
+    }
 
-        // Create the GC-managed wrapper
+    /// Create UserData value and return both it and a weak wrapper, skip storing the wrapper
+    pub fn create_userdata_tuple<'gc, T: UserData>(
+        reg: &mut UserDataRegistry<'gc>,
+        mc: &Mutation<'gc>,
+        data: T,
+    ) -> (UserDataWrapper, WeakWrapper) {
+        register_userdata::<T>(reg, mc);
+
+        // Create the UserData wrapper
+        let mut wrapper = UserDataWrapper::new(data);
+
+        // Create a weak wrapper and store it in the stack
+        let weak_wrapper = WeakWrapper::from_wrapper(&wrapper);
+        (wrapper, weak_wrapper)
+    }
+
+    fn register_userdata<'gc, T: UserData>(reg: &mut UserDataRegistry<'gc>, mc: &Mutation<'gc>) {
+        // Register the type if it hasn't been registered yet
+        let type_name = T::type_name();
+        if !reg.maps.contains_key(type_name) {
+            // println!(" register userdata");
+            reg.register::<T>(mc);
+        }
     }
 
     /// Create a new UserData value
