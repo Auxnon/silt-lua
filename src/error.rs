@@ -63,6 +63,7 @@ pub enum SiltError {
     UDNoFieldSet,
     UDNoMethodRef,
     UDTypeMismatch,
+    UDRefDropped,
 
     //vm
     VmCompileError,
@@ -261,9 +262,9 @@ impl std::fmt::Display for SiltError {
             SiltError::MetaMethodNotCallable(meta_method) => {
                 write!(f, "Value for meta method '{}' is not callable", meta_method)
             }
-            SiltError::CoerceInt=>{
-                write!(f,"Value can't be strictly coerced to an integer")
-            },
+            SiltError::CoerceInt => {
+                write!(f, "Value can't be strictly coerced to an integer")
+            }
             SiltError::UDNoInitField => write!(f, "UserData field not setup"),
             SiltError::UDNoInitMethod => write!(f, "UserData method not setup"),
             SiltError::UDNoMap => write!(f, "UserData map not setup"),
@@ -272,6 +273,9 @@ impl std::fmt::Display for SiltError {
             SiltError::UDNoMethodRef => write!(f, "UserData method does not exist"),
             SiltError::UDTypeMismatch => {
                 write!(f, "UserData type mismatch during method or field access")
+            }
+            SiltError::UDRefDropped => {
+                write!(f, "UserData weak reference dropped")
             }
             SiltError::UDBadCall => {
                 write!(f, "UserData method called with non-userdata self, try :")
@@ -312,57 +316,60 @@ pub struct ErrorTuple {
     pub location: TokenCell,
 }
 
-impl Default for ErrorTuple{
+impl Default for ErrorTuple {
     fn default() -> Self {
-        Self{
+        Self {
             code: SiltError::Unknown,
-            location: (0,0),
+            location: (0, 0),
         }
     }
 }
-impl Default for &ErrorTuple{
+impl Default for &ErrorTuple {
     fn default() -> Self {
-        &ErrorTuple{
+        &ErrorTuple {
             code: SiltError::Unknown,
-            location: (0,0),
+            location: (0, 0),
         }
     }
 }
 
 #[derive(Clone)]
-pub struct ErrorOut{
+pub struct ErrorOut {
     pub errors: Vec<ErrorTuple>,
     pub source: Option<String>,
 }
 
-impl ToString for ErrorOut{
+impl ToString for ErrorOut {
     fn to_string(&self) -> String {
-        let source= self.source.clone().unwrap_or("unknown".to_string());
-            if self.errors.len()>1{
-
-            let failed=self.errors
-        .iter()
-        .enumerate()
-        .map(|(i, item)| format!("{}. {}", i + 1, item.to_string()))
-        .collect::<Vec<_>>()
-        .join("\n");
-        format!("source [{}] failed with:\n{}",source,failed)
-            }else{
-            format!("source [{}] failed with: {}",source,self.errors.first().unwrap_or_default())
-            }
-    }
-}
-
-impl ErrorOut{
-    pub fn get_first(&self)-> SiltError{
-        let f=self.errors.first();
-        match f{
-            Some(e)=>e.code.clone(),
-            None=> SiltError::Unknown
+        let source = self.source.clone().unwrap_or("unknown".to_string());
+        if self.errors.len() > 1 {
+            let failed = self
+                .errors
+                .iter()
+                .enumerate()
+                .map(|(i, item)| format!("{}. {}", i + 1, item.to_string()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("source [{}] failed with:\n{}", source, failed)
+        } else {
+            format!(
+                "source [{}] failed with: {}",
+                source,
+                self.errors.first().unwrap_or_default()
+            )
         }
     }
 }
 
+impl ErrorOut {
+    pub fn get_first(&self) -> SiltError {
+        let f = self.errors.first();
+        match f {
+            Some(e) => e.code.clone(),
+            None => SiltError::Unknown,
+        }
+    }
+}
 
 impl From<Vec<ErrorTuple>> for SiltError {
     fn from(value: Vec<ErrorTuple>) -> Self {

@@ -732,6 +732,40 @@ impl WeakWrapper {
         self.data.upgrade().is_none()
     }
 
+    pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(&'a self, apply: F) -> Result<R, SiltError>
+    where
+        F: FnOnce(&T) -> Result<R, SiltError>,
+    {
+        let arc = match self.data.upgrade() {
+            Some(arc) => arc,
+            None => {
+                return Err(SiltError::UDRefDropped);
+            }
+        };
+        let i = arc.lock().map_err(|_| SiltError::UDNoMap)?;
+        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCall)?;
+        apply(ud)
+    }
+
+    pub fn downcast_mut<'a, 'b: 'a, T: UserData, F, R>(
+        &'a mut self,
+        apply: F,
+    ) -> Result<R, SiltError>
+    where
+        F: FnOnce(&mut T) -> Result<R, SiltError>,
+        R: ToLua<'b>,
+    {
+        let arc = match self.data.upgrade() {
+            Some(arc) => arc,
+            None => {
+                return Err(SiltError::UDRefDropped);
+            }
+        };
+        let mut i = arc.lock().map_err(|_| SiltError::UDNoMap)?;
+        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCall)?;
+        apply(ud)
+    }
+
     /// Convert to a string representation
     pub fn to_string(&self) -> String {
         format!("{} weak userdata (id: {})", self.type_name, self.id)
@@ -822,6 +856,7 @@ impl UserDataWrapper {
         let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCall)?;
         apply(ud)
     }
+
     pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(&'a self, apply: F) -> Result<R, SiltError>
     where
         F: FnOnce(&T) -> Result<R, SiltError>,
