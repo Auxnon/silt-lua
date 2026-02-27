@@ -16,7 +16,7 @@ fn simple_function() {
 }
 
 #[test]
-fn function_with_local() {
+fn function_local() {
     valeq!(
         r#"
         local function multiply(x, y)
@@ -37,6 +37,92 @@ fn function_no_parameters() {
         return get_answer()
     "#;
     valeq!(source, ExVal::Number(42.0));
+}
+
+#[test]
+fn function_blocked() {
+    valeq!(
+        r#"
+        do
+            function add(a, b)
+                return a + b
+            end
+            return add(3, 4)
+        end
+        "#,
+        ExVal::Number(7.0)
+    );
+}
+
+#[test]
+fn function_blocked_local() {
+    valeq!(
+        r#"
+        do
+            function add(a, b)
+                return a + b
+            end
+            return add(3, 4)
+        end
+        "#,
+        ExVal::Number(7.0)
+    );
+}
+
+#[test]
+fn function_reverse() {
+    valeq!(
+        r#"
+        add= function(a, b)
+            return a + b
+        end
+        return add(3, 4)
+        "#,
+        ExVal::Number(7.0)
+    );
+}
+
+#[test]
+fn function_reverse_local() {
+    valeq!(
+        r#"
+        local add= function(a, b)
+            return a + b
+        end
+        return add(3, 4)
+        "#,
+        ExVal::Number(7.0)
+    );
+}
+
+#[test]
+fn function_reverse_blocked() {
+    valeq!(
+        r#"
+        do
+            add=function(a, b)
+                return a + b
+            end
+            return add(3, 4)
+        end
+        "#,
+        ExVal::Number(7.0)
+    );
+}
+
+#[test]
+fn function_reverse_local_blocked() {
+    valeq!(
+        r#"
+        do
+            local add=function(a, b)
+                return a + b
+            end
+            return add(3, 4)
+        end
+        "#,
+        ExVal::Number(7.0)
+    );
 }
 
 #[test]
