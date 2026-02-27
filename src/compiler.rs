@@ -232,17 +232,17 @@ impl Display for Precedence {
 }
 
 struct ParseRule {
-    prefix: fn(
+    prefix: for <'c> fn(
         &mut Compiler,
-        mc: &Mutation,
-        f: FnRef,
+        mc: &Mutation<'c>,
+        f: FnRef<'_,'c>,
         it: &mut Peekable<Lexer>,
         can_assign: bool,
     ) -> Catch,
-    infix: fn(
+    infix: for<'c> fn(
         &mut Compiler,
-        mc: &Mutation,
-        f: FnRef,
+        mc: &Mutation<'c>,
+        f: FnRef<'_,'c>,
         it: &mut Peekable<Lexer>,
         can_assign: bool,
     ) -> Catch,
@@ -618,6 +618,7 @@ impl Compiler {
         }
     }
     fn pull_getter(&mut self, f: FnRef) -> OpCode {
+        println!("we have {}", self.var_stack.len());
         let o = self.var_stack.first().unwrap();
         let oo = o.clone().unwrap();
         oo.1
@@ -1153,7 +1154,7 @@ impl Compiler {
     fn parse_precedence<'c>(
         &mut self,
         mc: &Mutation<'c>,
-        f: FnRef,
+        f: FnRef<'_,'c>,
         it: &mut Peekable<Lexer>,
         precedence: Precedence,
         skip_step: bool,
@@ -1304,7 +1305,7 @@ fn declaration_keyword<'a, 'c: 'a>(
 fn declaration_scope<'a, 'c: 'a>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
     ident: String,
     local: bool,
@@ -1500,7 +1501,7 @@ fn resolve_upvalue(
 fn typing<'a, 'c: 'a>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
     ident_tuple: Option<(Ident, TokenCell)>,
 ) -> Catch {
@@ -1540,7 +1541,7 @@ fn typing<'a, 'c: 'a>(
 fn define_declaration<'a, 'c: 'a>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
     ident_tuple: Option<(Ident, TokenCell)>,
 ) -> Catch {
@@ -1994,10 +1995,10 @@ fn for_statement<'c>(
  */
 fn generic_for_statement() {}
 
-fn return_statement(
+fn return_statement<'c>(
     this: &mut Compiler,
-    mc: &Mutation,
-    f: FnRef,
+    mc: &Mutation<'c>,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     this.set_can_multivar_set(false);
@@ -2152,7 +2153,7 @@ fn goto_scope_skip(this: &mut Compiler, f: FnRef) {
 fn expression<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
     skip_step: bool,
 ) -> Catch {
@@ -2174,7 +2175,7 @@ fn expression<'c>(
 fn expression_single<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
     skip_step: bool,
 ) -> Catch {
@@ -2186,7 +2187,7 @@ fn expression_single<'c>(
 fn next_expression<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     devnote!(this it "next_expression");
@@ -2198,7 +2199,7 @@ fn next_expression<'c>(
 fn expression_statement<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     devnote!(this it "expression_statement");
@@ -2283,7 +2284,8 @@ fn variable<'c>(
 /// This is the second concept of vararg, the usage of, not the param.
 fn vararg_variable(
     this: &mut Compiler,
-    f: FnRef<'_, 'c>,
+    mc: &Mutation,
+    f: FnRef,
     it: &mut Peekable<Lexer>,
     can_assign: bool,
 ) -> Catch {
@@ -2328,7 +2330,7 @@ fn vararg_variable(
 
 fn resolve_etters(
     this: &mut Compiler,
-    f: FnRef<'_, 'c>,
+    f: FnRef,
     it: &mut Peekable<Lexer>,
     ident: String,
 ) -> (OpCode, OpCode) {
@@ -2725,6 +2727,7 @@ fn tabulate<'c>(
         this.set_arg_mode(false);
     }
 
+    println!("here? 1");
     expect_token!(
         this,
         it,
@@ -2798,7 +2801,7 @@ fn table_indexer<'c>(
     Ok(count)
 }
 
-fn single_table_index(
+fn single_table_index<'c>(
     this: &mut Compiler,
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
@@ -3048,7 +3051,7 @@ fn call_string<'c>(
 fn arguments<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
     start: TokenCell,
 ) -> Result<u8, ErrorTuple> {
@@ -3071,7 +3074,7 @@ fn arguments<'c>(
             // Check if this is a vararg expression
             if let Token::VarArg = this.peek(it)? {
                 this.store(it); // consume the VarArg token
-                vararg_variable(this, f, it, false)?;
+                vararg_variable(this,mc, f, it, false)?;
                 args += 1;
                 has_vararg = true;
                 // VarArg must be the last argument
@@ -3118,7 +3121,7 @@ fn arguments<'c>(
     Ok(args)
 }
 
-fn print(this: &mut Compiler, mc: &Mutation, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+fn print<'c>(this: &mut Compiler, mc: &Mutation<'c>, f: FnRef<'_,'c>, it: &mut Peekable<Lexer>) -> Catch {
     devnote!(this it "print");
     this.eat(it);
     expression(this, mc, f, it, false)?;
@@ -3126,10 +3129,10 @@ fn print(this: &mut Compiler, mc: &Mutation, f: FnRef, it: &mut Peekable<Lexer>)
     Ok(())
 }
 
-pub fn void(
+pub fn void<'c>(
     _this: &mut Compiler,
-    mc: &Mutation,
-    f: FnRef,
+    mc: &Mutation<'c>,
+    f: FnRef<'_,'c>,
     it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
