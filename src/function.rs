@@ -99,7 +99,7 @@ impl<'frame> CallFrame<'frame> {
         unsafe { &mut *self.local_stack.add(index as usize) }
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "dev-out")]
     pub fn print_local_stack(&self) {
         println!("local stack: {:?}", unsafe {
             std::slice::from_raw_parts(self.local_stack, 10)

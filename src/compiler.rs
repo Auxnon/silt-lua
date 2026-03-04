@@ -620,8 +620,8 @@ impl Compiler {
             }
         }
     }
-    fn pull_getter(&mut self, _f: FnRef) -> OpCode {
-        println!("we have {}", self.var_stack.len());
+    fn pull_getter(&mut self) -> OpCode {
+        // println!("we have {}", self.var_stack.len());
         let o = self.var_stack.first().unwrap();
         let oo = o.clone().unwrap();
         oo.1
@@ -1364,7 +1364,7 @@ fn declaration_scope<'a, 'c: 'a>(
     if this.scope_depth > 0 && local {
         //local
         //TODO should we warn? redefine_behavior(this,ident)?
-        add_local(this, it, ident)?;
+        add_local(this, ident)?;
         typing(this, mc, f, it, None)?;
     } else {
         let ident = this.identifer_constant(f, ident);
@@ -1391,23 +1391,21 @@ fn declaration_scope<'a, 'c: 'a>(
 /** Store location as a local to resolve getters with, the index pointing to the stack */
 fn add_local(
     this: &mut Compiler,
-    it: &mut Peekable<Lexer>,
     ident: String,
 ) -> Result<u8, ErrorTuple> {
-    _add_local(this, it, Some(ident))
+    _add_local(this,  Some(ident))
 }
 
 /** Store location on the stack with a placeholder that cannot be resolved as a variable, only reserves for operations */
-fn add_local_placeholder(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Result<u8, ErrorTuple> {
-    _add_local(this, it, None)
+fn add_local_placeholder(this: &mut Compiler) -> Result<u8, ErrorTuple> {
+    _add_local(this, None)
 }
 
 fn _add_local(
     this: &mut Compiler,
-    _it: &mut Peekable<Lexer>,
     ident: Option<String>,
 ) -> Result<u8, ErrorTuple> {
-    devnote!(this _it "add_local");
+    // devnote!(this _it "add_local");
     // let offset = if this.functional_depth > 0 {
     //     this.local_functional_offset[this.functional_depth - 1]
     // } else {
@@ -1564,6 +1562,7 @@ fn typing<'a, 'c: 'a>(
         if let Token::ColonIdentifier(_target) = t {
             // method or type name
             todo!("fix this to use new variable parse track");
+            // define_declaration(this, mc, f, it, ident_tuple)?;
         } else {
             todo!("typing");
             // self.error(SiltError::InvalidColonPlacement);
@@ -1649,7 +1648,7 @@ fn define_function<'c>(
     let global_ident = if this.scope_depth > 0 && local {
         //local
         //TODO should we warn? redefine_behavior(this,ident)?
-        add_local(this, it, ident)?;
+        add_local(this,  ident)?;
         None
     } else {
         Some((this.identifer_constant(f, ident), location))
@@ -1767,7 +1766,7 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
     let (res, _) = this.pop(it);
     match res? {
         Token::Identifier(ident) => {
-            add_local(this, it, ident)?;
+            add_local(this,  ident)?;
         }
         Token::VarArg => {
             if this.is_vararg_function() {
@@ -1776,7 +1775,7 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
             }
 
             this.set_vararg();
-            add_local(this, it, "...".to_string())?;
+            add_local(this,  "...".to_string())?;
         }
         _ => {
             return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
@@ -1988,10 +1987,10 @@ fn for_statement<'c>(
     let t = pair.0?;
     if let Token::Identifier(ident) = t {
         // let offset = this.local_functional_offset[this.functional_depth - 1];
-        let iterator = add_local_placeholder(this, it)?; // reserve iterator with placeholder
+        let iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
         expect_token!(this it Assign);
-        add_local_placeholder(this, it)?; // reserve end value with placeholder
-        add_local_placeholder(this, it)?; // reserve step value with placeholder
+        add_local_placeholder(this)?; // reserve end value with placeholder
+        add_local_placeholder(this)?; // reserve step value with placeholder
         expression(this, mc, f, it, false)?; // expression for iterator
         expect_token!(this it Comma);
         expression(this, mc, f, it, false)?; // expression for end value
@@ -2015,7 +2014,7 @@ fn for_statement<'c>(
         // this.emit_at(OpCode::POP);
         expect_token!(this it Do);
         begin_scope(this);
-        add_local(this, it, ident)?; // we add the local inside the scope which was actually added on by the for opcode already
+        add_local(this, ident)?; // we add the local inside the scope which was actually added on by the for opcode already
         build_block_until_then_eat!(this, mc, f, it, End);
         end_scope(this, f, false);
 
@@ -2364,7 +2363,7 @@ fn vararg_variable(
         return Err(this.error_at(SiltError::InvalidVarArgUsage));
     }
 
-    let _index = if vararg > 0 { vararg - 1 } else { 0 };
+    // let _index = if vararg > 0 { vararg - 1 } else { 0 };
     let count = this.expected_multi;
     let is_arg = this.is_arg_mode();
 
@@ -2444,7 +2443,7 @@ fn named_variable<'c>(
     {
         if let Token::Identifier(ident) = t {
             // short declare
-            add_local(this, it, ident)?;
+            add_local(this, ident)?;
             this.override_pop();
 
             this.local_declare_mode = true;
@@ -2463,7 +2462,7 @@ fn named_variable<'c>(
         // devout!("assigning to identifier: {}", ident);
         if this.local_declare_mode {
             // println!("💡we added ident {} here", ident);
-            add_local(this, it, ident.clone())?;
+            add_local(this, ident.clone())?;
             // this.eat(it);
         }
         resolve_etters(this, f, it, ident)
@@ -2490,7 +2489,7 @@ fn named_variable<'c>(
 
                 let ops = if let Token::Identifier(ident) = t.0? {
                     if this.local_declare_mode {
-                        add_local(this, it, ident.clone())?;
+                        add_local(this, ident.clone())?;
                         // this.eat(it);
                     }
                     resolve_etters(this, f, it, ident)
@@ -2640,7 +2639,7 @@ fn named_variable<'c>(
             }
         }
         Token::Colon => {
-            let target = this.pull_getter(f);
+            let target = this.pull_getter();
             this.drain_getters(f);
             single_table_index(this, f, it)?;
             // we should only have one getter, table_indexer is just a faster getter opcode
@@ -3117,7 +3116,7 @@ fn arguments<'c>(
     } else {
         0
     };
-    let mut _has_vararg = false;
+    // let mut _has_vararg = false;
 
     devout!("{} {}", "start with ".red(), args);
     if !matches!(this.peek(it)?, &Token::CloseParen) {
@@ -3127,7 +3126,7 @@ fn arguments<'c>(
                 this.store(it); // consume the VarArg token
                 vararg_variable(this, mc, f, it, false)?;
                 args += 1;
-                _has_vararg = true;
+                // _has_vararg = true;
                 // VarArg must be the last argument
                 if let Token::Comma = this.peek(it)? {
                     // TODO: Add SiltError::VarArgMustBeLast to error types

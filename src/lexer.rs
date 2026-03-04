@@ -144,13 +144,6 @@ impl<'c> Lexer<'c> {
         self.send(token)
     }
 
-    #[allow(dead_code)]
-    fn eat_eat_send(&mut self, token: Token) -> TokenOption {
-        self.eat();
-        self.eat();
-        self.send(token)
-    }
-
     // fn maybe_add(&mut self, token: Option<Token>) {
     //     if let Some(t) = token {
     //         self.tokens.push(t);

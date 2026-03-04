@@ -128,9 +128,3 @@ pub fn test_ent<'lua>(
     let e = TestEnt::new(4., 5., 6.);
     Ok(vm.create_userdata(mc, e))
 }
-
-// pub fn ud_trap<'lua>(vm: &mut VM<'lua>, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> Value<'lua> {
-//     // args.concat()
-//
-//     let ud=vm.yank(1);
-// }
