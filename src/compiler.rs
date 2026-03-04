@@ -71,10 +71,10 @@ macro_rules! devnote {
     ($self:ident $it:ident $message:literal) => {
         #[cfg(feature = "dev-out")]
         println!(
-            "=> {}: peek: {:?} -> current: {:?}",
-            $message,
+            "=>{:?}\t\t//{:?}\t -> current: {}",
             $self.peek($it).unwrap_or(&Token::Nil).clone(),
-            $self.get_current().unwrap_or(&Token::Nil)
+            $self.get_current().unwrap_or(&Token::Nil),
+            $message
         );
     };
 }
@@ -126,9 +126,9 @@ macro_rules! expect_token {
 
 macro_rules! add {
     ($self:ident) => {{
-        $self.expression_count += 1;
+        $self.increment_expression_count();
         #[cfg(feature = "dev-out")]
-        println!("{} {}", "Add".on_cyan(), $self.expression_count);
+        println!("{} {}", "Add".on_cyan(), $self.get_expression_count());
     };};
 }
 
@@ -232,17 +232,17 @@ impl Display for Precedence {
 }
 
 struct ParseRule {
-    prefix: for <'c> fn(
+    prefix: for<'c> fn(
         &mut Compiler,
         mc: &Mutation<'c>,
-        f: FnRef<'_,'c>,
+        f: FnRef<'_, 'c>,
         it: &mut Peekable<Lexer>,
         can_assign: bool,
     ) -> Catch,
     infix: for<'c> fn(
         &mut Compiler,
         mc: &Mutation<'c>,
-        f: FnRef<'_,'c>,
+        f: FnRef<'_, 'c>,
         it: &mut Peekable<Lexer>,
         can_assign: bool,
     ) -> Catch,
@@ -308,6 +308,10 @@ struct FunctionalState {
     pub vararg: u8,
     /// Are we walking arguments for a function call or table build? Changes vararg stack behavior
     pub argument_mode: bool,
+    /// tracks the number of values on the stack from comma-separated expressions
+    pub expression_count: u8,
+    /// hack to flip off a pop when an expression takes on statement properties, used only for := right now
+    pub should_override_pop: bool,
 }
 impl FunctionalState {
     pub fn new() -> Self {
@@ -315,6 +319,8 @@ impl FunctionalState {
             up_values: vec![],
             vararg: 0,
             argument_mode: false,
+            expression_count: 0,
+            should_override_pop: false,
         }
     }
 }
@@ -333,6 +339,9 @@ pub struct Compiler {
     functional_depth: usize,
     // TODO we need a fail catch if we exceed a local variable amount of up values as well
     functional_states: Vec<FunctionalState>,
+    /// hack
+    /// tracks argument mode even if outside of functional scope (root level) this is a bit of a
+    root_state: FunctionalState,
     local_offset: Vec<usize>,
     /** an offset tracker each time we descend into a new functional scope. For instance if we drop 1 level down from the root level that had 3 locals prior [A,B,C] then our stack looks like [root, A, B, C, fn] then we'll store 3 at this field's index 0 since the calling function is always at the bottom of the stack */
     local_functional_offset: Vec<usize>,
@@ -345,8 +354,6 @@ pub struct Compiler {
     // previous: TokenTuple,
     // pre_previous: TokenTuple,
     pending_gotos: Vec<(String, usize, TokenCell)>,
-    /** hack to flip off a pop when an expression takes on statement properties, used only for := right now */
-    override_pop: bool,
     /// flag that a self calling method was used
     self_arg: bool,
     /** language flags for optional features */
@@ -354,8 +361,6 @@ pub struct Compiler {
     /** tracks if the last statement was an expression for implicit returns */
     last_was_expression: bool,
     // return_count: u8,
-    /** tracks the number of values on the stack from comma-separated expressions */
-    expression_count: u8,
     /// used for multi var assignment, start small, expand if really necessary
     var_stack: Vec<Option<(OpCode, OpCode)>>,
     /// men will do anything to not have to allocate a new vec
@@ -366,10 +371,6 @@ pub struct Compiler {
     // correctly. If we walk our setters all the way to find an assignment (:=)
     /// can we gather multivars for setters? multivar return or gets must skip this
     can_multivar_set: bool,
-    /// tracks argument mode even if outside of functional scope (root level) this is a bit of a
-    /// hack
-    root_argument_mode: bool,
-    // vararg_function: bool,
 }
 
 impl Compiler {
@@ -386,6 +387,7 @@ impl Compiler {
             scope_depth: 0,
             functional_depth: 0,
             functional_states: vec![],
+            root_state: FunctionalState::new(),
             locals: vec![Local {
                 ident: None,
                 depth: 0,
@@ -401,16 +403,13 @@ impl Compiler {
             // location: (0, 0),
             // previous: (Token::Nil, (0, 0)),
             // pre_previous: (Token::Nil, (0, 0)),
-            override_pop: false,
             self_arg: false,
             language_flags: LanguageFlags::default(),
             last_was_expression: false,
-            expression_count: 0,
             var_stack: Vec::with_capacity(4),
             var_set_stack: Vec::with_capacity(4),
             expected_multi: 0,
             can_multivar_set: true,
-            root_argument_mode: false,
         }
     }
 
@@ -826,7 +825,7 @@ impl Compiler {
         if self.functional_depth > 0 {
             self.functional_states[self.functional_depth - 1].argument_mode
         } else {
-            self.root_argument_mode
+            self.root_state.argument_mode
         }
     }
 
@@ -834,7 +833,7 @@ impl Compiler {
         if self.functional_depth > 0 {
             self.functional_states[self.functional_depth - 1].argument_mode = bool;
         } else {
-            self.root_argument_mode = bool;
+            self.root_state.argument_mode = bool;
         }
     }
 
@@ -849,6 +848,49 @@ impl Compiler {
             return self.functional_states[self.functional_depth - 1].vararg;
         }
         0
+    }
+
+    fn set_expression_count(&mut self, val: u8) {
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].expression_count = val;
+        } else {
+            self.root_state.expression_count = val;
+        }
+    }
+
+    fn get_expression_count(&self) -> u8 {
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].expression_count
+        } else {
+            self.root_state.expression_count
+        }
+    }
+
+    fn increment_expression_count(&mut self) {
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].expression_count += 1;
+        } else {
+            self.root_state.expression_count += 1;
+        }
+    }
+
+    fn flip_override_pop(&mut self) -> bool {
+        let reff = if self.functional_depth > 0 {
+            &mut self.functional_states[self.functional_depth - 1].should_override_pop
+        } else {
+            &mut self.root_state.should_override_pop
+        };
+        let res = *reff;
+        (*reff) = false;
+        res
+    }
+
+    fn override_pop(&mut self) {
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].should_override_pop = true;
+        } else {
+            self.root_state.should_override_pop = true;
+        }
     }
 
     /** replaces the conents of func with the compilers body */
@@ -938,7 +980,7 @@ impl Compiler {
         if self.language_flags.implicit_returns && self.last_was_expression {
             // If we have multiple expressions, keep them all on the stack
             // Otherwise, drop the last POP to keep the single expression
-            if self.expression_count <= 1 {
+            if self.get_expression_count() <= 1 {
                 self.drop_last_if(&mut body, &OpCode::POP);
             }
         } else {
@@ -1154,7 +1196,7 @@ impl Compiler {
     fn parse_precedence<'c>(
         &mut self,
         mc: &Mutation<'c>,
-        f: FnRef<'_,'c>,
+        f: FnRef<'_, 'c>,
         it: &mut Peekable<Lexer>,
         precedence: Precedence,
         skip_step: bool,
@@ -1240,7 +1282,7 @@ fn declaration<'a, 'c: 'a>(
         Token::Global => declaration_keyword(this, mc, f, it, false, false)?,
         Token::Function => {
             this.eat(it);
-            define_function(this, mc, f, it, true, None)?;
+            define_function(this, mc, f, it, false, None)?;
         }
         _ => statement(this, mc, f, it)?,
     }
@@ -1270,7 +1312,7 @@ fn declaration_keyword<'a, 'c: 'a>(
                 //TODO should we warn? redefine_behavior(this,ident)?
 
                 // add_local(this, it, ident)?;
-                this.override_pop = true;
+                this.override_pop();
                 // this.eat(it);
                 typing(this, mc, f, it, None)?;
             } else {
@@ -1287,6 +1329,7 @@ fn declaration_keyword<'a, 'c: 'a>(
         }
         Token::Function => {
             if !already_function {
+                this.eat(it);
                 define_function(this, mc, f, it, local, None)?;
             } else {
                 return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
@@ -1305,7 +1348,7 @@ fn declaration_keyword<'a, 'c: 'a>(
 fn declaration_scope<'a, 'c: 'a>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     ident: String,
     local: bool,
@@ -1501,7 +1544,7 @@ fn resolve_upvalue(
 fn typing<'a, 'c: 'a>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     ident_tuple: Option<(Ident, TokenCell)>,
 ) -> Catch {
@@ -1541,7 +1584,7 @@ fn typing<'a, 'c: 'a>(
 fn define_declaration<'a, 'c: 'a>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     ident_tuple: Option<(Ident, TokenCell)>,
 ) -> Catch {
@@ -1673,10 +1716,10 @@ fn build_function<'c>(
         devout!(
             "{} {}",
             "=============================== return is".purple(),
-            this.expression_count
+            this.get_expression_count()
         );
-        this.emit_at(fr2, OpCode::RETURN(this.expression_count));
-        this.expression_count = 0;
+        this.emit_at(fr2, OpCode::RETURN(this.get_expression_count()));
+        this.set_expression_count(0);
     }
 
     // TODO why do we need to eat again? This prevents an expression_statement of "End" being called but block should have eaten it?
@@ -1748,7 +1791,7 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
 fn pre_statement(this: &mut Compiler) {
     // Most statements are not expressions, so reset the flag
     this.last_was_expression = false;
-    this.expression_count = 1;
+    this.set_expression_count(1);
     // we can now set multivars again, x,y=...
     this.set_can_multivar_set(true);
 }
@@ -1901,7 +1944,6 @@ fn if_statement<'c>(
         }
         Token::ElseIf => {
             this.eat(it);
-            // this.emit_at(OpCode::POP);
             this.patch(f, skip_if)?;
             if_statement(this, mc, f, it)?;
         }
@@ -1998,12 +2040,12 @@ fn generic_for_statement() {}
 fn return_statement<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     this.set_can_multivar_set(false);
     devnote!(this it "return_statement");
-    devout!("{} {}", "HERE".on_red(), this.expression_count);
+    devout!("{} {}", "HERE".on_red(), this.get_expression_count());
     this.eat(it);
     if let Token::End | Token::Else | Token::ElseIf | Token::SemiColon | Token::EOF =
         this.peek(it)?
@@ -2016,7 +2058,7 @@ fn return_statement<'c>(
     this.set_can_multivar_set(true);
 
     // For multiple return values, all expressions are already on the stack
-    this.emit_at(f, OpCode::RETURN(this.expression_count));
+    this.emit_at(f, OpCode::RETURN(this.get_expression_count()));
     Ok(())
 }
 
@@ -2153,7 +2195,7 @@ fn goto_scope_skip(this: &mut Compiler, f: FnRef) {
 fn expression<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     skip_step: bool,
 ) -> Catch {
@@ -2164,7 +2206,10 @@ fn expression<'c>(
         add!(this);
         devout!("{}", "COMMAS".on_red());
         this.eat(it);
-        devout!("===================exp count {}", this.expression_count);
+        devout!(
+            "===================exp count {}",
+            this.get_expression_count()
+        );
         this.parse_precedence(mc, f, it, Precedence::Assignment, false)?;
     }
 
@@ -2175,7 +2220,7 @@ fn expression<'c>(
 fn expression_single<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     skip_step: bool,
 ) -> Catch {
@@ -2187,7 +2232,7 @@ fn expression_single<'c>(
 fn next_expression<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     devnote!(this it "next_expression");
@@ -2199,14 +2244,14 @@ fn next_expression<'c>(
 fn expression_statement<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     devnote!(this it "expression_statement");
     devout!(
         "{} {}",
         "At (expression statement start)".on_cyan(),
-        this.expression_count
+        this.get_expression_count()
     );
     // let i = it.peek().unwrap();
     // let i2 = (*i).clone()?;
@@ -2218,16 +2263,14 @@ fn expression_statement<'c>(
     // Mark that the last statement was an expression for implicit returns
     this.last_was_expression = true;
 
-    if this.override_pop {
-        this.override_pop = false;
-    } else {
+    if !this.flip_override_pop() {
         // For implicit returns, we might want to keep the value(s) on the stack
         // if this is the last statement in a function, but we can't know that here
         // The function compilation will handle this by checking last_was_expression
 
         // If we have multiple expressions and implicit returns are enabled,
         // we might want to keep them all on the stack for the function to return
-        if this.language_flags.implicit_returns && this.expression_count > 1 {
+        if this.language_flags.implicit_returns && this.get_expression_count() > 1 {
             // Don't pop - keep all values for potential multiple return
         } else {
             // Pop the single expression value as usual
@@ -2400,7 +2443,7 @@ fn named_variable<'c>(
         if let Token::Identifier(ident) = t {
             // short declare
             add_local(this, it, ident)?;
-            this.override_pop = true;
+            this.override_pop();
 
             this.local_declare_mode = true;
             // this.eat(it);
@@ -2519,14 +2562,14 @@ fn named_variable<'c>(
                 this.eat(it);
                 let assign_need = this.var_stack.len() as isize;
                 this.expected_multi = assign_need as u8;
-                this.expression_count = 1;
+                this.set_expression_count(1);
                 // if assign_need > 1 {
                 //     this.emit_at(f, OpCode::NEED(assign_need as u8));
                 // }
                 // println!("=============== pre setters {}", this.peek(it)?);
                 std::mem::swap(&mut this.var_stack, &mut this.var_set_stack);
                 // println!("set stack is {}", this.var_set_stack.len());
-                this.override_pop = true;
+                this.override_pop();
                 this.set_can_multivar_set(false);
                 expression(this, mc, f, it, false)?;
                 this.set_can_multivar_set(true);
@@ -2542,7 +2585,7 @@ fn named_variable<'c>(
 
                 // a,b,c,d,e = 1, fn(), fn()
                 // 5 = 1, 2 , 3..
-                let remainder = assign_need - this.expression_count as isize;
+                let remainder = assign_need - this.get_expression_count() as isize;
                 match remainder.cmp(&0) {
                     Ordering::Greater => {
                         // we have room so spread the last if possible
@@ -2588,7 +2631,7 @@ fn named_variable<'c>(
                 expression(this, mc, f, it, false)?;
                 this.emit_at(f, OpCode::TABLE_SET { depth: count });
                 // override statement end pop because instruction takes care of it
-                this.override_pop = true;
+                this.override_pop();
             } else {
                 this.emit_at(f, OpCode::TABLE_GET { depth: count });
                 // add!(this);
@@ -2952,7 +2995,13 @@ fn number<'c>(
     Ok(())
 }
 
-fn string<'c>(this: &mut Compiler,mc: &Mutation<'c>, f: FnRef<'_, 'c>, it: &mut Peekable<Lexer>, _can_assign: bool) -> Catch {
+fn string<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
     devnote!(this it "string");
     let t = this.copy_store()?;
     let value = if let Token::StringLiteral(s) = t {
@@ -3051,7 +3100,7 @@ fn call_string<'c>(
 fn arguments<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     start: TokenCell,
 ) -> Result<u8, ErrorTuple> {
@@ -3074,7 +3123,7 @@ fn arguments<'c>(
             // Check if this is a vararg expression
             if let Token::VarArg = this.peek(it)? {
                 this.store(it); // consume the VarArg token
-                vararg_variable(this,mc, f, it, false)?;
+                vararg_variable(this, mc, f, it, false)?;
                 args += 1;
                 has_vararg = true;
                 // VarArg must be the last argument
@@ -3121,7 +3170,12 @@ fn arguments<'c>(
     Ok(args)
 }
 
-fn print<'c>(this: &mut Compiler, mc: &Mutation<'c>, f: FnRef<'_,'c>, it: &mut Peekable<Lexer>) -> Catch {
+fn print<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
     devnote!(this it "print");
     this.eat(it);
     expression(this, mc, f, it, false)?;
@@ -3132,7 +3186,7 @@ fn print<'c>(this: &mut Compiler, mc: &Mutation<'c>, f: FnRef<'_,'c>, it: &mut P
 pub fn void<'c>(
     _this: &mut Compiler,
     mc: &Mutation<'c>,
-    f: FnRef<'_,'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
