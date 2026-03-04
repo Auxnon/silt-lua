@@ -1,6 +1,4 @@
-mod shared;
-use shared::*;
-use silt_lua::ExVal;
+use silt_lua::{test_number, test_string, valeq,ExVal,simple};
 
 test_number!(simple_if_true, "if true then return 1 end; return 0", 1.0);
 test_number!(simple_if_false, "if false then return 1 end; return 0", 0.0);

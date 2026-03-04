@@ -1,6 +1,5 @@
-mod shared;
-use shared::*;
-use silt_lua::ExVal;
+use silt_lua::{ExVal,valeq,simple};
+
 
 #[test]
 fn while_loop() {

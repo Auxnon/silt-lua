@@ -1,6 +1,4 @@
-mod shared;
-use shared::*;
-use silt_lua::ExVal;
+use silt_lua::{valeq,test_string,ExVal,simple};
 
 test_string!(simple_string, "return 'hello'", "hello");
 test_string!(double_quote_string, "return \"world\"", "world");

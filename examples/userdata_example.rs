@@ -82,7 +82,7 @@ impl UserData for Counter {
         });
 
         methods.add_meta_method("__add", |_vm, m, counter, value: Value| {
-            if let Some( this) =  counter {
+            if let Some(this) = counter {
                 if let Value::Integer(n) = value {
                     Ok(Value::Integer(this.get_count() + n))
                 } else {
@@ -125,6 +125,7 @@ fn main() {
         vm.register_native_function(mc, "make_counter", make_userdata);
     });
     let res = lua.run(
+        Some("counter userdata test"),
         r#"
          counter=make_counter()
          counter.increment()
@@ -138,7 +139,7 @@ fn main() {
     match res {
         Ok(o) => println!("{}", o),
         Err(ee) => {
-            for e in ee.iter() {
+            for e in ee.errors.iter() {
                 println!("error: {}", e);
             }
         }

@@ -1,6 +1,4 @@
-mod shared;
-use shared::*;
-use silt_lua::ExVal;
+use silt_lua::{ExVal,simple, test_number, test_string, valeq};
 
 #[test]
 fn empty_table() {

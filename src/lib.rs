@@ -26,35 +26,6 @@ pub mod vec;
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 
-fn simple(source: &str) -> ExVal {
-    let mut compiler = Compiler::new();
-    let mut lua = Lua::new_with_standard();
-    match lua.run(None, source, &mut compiler) {
-        Ok(v) => v,
-        Err(e) => ExVal::String(e.to_string()),
-    }
-}
-
-fn complex(source: &str) -> Result<ExVal, ErrorOut> {
-    let mut compiler = Compiler::new();
-    let mut lua = Lua::new_with_standard();
-    match lua.run(None,source, &mut compiler) {
-        Ok(v) => Ok(v),
-        Err(e) => Err(e),
-    }
-    //
-    // let mut vm = VM::new();
-    // vm.load_standard_library();
-    // let mut compiler = Compiler::new();
-    // match compiler.try_compile(source) {
-    //     Ok(obj) => match vm.run(obj) {
-    //         Ok(v) => Ok(v),
-    //         Err(e) => Err(e.get(0).unwrap().clone()),
-    //     },
-    //     Err(e) => Err(e.get(0).unwrap().clone()),
-    // }
-}
-
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
@@ -87,23 +58,6 @@ pub fn lsp(source: &str, format: Option<bool>) -> Result<JsValue, JsError> {
 }
 
 #[allow(unused_macros)]
-macro_rules! valeq {
-    ($source:literal, $val:expr) => {
-        assert_eq!(simple($source), $val);
-    };
-}
-
-#[allow(unused_macros)]
-macro_rules! fails {
-    ($source:literal, $val:expr) => {{
-        match complex($source) {
-            Ok(_) => panic!("Expected error"),
-            Err(e) => assert_eq!(e.get_first(), $val),
-        }
-    }};
-}
-
-#[allow(unused_macros)]
 macro_rules! vstr {
     ($source:literal) => {
         ExVal::String($source.to_string())
@@ -113,14 +67,16 @@ macro_rules! vstr {
 #[cfg(test)]
 mod tests {
     use crate::{
+        assert_error,
         chunk::Chunk,
         code::OpCode,
-        complex,
         error::SiltError,
+        fails,
         function::FunctionObject,
         prelude::ValueTypes,
         simple,
         token::Token,
+        valeq,
         value::{ExVal, Value},
     };
     use std::{mem::size_of, println};
@@ -498,5 +454,87 @@ mod tests {
         return call_string "hello"
         "#;
         assert_eq!(simple(source_in), ExVal::String("hello".to_string()));
+    }
+}
+
+#[macro_export]
+macro_rules! valeq {
+    ($source:expr, $val:expr) => {
+        assert_eq!(
+           simple($source),
+            $val.into(),
+            "output does not match expected value"
+        );
+    };
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! fails {
+    ($source:literal, $val:expr) => {{
+        match assert_error($source) {
+            None => panic!("Expected error"),
+            Some(e) => assert_eq!(e, $val),
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! test_number {
+    ($name:ident, $source:literal, $expected:expr) => {
+        #[test]
+        fn $name() {
+            valeq!($source, ExVal::Number($expected));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! test_string {
+    ($name:ident, $source:literal, $expected:literal) => {
+        #[test]
+        fn $name() {
+            valeq!($source, ExVal::String($expected.to_string()));
+        }
+    };
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! test_bool {
+    ($name:ident, $source:literal, $expected:expr) => {
+        #[test]
+        fn $name() {
+            valeq!($source, ExVal::Bool($expected));
+        }
+    };
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! test_nil {
+    ($name:ident, $source:literal) => {
+        #[test]
+        fn $name() {
+            valeq!($source, ExVal::Nil);
+        }
+    };
+}
+
+pub fn simple(source: &str) -> ExVal {
+    let mut compiler = Compiler::new();
+    let mut lua = Lua::new_with_standard();
+    match lua.run(None, source, &mut compiler) {
+        Ok(v) => v,
+        Err(e) => ExVal::String(e.to_string()),
+    }
+}
+#[cfg(test)]
+pub(crate) fn assert_error(source: &str) -> Option<LuaError> {
+    let mut compiler = Compiler::new();
+    let mut lua = Lua::new_with_standard();
+    match lua.run(None, source, &mut compiler) {
+        Ok(v) => None,
+        Err(e) => Some(e.get_first()),
     }
 }

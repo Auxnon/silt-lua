@@ -1,8 +1,4 @@
-use silt_lua::{Compiler, ExVal, Lua};
-mod shared;
-use shared::simple;
-#[macro_use]
-extern crate silt_lua;
+use silt_lua::{valeq,simple,Compiler, ExVal, Lua};
 
 #[test]
 fn local_multiple_assignment() {
