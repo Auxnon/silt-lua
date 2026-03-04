@@ -1,4 +1,4 @@
-use silt_lua::{Compiler, ExVal, Lua,simple,valeq};
+use silt_lua::{ExVal, simple, valeq};
 
 #[test]
 fn multiple_returns() {

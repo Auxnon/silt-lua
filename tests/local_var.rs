@@ -1,4 +1,4 @@
-use silt_lua::{valeq,simple,Compiler, ExVal, Lua};
+use silt_lua::{ExVal, simple, valeq};
 
 #[test]
 fn local_multiple_assignment() {

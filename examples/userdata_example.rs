@@ -7,7 +7,7 @@ use silt_lua::Lua;
 use silt_lua::LuaError;
 use silt_lua::Value;
 use silt_lua::VM;
-use silt_lua::{Compiler, ExVal};
+use silt_lua::{Compiler};
 
 // Example UserData struct
 struct Counter {
@@ -46,7 +46,7 @@ impl UserData for Counter {
         69
     }
     fn add_methods<'v, M: UserDataMethods<'v, Self>>(methods: &mut M) {
-        methods.add_method_mut("increment", |_vm, m, counter, _: ()| {
+        methods.add_method_mut("increment", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 let value = this.increment();
                 Ok(Value::Integer(value))
@@ -55,7 +55,7 @@ impl UserData for Counter {
             }
         });
 
-        methods.add_method_mut("decrement", |_vm, m, counter, _: ()| {
+        methods.add_method_mut("decrement", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 let value = this.decrement();
                 Ok(Value::Integer(value))
@@ -64,7 +64,7 @@ impl UserData for Counter {
             }
         });
 
-        methods.add_method_mut("reset", |_vm, m, counter, _: ()| {
+        methods.add_method_mut("reset", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 this.set_count(0);
                 Ok(Value::Nil)
@@ -73,7 +73,7 @@ impl UserData for Counter {
             }
         });
 
-        methods.add_meta_method("__tostring", |_vm, m, counter, _: ()| {
+        methods.add_meta_method("__tostring", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 Ok(Value::String(format!("Counter({})", this.get_count())))
             } else {
@@ -81,7 +81,7 @@ impl UserData for Counter {
             }
         });
 
-        methods.add_meta_method("__add", |_vm, m, counter, value: Value| {
+        methods.add_meta_method("__add", |_vm, _m, counter, value: Value| {
             if let Some(this) = counter {
                 if let Value::Integer(n) = value {
                     Ok(Value::Integer(this.get_count() + n))

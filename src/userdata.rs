@@ -4,7 +4,6 @@ use std::{
     collections::HashMap,
     error::Error,
     marker::PhantomData,
-    ops::Deref,
     rc::Rc,
     sync::{Arc, Mutex, Weak},
 };
@@ -17,12 +16,12 @@ use crate::{
     error::SiltError,
     function::{NativeFunctionRaw, WrappedFn},
     lua::VM,
-    value::{FromLua, FromLuaMulti, ToLua, Value, ValueRef, Variadic},
+    value::{FromLua, FromLuaMulti, ToLua, Value, Variadic},
 };
 
 /// Result type for Lua operations
 pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
-pub type ToInnerResult<'gc, V: ToLua<'gc>> = V;
+pub type ToInnerResult<'gc, V> = V;
 
 /// Trait for Rust types that can be used as Lua UserData
 pub trait UserData: Sized + Send + 'static {
@@ -317,11 +316,11 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
 
     fn call_meta_method(
         &self,
-        vm: &VM<'gc>,
-        mc: &Mutation<'gc>,
-        ud: &mut UserDataWrapper,
-        index: usize,
-        args: Vec<Value<'gc>>,
+        _vm: &VM<'gc>,
+        _mc: &Mutation<'gc>,
+        _ud: &mut UserDataWrapper,
+        _index: usize,
+        _args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
         // TODO man this is broken, we can downcast but it wont work with our normal method
         // closure, we need a new thing??
@@ -940,13 +939,13 @@ impl UserData for TestEnt {
     fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {
         methods.add_meta_method(
             MetaMethod::ToString,
-            |vm, mc, this: Option<&mut TestEnt>, _: ()| {
+            |_vm, _mc, this: Option<&mut TestEnt>, _: ()| {
                 let id = if let Some(ud) = this { ud.get_id() } else { 0 };
                 Ok(Value::String(format!("[entity {}]", id)))
             },
         );
 
-        methods.add_meta_method("__concat", |vm, mc, this, _: ()| {
+        methods.add_meta_method("__concat", |_vm, _mc, this, _: ()| {
             let id = if let Some(ud) = this { ud.get_id() } else { 0 };
             Ok(Value::String(format!("[entity {}]", id)))
         });
@@ -995,7 +994,7 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut("test", |vm, mc, this, test: f64| {
+        methods.add_method_mut("test", |_vm, _mc, this, _test: f64| {
             // let v = args.deref();
             println!(
                 "internal userdata method heehehehe (is self param userdata? {}!)",
@@ -1005,7 +1004,7 @@ impl UserData for TestEnt {
             Ok(ve)
         });
 
-        methods.add_method_mut("iter", |vm, mc, this, args: Variadic| {
+        methods.add_method_mut("iter", |_vm, _mc, _this, args: Variadic| {
             let ite = args.iter();
             println!("start iterate! we got:");
             ite.for_each(|v| {
@@ -1351,7 +1350,7 @@ pub mod vm_integration {
         register_userdata::<T>(reg, mc);
 
         // Create the UserData wrapper
-        let mut wrapper = UserDataWrapper::new(data);
+        let wrapper = UserDataWrapper::new(data);
 
         // Create a weak wrapper and store it in the stack
         let weak_wrapper = WeakWrapper::from_wrapper(&wrapper);

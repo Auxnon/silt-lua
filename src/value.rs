@@ -980,6 +980,7 @@ pub trait ToLua<'a> {
     fn to_lua(self, lua: &VM<'a>, mc: &Mutation<'a>) -> Result<Value<'a>, SiltError>;
 }
 
+#[allow(unused_macros)]
 macro_rules! to_lua {
     ($t:ty) => {
         impl<'a> ToLua<'a> for $t {

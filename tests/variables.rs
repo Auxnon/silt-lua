@@ -1,4 +1,3 @@
-use crate::{};
 use silt_lua::{ExVal,simple, test_number, test_string, valeq, test_nil, test_bool};
 
 test_number!(local_variable, "local x = 42; return x", 42.0);

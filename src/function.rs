@@ -1,9 +1,4 @@
-use std::{
-    fmt::Display,
-    ops::{Deref, Index},
-    panic::Location,
-    rc::Rc,
-};
+use std::{fmt::Display, rc::Rc};
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
@@ -13,7 +8,7 @@ use crate::{
     error::SiltError,
     lua::{Ephemeral, VM},
     userdata::{InnerResult, ToInnerResult},
-    value::{FromLuaMulti, ToLua, ToLuaMulti, Value},
+    value::{FromLuaMulti, ToLua, Value},
 };
 
 /////////////
@@ -104,6 +99,7 @@ impl<'frame> CallFrame<'frame> {
         unsafe { &mut *self.local_stack.add(index as usize) }
     }
 
+    #[cfg(feature = "dev-out")]
     pub fn print_local_stack(&self) {
         println!("local stack: {:?}", unsafe {
             std::slice::from_raw_parts(self.local_stack, 10)
@@ -150,6 +146,7 @@ impl<'frame> CallFrame<'frame> {
     // }
 
     /** take and replace with a Nil */
+    #[allow(dead_code)]
     pub fn take<'a>(&'frame mut self) -> &'a Value<'frame> {
         // self.stack_top = unsafe { self.stack_top.sub(1) };
         // unsafe { *self.stack_top }
@@ -247,6 +244,8 @@ impl<'chnk> FunctionObject<'chnk> {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    #[allow(unused_assignments)]
     pub(crate) fn call_closure<'gc, 'a: 'gc>(
         clos: &'a Gc<Closure<'gc>>,
         frames: &'a mut Vec<CallFrame<'gc>>,
@@ -296,6 +295,7 @@ impl Display for FunctionObject<'_> {
 
 // pub type NativeFunctionRaw<'a> = NativeFunctionS<'a>;
 
+#[allow(dead_code)]
 pub type NativeFunctionRef<'a> = &'a NativeFunctionRaw<'a>;
 pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
 // pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;

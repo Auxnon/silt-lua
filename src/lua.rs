@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, cell::RefCell, error::Error, mem::take, ops::DerefMut, rc::Rc};
+use std::{borrow::BorrowMut, cell::RefCell, mem::take, ops::DerefMut, rc::Rc};
 
 use colored::Colorize;
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
@@ -186,6 +186,7 @@ macro_rules! binary_op  {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! check_meta {
     ( $lua:ident, $i:tt, $op:expr) => {
         if let Some(table) = $lua.primative_meta_tables.get($i) {
@@ -274,7 +275,7 @@ impl<'gc> Lua {
         Self { arena }
     }
 
-    pub fn run(&mut self,name: Option<&str>, code: &str, compiler: &mut Compiler) -> LuaResult {
+    pub fn run(&mut self, name: Option<&str>, code: &str, compiler: &mut Compiler) -> LuaResult {
         let out = self.arena.mutate_root(|mc, root| {
             match compiler.try_compile(mc, name, code) {
                 Ok(f) => {
@@ -285,12 +286,16 @@ impl<'gc> Lua {
                 }
                 Err(er) => Err(er),
             }
-
         });
         out
     }
 
-    pub fn compile(&mut self, name: Option<&str>, code: &str, compiler: &mut Compiler) -> LuaResult {
+    pub fn compile(
+        &mut self,
+        name: Option<&str>,
+        code: &str,
+        compiler: &mut Compiler,
+    ) -> LuaResult {
         self.arena
             .mutate_root(|mc, vm| match compiler.try_compile(mc, name, code) {
                 Ok(f) => {
@@ -333,13 +338,13 @@ impl<'gc> Lua {
     /// call an internal function by index provided from the load function. Ideally call this after
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
-    pub fn call(&mut self,name: Option<&str>, index: usize) -> LuaResult {
-        self.call_with_params::<Vec<()>>(name,index, vec![])
+    pub fn call(&mut self, name: Option<&str>, index: usize) -> LuaResult {
+        self.call_with_params::<Vec<()>>(name, index, vec![])
         // Ok(ExVal::Nil)
     }
 
     /// call an internal function by index with parameters
-    pub fn call_with_params<T>(&mut self,name: Option<&str>, index: usize, params: T) -> LuaResult
+    pub fn call_with_params<T>(&mut self, name: Option<&str>, index: usize, params: T) -> LuaResult
     where
         T: for<'e> ToLuaMulti<'e>,
     {
@@ -425,8 +430,6 @@ pub struct VM<'gc> {
     external_functions: Vec<Gc<'gc, FunctionObject<'gc>>>,
 }
 
-type ObjectPtr<'gc, T> = Gc<'gc, RefLock<T>>;
-
 pub(crate) struct Ephemeral<'a, 'g> {
     pub(crate) ip: *mut Value<'g>,
     pub(crate) mc: &'a Mutation<'g>,
@@ -438,9 +441,10 @@ impl<'a, 'g> Ephemeral<'a, 'g> {
     }
 }
 
-fn wrap<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> {
-    Gc::new(mc, RefLock::new(value))
-}
+// #[allow(dead_code)]
+// fn wrap<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> {
+//     Gc::new(mc, RefLock::new(value))
+// }
 
 // fn new_body<'a, 'b>(mc: &Mutation<'a>) -> Gc<'a, RefLock<FunctionObject<'b>>>
 // where
@@ -515,7 +519,7 @@ impl<'gc> VM<'gc> {
         mc: &Mutation<'gc>,
         object: Gc<'gc, FunctionObject<'gc>>,
     ) -> Result<ExVal, ErrorOut> {
-        self.execute(mc, object) 
+        self.execute(mc, object)
     }
 
     /// compile and run lua once
@@ -602,11 +606,6 @@ impl<'gc> VM<'gc> {
         u
     }
 
-    pub(crate) fn yank(&mut self, offset: usize) -> Value<'gc> {
-        let i = self.stack_count - offset;
-        self.stack[i].clone()
-    }
-
     /// push value to stack
     pub(crate) fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
         VM::push_raw(ep, value);
@@ -645,7 +644,7 @@ impl<'gc> VM<'gc> {
         // for v in values.iter() {
         //     println!("we have {}", v);
         // }
-        let n = values.len();
+        let _n = values.len();
         let c = need;
         if is_rev {
             // TODO this is sloppy make this DRYer
@@ -683,6 +682,7 @@ impl<'gc> VM<'gc> {
         self.stack_count += need;
     }
 
+    #[allow(dead_code)]
     fn reserve(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> *mut Value<'gc> {
         self.stack_count += 1;
         let old = ep.ip;
@@ -696,6 +696,7 @@ impl<'gc> VM<'gc> {
         self.stack_count -= n as usize;
     }
 
+    #[cfg(feature = "dev-out")]
     fn print_upvalues(&self) {
         self.open_upvalues.iter().enumerate().for_each(|(i, up)| {
             // let m=unsafe{};
@@ -711,7 +712,7 @@ impl<'gc> VM<'gc> {
             self.open_upvalues
                 .drain(self.open_upvalues.len() - n as usize..)
                 .rev()
-                .for_each(|mut up| {
+                .for_each(|up| {
                     let mut upvalue = up.borrow_mut(ep.mc);
                     upvalue.close_around(unsafe { ep.ip.replace(Value::Nil) });
                 });
@@ -777,6 +778,7 @@ impl<'gc> VM<'gc> {
         values
     }
 
+    #[allow(dead_code)]
     fn safe_pop(&mut self) -> Value<'gc> {
         // let v3 = take(&mut self.stack[3]);
         // println!("we took {}", v3);
@@ -797,6 +799,7 @@ impl<'gc> VM<'gc> {
     }
 
     /** Dangerous!  */
+    #[allow(dead_code)]
     fn read_top(&self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
         unsafe { ep.ip.sub(1).read() }
     }
@@ -849,8 +852,7 @@ impl<'gc> VM<'gc> {
         // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
         let mut frame = frames.last_mut().unwrap();
         let mut frame_count = 1;
-        /// monkey patch for variadic as an argument since CALL op tries to count varibles used
-        let mut var_extra = 0;
+        // monkey patch for variadic as an argument since CALL op tries to count varibles used
         // body.chunk.print_chunk(None);
         let results: Result<ExVal, SiltError> = loop {
             let instruction = frame.current_instruction();
@@ -954,7 +956,6 @@ impl<'gc> VM<'gc> {
                         // let v = self.pop();
                         // self.globals.borrow_mut(ep.mc).set::< K:Value<'gc>, V:Value<'gc>>(s.into(), v);
                         self.globals.borrow_mut(ep.mc).set(s, v);
-                        
                     } else {
                         break Err(SiltError::VmCorruptConstant);
                     }
@@ -1034,10 +1035,10 @@ impl<'gc> VM<'gc> {
                         index
                     );
 
-                    if *is_arg {
-                        var_extra = non_nils;
-                    }
-                    let pull = non_nils; // u8::min(non_nils, *count);
+                    // if *is_arg {
+                    //     _var_extra = non_nils;
+                    // }
+                    // let _pull = non_nils; // u8::min(non_nils, *count);
                     let raw = frame.get_vals(0, *count);
                     // println!()
                     raw.iter().for_each(|v| println!("val: {},", v.to_string()));
@@ -1333,7 +1334,7 @@ impl<'gc> VM<'gc> {
                             };
 
                             let frame_top = unsafe { ep.ip.sub(offset + 1) };
-                            let t = unsafe { frame_top.as_mut().unwrap() };
+                            // let t = unsafe { frame_top.as_mut().unwrap() };
                             // println!(
                             //     "{} top is {} (offset: {} var: {} ar: {}  )",
                             //     "TOP IS".on_white().black(),
@@ -1344,7 +1345,7 @@ impl<'gc> VM<'gc> {
                             // );
 
                             let new_frame = CallFrame::new(
-                                c.clone(),
+                                *c,
                                 self.stack_count - arity - 1,
                                 arity as u8,
                                 *multi,
@@ -1640,17 +1641,29 @@ impl<'gc> VM<'gc> {
     // }
 
     /// call a previously stored function by it's index with optional parameters
-    pub fn call_fn<T>(&mut self, mc: &Mutation<'gc>, name: Option<&str>,u: usize , params: T) -> LuaResult
+    pub fn call_fn<T>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        name: Option<&str>,
+        u: usize,
+        params: T,
+    ) -> LuaResult
     where
         T: for<'e> ToLuaMulti<'e>,
     {
         let res = match params.to_lua_multi(self, mc) {
             Ok(v) => v,
             Err(e) => {
-                return Err(ErrorOut{errors:vec![ErrorTuple {
-                    code: e,
-                    location: (0, 0),
-                }],source: match name{Some(o)=>Some(o.to_string()),None=>None}})
+                return Err(ErrorOut {
+                    errors: vec![ErrorTuple {
+                        code: e,
+                        location: (0, 0),
+                    }],
+                    source: match name {
+                        Some(o) => Some(o.to_string()),
+                        None => None,
+                    },
+                })
             }
         };
 
@@ -1664,10 +1677,13 @@ impl<'gc> VM<'gc> {
 
                 self.run(mc, *f)
             }
-            None => Err(ErrorOut{errors: vec![ErrorTuple {
-                code: SiltError::Unknown,
-                location: (0, 0),
-            }],source: to_op_string(name)}),
+            None => Err(ErrorOut {
+                errors: vec![ErrorTuple {
+                    code: SiltError::Unknown,
+                    location: (0, 0),
+                }],
+                source: to_op_string(name),
+            }),
         }
         // Ok(ExVal::Nil)
 
@@ -1769,8 +1785,9 @@ impl<'gc> VM<'gc> {
         // unsafe { prev.read() }
     }
 
-    fn close_upvalue(&mut self, value: Value) {
-        devout!("close_upvalue: {}", value);
+    #[allow(dead_code)]
+    fn close_upvalue(&mut self, _value: Value) {
+        devout!("close_upvalue: {}", _value);
         todo!()
 
         // for up in
@@ -2035,15 +2052,14 @@ impl<'gc> VM<'gc> {
         mc: &Mutation<'gc>,
         data: T,
     ) -> (Value<'gc>, WeakWrapper) {
-
-        let (ud, weak)=crate::userdata::vm_integration::create_userdata_tuple(
+        let (ud, weak) = crate::userdata::vm_integration::create_userdata_tuple(
             &mut self.userdata_registry,
             mc,
             data,
         );
 
         let ud_gc = Gc::new(mc, RefLock::new(ud));
-        (Value::UserData(ud_gc),weak)
+        (Value::UserData(ud_gc), weak)
     }
 
     /** Load standard library functions */
@@ -2067,11 +2083,10 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", crate::standard::test_ent);
 
-
-        let mut table=self.raw_table();
-        self.register_native_function_to(mc, &mut table,"insert", crate::standard::table_insert);
-        self.register_native_function_to(mc, &mut table,"remove", crate::standard::table_remove);
-        let t=self.wrap_table(mc,table);
+        let mut table = self.raw_table();
+        self.register_native_function_to(mc, &mut table, "insert", crate::standard::table_insert);
+        self.register_native_function_to(mc, &mut table, "remove", crate::standard::table_remove);
+        let t = self.wrap_table(mc, table);
         self.globals.borrow_mut(mc).set("table", t);
 
         // Example of closure without turbofish
@@ -2080,16 +2095,18 @@ impl<'gc> VM<'gc> {
         //     Ok((*test).into())
         // }, ());
     }
-    pub fn register_native_function3<T, F, R>(
-        // vm: &VM<'gc>,
-        function: F,
-    ) where
-        R: ToLua<'gc> + 'gc,
-        T: for<'a> FromLuaMulti<'gc> + 'gc,
-        F: Fn(&mut VM<'gc>, T) -> R,
-    {
-        // Value::NativeFunction(Gc::new(mc, f))
-    }
+
+    // pub fn register_native_function3<T, F, R>(
+    //     // vm: &VM<'gc>,
+    //     _function: F,
+    // ) where
+    //     R: ToLua<'gc> + 'gc,
+    //     T: for<'a> FromLuaMulti<'gc> + 'gc,
+    //     F: Fn(&mut VM<'gc>, T) -> R,
+    // {
+    //     // Value::NativeFunction(Gc::new(mc, f))
+    // }
+
     pub fn register_native_function<A, F, R>(
         &mut self,
         // vm: &VM<'gc>,
@@ -2174,6 +2191,7 @@ impl<'gc> VM<'gc> {
     // }
     //
     //
+    #[allow(dead_code)]
     fn print_raw_stack(&self) {
         println!("=== Stack ({}) ===", self.stack_count);
         // 0 to stack_top
@@ -2206,6 +2224,9 @@ impl<'gc> VM<'gc> {
     }
 }
 
-pub(crate) fn to_op_string(name: Option<&str>)-> Option<String>{
-    match name{Some(o)=>Some(o.to_string()),None=>None}
+pub(crate) fn to_op_string(name: Option<&str>) -> Option<String> {
+    match name {
+        Some(o) => Some(o.to_string()),
+        None => None,
+    }
 }
