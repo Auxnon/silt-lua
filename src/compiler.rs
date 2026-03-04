@@ -179,7 +179,9 @@ type Catch = Result<(), ErrorTuple>;
 #[derive(Clone, Copy, Debug)]
 pub struct LanguageFlags {
     pub implicit_returns: bool,
+    #[allow(dead_code)]
     pub arrow_functions: bool,
+    #[allow(dead_code)]
     pub bang_operator: bool,
 }
 
@@ -326,6 +328,7 @@ impl FunctionalState {
 }
 
 type FnRef<'a, 'c> = &'a mut FunctionObject<'c>;
+#[allow(dead_code)]
 type OpOpCode = Option<OpCode>;
 
 pub struct Compiler {
@@ -534,10 +537,10 @@ impl Compiler {
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
     fn eat(&mut self, iter: &mut Peekable<Lexer>) {
         self.current_index += 1;
-        let t = iter.next();
+        let _t = iter.next();
         #[cfg(feature = "dev-out")]
         {
-            match t {
+            match _t {
                 Some(Ok(t)) => println!("eat {}", t.0),
                 Some(Err(e)) => println!("eat {}", e.code),
                 None => println!("eat {:?}", Token::EOF),
@@ -566,6 +569,7 @@ impl Compiler {
     }
 
     /** take current, replace with next. a true pop*/
+    #[allow(dead_code)]
     fn store_and_return(&mut self, iter: &mut Peekable<Lexer>) -> Result<Token, ErrorTuple> {
         self.current_index += 1;
         let (r, l) = match iter.next() {
@@ -616,7 +620,7 @@ impl Compiler {
             }
         }
     }
-    fn pull_getter(&mut self, f: FnRef) -> OpCode {
+    fn pull_getter(&mut self, _f: FnRef) -> OpCode {
         println!("we have {}", self.var_stack.len());
         let o = self.var_stack.first().unwrap();
         let oo = o.clone().unwrap();
@@ -724,10 +728,10 @@ impl Compiler {
 
     /** emit op code at current token location */
     fn drop_last_if(&mut self, f: FnRef, op: &OpCode) {
-        let b = f.chunk.drop_last_if(op);
+        let _b = f.chunk.drop_last_if(op);
         #[cfg(feature = "dev-out")]
         {
-            println!("{} drop_last_if {}? {}!", "DROP".on_red(), op, b);
+            println!("{} drop_last_if {}? {}!", "DROP".on_red(), op, _b);
             // self.chunk.print_chunk()
         }
     }
@@ -780,6 +784,7 @@ impl Compiler {
         self.write_code(f, OpCode::REWIND(jump as u16), self.current_location);
     }
 
+    #[allow(dead_code)]
     fn set_label(&mut self, f: FnRef, label: String) {
         self.labels.insert(label, self.get_chunk_size(f));
     }
@@ -810,6 +815,7 @@ impl Compiler {
         self.emit(f, OpCode::CONSTANT { constant }, self.current_location);
     }
 
+    #[allow(dead_code)]
     fn is_end(&mut self, iter: &mut Peekable<Lexer>) -> bool {
         match iter.peek() {
             None => true,
@@ -1011,7 +1017,7 @@ impl Compiler {
         }
     }
 
-    pub fn lsp(&mut self, source: &str, format: bool) -> LanguageServerOutput {
+    pub fn lsp(&mut self, source: &str, format: bool) -> LanguageServerOutput<'_> {
         let mut map = Vec::new();
         let mut indented = String::new();
         let mut indent_level = 0;
@@ -1027,8 +1033,8 @@ impl Compiler {
                 Ok((
                     token,
                     TokenTriple {
-                        line,
-                        col,
+                        line: _,
+                        col: _,
                         index,
                         length,
                     },
@@ -1345,6 +1351,7 @@ fn declaration_keyword<'a, 'c: 'a>(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn declaration_scope<'a, 'c: 'a>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -1397,10 +1404,10 @@ fn add_local_placeholder(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Resul
 
 fn _add_local(
     this: &mut Compiler,
-    it: &mut Peekable<Lexer>,
+    _it: &mut Peekable<Lexer>,
     ident: Option<String>,
 ) -> Result<u8, ErrorTuple> {
-    devnote!(this it "add_local");
+    devnote!(this _it "add_local");
     // let offset = if this.functional_depth > 0 {
     //     this.local_functional_offset[this.functional_depth - 1]
     // } else {
@@ -1435,11 +1442,11 @@ fn _add_local(
 
 fn resolve_local(
     this: &mut Compiler,
-    it: &mut Peekable<Lexer>,
+    _it: &mut Peekable<Lexer>,
     ident: &String,
 ) -> Option<(u8, bool)> {
     // println!("❓resolve_local {}", ident);
-    devnote!(this it "resolve_local");
+    devnote!(this _it "resolve_local");
     for (i, l) in this.locals.iter_mut().enumerate().rev() {
         // println!(
         //     " ⭐ test {} ({}) against {}",
@@ -1546,7 +1553,7 @@ fn typing<'a, 'c: 'a>(
     mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
-    ident_tuple: Option<(Ident, TokenCell)>,
+    _ident_tuple: Option<(Ident, TokenCell)>,
 ) -> Catch {
     devnote!(this it "typing");
     if let Token::Colon = this.peek(it)? {
@@ -1554,19 +1561,9 @@ fn typing<'a, 'c: 'a>(
         this.eat(it);
         this.store(it);
         let t = this.get_current()?;
-        if let Token::ColonIdentifier(target) = t {
+        if let Token::ColonIdentifier(_target) = t {
             // method or type name
-            // if let Some(&Token::OpenParen) = self.peek() {
-            //     // self call
-
-            //     Statement::InvalidStatement
-            // } else {
-            //     // typing
-            //     // return self.assign(self.peek(), ident);
-            //     Statement::InvalidStatement
-            // }
             todo!("fix this to use new variable parse track");
-            define_declaration(this, mc, f, it, ident_tuple)?;
         } else {
             todo!("typing");
             // self.error(SiltError::InvalidColonPlacement);
@@ -1581,6 +1578,7 @@ fn typing<'a, 'c: 'a>(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn define_declaration<'a, 'c: 'a>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -1616,11 +1614,11 @@ fn define_declaration<'a, 'c: 'a>(
 
 fn define_variable<'a, 'c: 'a>(
     this: &mut Compiler,
-    it: &mut Peekable<Lexer>,
+    _it: &mut Peekable<Lexer>,
     f: FnRef,
     ident: Option<(Ident, TokenCell)>,
 ) -> Catch {
-    devnote!(this it "define_variable");
+    devnote!(this _it "define_variable");
 
     if let Some(ident) = ident {
         this.emit(f, OpCode::DEFINE_GLOBAL { constant: ident.0 }, ident.1);
@@ -1634,7 +1632,7 @@ fn define_function<'c>(
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     local: bool,
-    pre_ident: Option<usize>,
+    _pre_ident: Option<usize>,
 ) -> Catch {
     let (ident, location) = if let &Token::Identifier(_) = this.peek(it)? {
         let (res, location) = this.pop(it);
@@ -2035,6 +2033,7 @@ fn for_statement<'c>(
  * We run closure and if value is not nil we set that to iterator and push onto blocks scope, when we hit end we rewind and re-eval
  * If the for's iterator is nil we forward to end of do block and pop off the iterator
  */
+#[allow(dead_code)]
 fn generic_for_statement() {}
 
 fn return_statement<'c>(
@@ -2157,7 +2156,7 @@ fn resolve_goto(
             }
         }
         None => match replace {
-            Some((i, location)) => {
+            Some((_i, location)) => {
                 return Err(this.error_syntax(SiltError::UndefinedLabel(ident.to_owned()), location))
             }
             None => {
@@ -2170,12 +2169,14 @@ fn resolve_goto(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn final_resolve_goto(this: &mut Compiler) {
     this.pending_gotos
         .iter()
-        .for_each(|(ident, index, location)| {});
+        .for_each(|(_ident, _index, _location)| {});
 }
 
+#[allow(dead_code)]
 fn goto_scope_skip(this: &mut Compiler, f: FnRef) {
     if this.locals.is_empty() {
         return;
@@ -2229,6 +2230,7 @@ fn expression_single<'c>(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn next_expression<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -2288,7 +2290,7 @@ fn function_expression<'c>(
     mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
-    can_assign: bool,
+    _can_assign: bool,
 ) -> Catch {
     devnote!(this it "function_expression");
 
@@ -2327,7 +2329,7 @@ fn variable<'c>(
 /// This is the second concept of vararg, the usage of, not the param.
 fn vararg_variable(
     this: &mut Compiler,
-    mc: &Mutation,
+    _mc: &Mutation,
     f: FnRef,
     it: &mut Peekable<Lexer>,
     can_assign: bool,
@@ -2362,7 +2364,7 @@ fn vararg_variable(
         return Err(this.error_at(SiltError::InvalidVarArgUsage));
     }
 
-    let index = if vararg > 0 { vararg - 1 } else { 0 };
+    let _index = if vararg > 0 { vararg - 1 } else { 0 };
     let count = this.expected_multi;
     let is_arg = this.is_arg_mode();
 
@@ -2961,12 +2963,12 @@ fn or<'c>(
 
 fn integer<'c>(
     this: &mut Compiler,
-    mc: &Mutation<'c>,
+    _mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
-    it: &mut Peekable<Lexer>,
+    _it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
-    devnote!(this it "integer");
+    devnote!(this _it "integer");
     let t = this.copy_store()?;
     let value = if let Token::Integer(i) = t {
         Value::Integer(i)
@@ -2979,12 +2981,12 @@ fn integer<'c>(
 
 fn number<'c>(
     this: &mut Compiler,
-    mc: &Mutation<'c>,
+    _mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
-    it: &mut Peekable<Lexer>,
+    _it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
-    devnote!(this it "number");
+    devnote!(this _it "number");
     let t = this.copy_store()?;
     let value = if let Token::Number(n) = t {
         Value::Number(n)
@@ -2997,12 +2999,12 @@ fn number<'c>(
 
 fn string<'c>(
     this: &mut Compiler,
-    mc: &Mutation<'c>,
+    _mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
-    it: &mut Peekable<Lexer>,
+    _it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
-    devnote!(this it "string");
+    devnote!(this _it "string");
     let t = this.copy_store()?;
     let value = if let Token::StringLiteral(s) = t {
         Value::String(s.into_string())
@@ -3015,12 +3017,12 @@ fn string<'c>(
 
 fn literal<'c>(
     this: &mut Compiler,
-    mc: &Mutation<'c>,
+    _mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
-    it: &mut Peekable<Lexer>,
+    _it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
-    devnote!(this it "literal");
+    devnote!(this _it "literal");
     let t = this.copy_store()?;
     match t {
         Token::Nil => this.emit_at(f, OpCode::NIL),
@@ -3115,7 +3117,7 @@ fn arguments<'c>(
     } else {
         0
     };
-    let mut has_vararg = false;
+    let mut _has_vararg = false;
 
     devout!("{} {}", "start with ".red(), args);
     if !matches!(this.peek(it)?, &Token::CloseParen) {
@@ -3125,7 +3127,7 @@ fn arguments<'c>(
                 this.store(it); // consume the VarArg token
                 vararg_variable(this, mc, f, it, false)?;
                 args += 1;
-                has_vararg = true;
+                _has_vararg = true;
                 // VarArg must be the last argument
                 if let Token::Comma = this.peek(it)? {
                     // TODO: Add SiltError::VarArgMustBeLast to error types
@@ -3185,12 +3187,12 @@ fn print<'c>(
 
 pub fn void<'c>(
     _this: &mut Compiler,
-    mc: &Mutation<'c>,
-    f: FnRef<'_, 'c>,
-    it: &mut Peekable<Lexer>,
+    _mc: &Mutation<'c>,
+    _f: FnRef<'_, 'c>,
+    _it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
-    devnote!(_this it "void");
+    devnote!(_this _it "void");
     Ok(())
 }
 

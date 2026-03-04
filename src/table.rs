@@ -1,7 +1,6 @@
 use std::{
     collections::{hash_map::Iter, HashMap},
     usize,
-    vec::IntoIter,
 };
 
 use gc_arena::{Collect, Mutation};

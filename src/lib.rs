@@ -14,7 +14,6 @@ pub mod userdata;
 pub mod value;
 pub extern crate gc_arena;
 
-use crate::error::ErrorOut;
 
 pub use self::{
     compiler::Compiler, error::SiltError as LuaError, lua::Lua, lua::VM, value::ExVal, value::Value,
@@ -534,7 +533,7 @@ pub(crate) fn assert_error(source: &str) -> Option<LuaError> {
     let mut compiler = Compiler::new();
     let mut lua = Lua::new_with_standard();
     match lua.run(None, source, &mut compiler) {
-        Ok(v) => None,
+        Ok(_v) => None,
         Err(e) => Some(e.get_first()),
     }
 }

@@ -1,4 +1,4 @@
-use silt_lua::{ExVal,simple, test_number, test_string, valeq};
+use silt_lua::{ExVal, simple, valeq};
 
 #[test]
 fn empty_table() {

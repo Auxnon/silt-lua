@@ -1,4 +1,4 @@
-use silt_lua::{Compiler, ExVal, Lua,valeq,simple};
+use silt_lua::{simple, valeq};
 
 // #[allow(unused_macros)]
 // macro_rules! valeq {

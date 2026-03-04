@@ -6,6 +6,7 @@ use crate::{
 enum Mode {
     Normal,
     Flag,
+    #[allow(dead_code)]
     Typer,
     // LookAhead,
 }
@@ -28,9 +29,11 @@ pub struct Lexer<'c> {
     // ahead_buffer: Vec<TokenOption>,
 }
 
+#[allow(dead_code)]
 pub type TokenTuple = (Token, TokenCell);
 pub type TokenTripleTuple = (Token, TokenTriple);
 pub type TokenTripleResult = Result<TokenTripleTuple, ErrorTuple>;
+#[allow(dead_code)]
 pub type TokenResult = Result<TokenTuple, ErrorTuple>;
 pub type TokenOption = Option<TokenTripleResult>;
 
@@ -141,6 +144,7 @@ impl<'c> Lexer<'c> {
         self.send(token)
     }
 
+    #[allow(dead_code)]
     fn eat_eat_send(&mut self, token: Token) -> TokenOption {
         self.eat();
         self.eat();
