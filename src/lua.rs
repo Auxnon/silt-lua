@@ -237,6 +237,220 @@ macro_rules! table_meta_op {
 
 type LuaResult = Result<ExVal, ErrorOut>;
 type InnerUserData<'a> = Gc<'a, RefLock<UserDataWrapper>>;
+
+/// Outcome of a [`Lua::hotswap`] / [`VM::hotswap`] call.
+#[derive(Debug, PartialEq)]
+pub enum HotswapResult {
+    /// Old and new source are identical; no action was taken.
+    NoChange,
+    /// Root-level code changed; the entire source was recompiled and re-executed.
+    RootChanged,
+    /// Only the body of the named function changed.  The compiled function object has
+    /// been replaced in the root function tree without re-executing root-level code.
+    /// Call [`Lua::cycle`] / [`VM::cycle`] when ready to re-register all function globals.
+    FunctionChanged(String),
+}
+
+/// A top-level named function with its line span in the source.
+struct FunctionSpan {
+    name: String,
+    /// Line number of the `function` keyword (1-indexed).
+    start_line: usize,
+    /// Line number of the matching `end` keyword (1-indexed).
+    end_line: usize,
+}
+
+/// Returns `Some((first_changed_line, last_changed_line))` (1-indexed) when the two
+/// source strings differ, or `None` when they are identical.
+fn find_diff_line_range(old: &str, new: &str) -> Option<(usize, usize)> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    let max_len = old_lines.len().max(new_lines.len());
+    let mut first: Option<usize> = None;
+    let mut last: Option<usize> = None;
+
+    for i in 0..max_len {
+        let old_line = old_lines.get(i).copied().unwrap_or("");
+        let new_line = new_lines.get(i).copied().unwrap_or("");
+        if old_line != new_line {
+            let line = i + 1;
+            if first.is_none() {
+                first = Some(line);
+            }
+            last = Some(line);
+        }
+    }
+
+    match (first, last) {
+        (Some(f), Some(l)) => Some((f, l)),
+        _ => None,
+    }
+}
+
+/// Parses a function name (identifiers separated by `.` or `:`) and skips the parameter list.
+/// `start` is the index of the first token after the `function` keyword.
+/// Returns `(Option<fn_name>, next_token_index)` where `next_token_index` points to the
+/// first token of the function body (i.e. after the closing `)` of the parameter list).
+///
+/// The canonical name is the *last* identifier seen before `(`, so `module.method` maps to
+/// `"method"` and `obj:handler` maps to `"handler"`.
+fn parse_fn_name_and_params(tokens: &[(crate::token::Token, usize)], start: usize) -> (Option<String>, usize) {
+    use crate::token::Token;
+
+    let mut name: Option<String> = None;
+    let mut j = start;
+
+    // Collect the (dotted / colon-separated) function name.
+    loop {
+        if j >= tokens.len() {
+            break;
+        }
+        match &tokens[j].0 {
+            Token::Identifier(n) => {
+                // Keep the last identifier as the canonical function name.
+                // This correctly handles `module.method` and `obj:method` patterns.
+                name = Some(n.clone());
+                j += 1;
+            }
+            Token::Dot | Token::Colon => {
+                j += 1;
+                // Advance past the identifier that follows the dot/colon.
+                if j < tokens.len() {
+                    if let Token::Identifier(n) = &tokens[j].0 {
+                        name = Some(n.clone());
+                        j += 1;
+                    }
+                }
+            }
+            Token::OpenParen => break,
+            _ => {
+                name = None;
+                break;
+            }
+        }
+    }
+
+    // Skip past the parameter list `(...)`.
+    if j < tokens.len() && matches!(tokens[j].0, Token::OpenParen) {
+        j += 1; // consume `(`
+        let mut paren = 1usize;
+        while j < tokens.len() && paren > 0 {
+            match tokens[j].0 {
+                Token::OpenParen => paren += 1,
+                Token::CloseParen => paren -= 1,
+                _ => {}
+            }
+            j += 1;
+        }
+    }
+
+    (name, j)
+}
+
+/// Scans `source` and returns the spans of all top-level named functions.
+///
+/// The scanner uses the Lua lexer to track block nesting.  A function whose
+/// body begins at depth 0 (root scope) is considered "top-level".
+fn find_top_level_functions(source: &str) -> Vec<FunctionSpan> {
+    use crate::lexer::Lexer;
+    use crate::token::Token;
+
+    // Collect tokens with their line numbers up-front so we can do look-ahead.
+    let tokens: Vec<(Token, usize)> = Lexer::new(source)
+        .filter_map(|r| r.ok().map(|(t, triple)| (t, triple.line)))
+        .collect();
+
+    let mut result = Vec::new();
+    // Each entry: (Option<fn_name>, start_line).  None means a non-function block.
+    let mut block_stack: Vec<(Option<String>, usize)> = Vec::new();
+    // Depth == block_stack.len()
+    let mut skip_next_then = false;
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let (ref tok, line) = tokens[i];
+        match tok {
+            Token::Function => {
+                // Parse the (optional) function name and advance past the parameter list.
+                let (name, next_i) = parse_fn_name_and_params(&tokens, i + 1);
+
+                // The function body is now a block at the current depth.
+                let entry = if block_stack.is_empty() {
+                    (name, line) // top-level function
+                } else {
+                    (None, line) // nested, don't track
+                };
+                block_stack.push(entry);
+                i = next_i;
+                continue;
+            }
+
+            Token::ElseIf => {
+                // The `then` that follows an `elseif` must NOT open a new block depth.
+                skip_next_then = true;
+            }
+
+            Token::Then => {
+                if skip_next_then {
+                    skip_next_then = false;
+                } else {
+                    block_stack.push((None, line));
+                }
+            }
+
+            Token::Do | Token::Repeat => {
+                block_stack.push((None, line));
+            }
+
+            Token::Until => {
+                block_stack.pop();
+            }
+
+            Token::End => {
+                if let Some((maybe_name, start)) = block_stack.pop() {
+                    if block_stack.is_empty() {
+                        // We just closed a top-level block.
+                        if let Some(name) = maybe_name {
+                            result.push(FunctionSpan {
+                                name,
+                                start_line: start,
+                                end_line: line,
+                            });
+                        }
+                    }
+                }
+            }
+
+            _ => {
+                // Any non-block token resets the skip_next_then guard except ElseIf.
+                if !matches!(tok, Token::ElseIf) {
+                    skip_next_then = false;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    result
+}
+
+/// Returns the name of the top-level function whose body fully contains
+/// `[diff_start, diff_end]` (1-indexed lines), or `None` if the range
+/// touches root-level code (outside every function body).
+fn find_function_scope_at_lines(
+    source: &str,
+    diff_start: usize,
+    diff_end: usize,
+) -> Option<String> {
+    for span in find_top_level_functions(source) {
+        if span.start_line <= diff_start && diff_end <= span.end_line {
+            return Some(span.name);
+        }
+    }
+    None
+}
+
 pub struct UDVec(pub Vec<WeakWrapper>);
 
 unsafe impl Collect for UDVec {
@@ -308,6 +522,29 @@ impl<'gc> Lua {
 
     pub fn cycle(&mut self) -> LuaResult {
         self.arena.mutate_root(|mc, vm| vm.borrow_mut().cycle(mc))
+    }
+
+    /// Hotswap Lua source code, detecting what changed between `old_source` and `new_source`
+    /// and updating the VM accordingly with minimal disruption to runtime state.
+    ///
+    /// * If only a single top-level function body changed, the root function object tree is
+    ///   updated with the newly-compiled function without re-executing root-level code.
+    ///   Call [`cycle`](Self::cycle) when you want the new definition to take effect in globals.
+    /// * If root-level code changed (or the diff spans multiple functions / the root scope),
+    ///   the entire source is recompiled and executed – equivalent to calling [`run`](Self::run).
+    /// * If the sources are identical, nothing happens.
+    ///
+    /// The `compiler` is reset between calls; callers should pass the same `Compiler` instance
+    /// they used for the initial compilation.
+    pub fn hotswap(
+        &mut self,
+        name: Option<&str>,
+        old_source: &str,
+        new_source: &str,
+        compiler: &mut Compiler,
+    ) -> Result<HotswapResult, ErrorOut> {
+        self.arena
+            .mutate_root(|mc, vm| vm.borrow_mut().hotswap(mc, name, old_source, new_source, compiler))
     }
 
     /// enter into the VM state to modify the VM directly
@@ -544,6 +781,72 @@ impl<'gc> VM<'gc> {
     /// or store_fn
     pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, ErrorOut> {
         self.execute(mc, self.root)
+    }
+
+    /// Hotswap Lua source code with minimal VM disruption.
+    ///
+    /// Computes the diff between `old_source` and `new_source`.  If all changed lines
+    /// fall inside a single named top-level function the new source is compiled (with an
+    /// early-exit optimisation that stops once that function's bytecode is emitted) and
+    /// the root `FunctionObject` tree is replaced without re-executing root-level code –
+    /// preserving global state.  Call [`cycle`](Self::cycle) to re-register function
+    /// globals when ready.
+    ///
+    /// If any changed line is outside a function body (root-level), or the diff spans
+    /// multiple functions, the full source is recompiled and executed immediately.
+    ///
+    /// Returns `Ok(HotswapResult::NoChange)` when the two sources are identical.
+    pub fn hotswap(
+        &mut self,
+        mc: &Mutation<'gc>,
+        name: Option<&str>,
+        old_source: &str,
+        new_source: &str,
+        compiler: &mut Compiler,
+    ) -> Result<HotswapResult, ErrorOut> {
+        // Detect what lines changed.
+        let (diff_start, diff_end) = match find_diff_line_range(old_source, new_source) {
+            None => return Ok(HotswapResult::NoChange),
+            Some(d) => d,
+        };
+
+        // Determine whether the diff is confined to a single top-level function body.
+        let fn_scope = find_function_scope_at_lines(old_source, diff_start, diff_end);
+
+        match fn_scope {
+            None => {
+                // Root-level code changed: full recompile + execute.
+                match compiler.try_compile(mc, name, new_source) {
+                    Ok(f) => {
+                        let func = Gc::new(mc, f);
+                        self.root = func;
+                        self.execute(mc, func)?;
+                        Ok(HotswapResult::RootChanged)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Some(fn_name) => {
+                // Function-only change: recompile with early-exit optimisation, then
+                // replace the root FunctionObject tree without re-executing.
+                //
+                // `clear_hotswap_target` is called unconditionally so the compiler is left
+                // in a clean state even when `try_compile` returns an error.  (A panic
+                // inside `try_compile` would leave the compiler in an inconsistent state,
+                // but panics in this context would propagate and crash the caller anyway.)
+                compiler.set_hotswap_target(&fn_name);
+                let compile_result = compiler.try_compile(mc, name, new_source);
+                compiler.clear_hotswap_target();
+
+                match compile_result {
+                    Ok(f) => {
+                        self.root = Gc::new(mc, f);
+                        Ok(HotswapResult::FunctionChanged(fn_name))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        }
     }
 
     /// Identical to run (mostly), set a built Function Object as root and run it

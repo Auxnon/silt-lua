@@ -374,6 +374,10 @@ pub struct Compiler {
     // correctly. If we walk our setters all the way to find an assignment (:=)
     /// can we gather multivars for setters? multivar return or gets must skip this
     can_multivar_set: bool,
+    /// When set, compilation stops after the named top-level function is compiled (hotswap optimization)
+    hotswap_target_fn: Option<String>,
+    /// Set to true once the hotswap target function has been compiled; triggers early exit
+    hotswap_stop: bool,
 }
 
 impl Compiler {
@@ -413,6 +417,8 @@ impl Compiler {
             var_set_stack: Vec::with_capacity(4),
             expected_multi: 0,
             can_multivar_set: true,
+            hotswap_target_fn: None,
+            hotswap_stop: false,
         }
     }
 
@@ -472,6 +478,19 @@ impl Compiler {
 
     pub fn pop_errors(&mut self) -> Vec<ErrorTuple> {
         std::mem::replace(&mut self.errors, vec![])
+    }
+
+    /// Set the target function name for hotswap early-exit optimization.
+    /// When the named top-level function is fully compiled, compilation halts early.
+    pub fn set_hotswap_target(&mut self, fn_name: &str) {
+        self.hotswap_target_fn = Some(fn_name.to_string());
+        self.hotswap_stop = false;
+    }
+
+    /// Clear the hotswap target, resuming full compilation behaviour.
+    pub fn clear_hotswap_target(&mut self) {
+        self.hotswap_target_fn = None;
+        self.hotswap_stop = false;
     }
 
     fn set_can_multivar_set(&mut self, value: bool) {
@@ -974,7 +993,12 @@ impl Compiler {
 
         while iter.peek().is_some() {
             match declaration(self, mc, &mut body, &mut iter) {
-                Ok(()) => {}
+                Ok(()) => {
+                    // Stop early once the hotswap target function has been compiled
+                    if self.hotswap_stop {
+                        break;
+                    }
+                }
                 Err(e) => {
                     self.push_error(e);
                     self.synchronize();
@@ -1654,9 +1678,22 @@ fn define_function<'c>(
         Some((this.identifer_constant(f, ident), location))
     };
 
+    // Check the hotswap target before passing ident_clone to build_function (which moves it).
+    let is_hotswap_target = this
+        .hotswap_target_fn
+        .as_ref()
+        .map(|t| t == &ident_clone && this.functional_depth == 0)
+        .unwrap_or(false);
+
     build_function(this, mc, f, it, ident_clone, false)?;
 
     define_variable(this, it, f, global_ident)?;
+
+    // Hotswap early-exit: signal stop after the target function is fully compiled
+    if is_hotswap_target {
+        this.hotswap_stop = true;
+    }
+
     Ok(())
 }
 
