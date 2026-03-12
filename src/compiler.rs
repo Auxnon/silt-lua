@@ -1991,16 +1991,17 @@ fn for_statement<'c>(
         expect_token!(this it Assign);
         add_local_placeholder(this)?; // reserve end value with placeholder
         add_local_placeholder(this)?; // reserve step value with placeholder
-        expression(this, mc, f, it, false)?; // expression for iterator
+                                      //
+        expression_single(this, mc, f, it, false)?; // expression for iterator
         expect_token!(this it Comma);
-        expression(this, mc, f, it, false)?; // expression for end value
+        expression_single(this, mc, f, it, false)?; // expression for end value
 
         // let exit_jump = this.emit_index(OpCode::GOTO_IF_FALSE(0));
         // this.emit_at(OpCode::POP);
         // either we have an expression for the step or we set it to 1i
         if let Token::Comma = this.peek(it)? {
             this.eat(it);
-            expression(this, mc, f, it, false)?;
+            expression_single(this, mc, f, it, false)?;
         } else {
             this.constant_at(f, Value::Integer(1))
         };
