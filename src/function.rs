@@ -182,6 +182,11 @@ pub struct FunctionObject<'chnk> {
     pub arity: u8,
     pub is_variadic: bool,
     pub varidic_index: u8,
+    /// Source line of the `function` keyword (1-indexed).  Used by the hotswap
+    /// engine to map compiled function objects back to their source positions
+    /// without requiring a secondary parse pass.  Defaults to 0 for the root
+    /// script object and for functions compiled before this field was added.
+    pub start_line: usize,
 }
 
 impl<'chnk> FunctionObject<'chnk> {
@@ -195,6 +200,7 @@ impl<'chnk> FunctionObject<'chnk> {
             arity: 0,
             is_variadic: false,
             varidic_index: 0,
+            start_line: 0,
         }
     }
 

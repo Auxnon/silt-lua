@@ -374,10 +374,6 @@ pub struct Compiler {
     // correctly. If we walk our setters all the way to find an assignment (:=)
     /// can we gather multivars for setters? multivar return or gets must skip this
     can_multivar_set: bool,
-    /// When set, compilation stops after the named top-level function is compiled (hotswap optimization)
-    hotswap_target_fn: Option<String>,
-    /// Set to true once the hotswap target function has been compiled; triggers early exit
-    hotswap_stop: bool,
 }
 
 impl Compiler {
@@ -417,8 +413,6 @@ impl Compiler {
             var_set_stack: Vec::with_capacity(4),
             expected_multi: 0,
             can_multivar_set: true,
-            hotswap_target_fn: None,
-            hotswap_stop: false,
         }
     }
 
@@ -478,19 +472,6 @@ impl Compiler {
 
     pub fn pop_errors(&mut self) -> Vec<ErrorTuple> {
         std::mem::replace(&mut self.errors, vec![])
-    }
-
-    /// Set the target function name for hotswap early-exit optimization.
-    /// When the named top-level function is fully compiled, compilation halts early.
-    pub fn set_hotswap_target(&mut self, fn_name: &str) {
-        self.hotswap_target_fn = Some(fn_name.to_string());
-        self.hotswap_stop = false;
-    }
-
-    /// Clear the hotswap target, resuming full compilation behaviour.
-    pub fn clear_hotswap_target(&mut self) {
-        self.hotswap_target_fn = None;
-        self.hotswap_stop = false;
     }
 
     fn set_can_multivar_set(&mut self, value: bool) {
@@ -993,12 +974,7 @@ impl Compiler {
 
         while iter.peek().is_some() {
             match declaration(self, mc, &mut body, &mut iter) {
-                Ok(()) => {
-                    // Stop early once the hotswap target function has been compiled
-                    if self.hotswap_stop {
-                        break;
-                    }
-                }
+                Ok(()) => {}
                 Err(e) => {
                     self.push_error(e);
                     self.synchronize();
@@ -1678,21 +1654,9 @@ fn define_function<'c>(
         Some((this.identifer_constant(f, ident), location))
     };
 
-    // Check the hotswap target before passing ident_clone to build_function (which moves it).
-    let is_hotswap_target = this
-        .hotswap_target_fn
-        .as_ref()
-        .map(|t| t == &ident_clone && this.functional_depth == 0)
-        .unwrap_or(false);
-
-    build_function(this, mc, f, it, ident_clone, false)?;
+    build_function(this, mc, f, it, ident_clone, false, location.0)?;
 
     define_variable(this, it, f, global_ident)?;
-
-    // Hotswap early-exit: signal stop after the target function is fully compiled
-    if is_hotswap_target {
-        this.hotswap_stop = true;
-    }
 
     Ok(())
 }
@@ -1705,10 +1669,12 @@ fn build_function<'c>(
     it: &mut Peekable<Lexer>,
     ident: String,
     is_script: bool,
+    start_line: usize,
 ) -> Catch {
     // TODO this function could be called called rercursivelly due to the recursive decent nature of the parser, we should add a check to make sure we don't overflow the stack
     devnote!(this it "build_function");
     let mut f2 = FunctionObject::new(Some(ident), is_script);
+    f2.start_line = start_line;
     let fr2 = &mut f2;
     // this.swap_function(&mut sidelined_func);
     // swap(f, &mut sidelined_func);
@@ -2329,9 +2295,11 @@ fn function_expression<'c>(
     _can_assign: bool,
 ) -> Catch {
     devnote!(this it "function_expression");
-
+    // current_location was set to the `function` keyword's position by the
+    // parse_precedence store() call that dispatched us here.
+    let start_line = this.current_location.0;
     // build_function(this, mc, f, it, ident_clone, global_ident, false)?;
-    build_function(this, mc, f, it, "".to_owned(), false)
+    build_function(this, mc, f, it, "".to_owned(), false, start_line)
 }
 
 fn variable<'c>(
