@@ -655,7 +655,7 @@ impl<'gc> VM<'gc> {
         // be restored from `self.root` to preserve GC object identity.
         let mut unchanged_indices: Vec<usize> = vec![];
 
-        for (_, opcode) in new_root.chunk.code.iter().enumerate() {
+        for opcode in new_root.chunk.code.iter() {
             if let crate::code::OpCode::CLOSURE { constant } = opcode {
                 let k = *constant as usize;
                 if let crate::value::Value::Function(fn_gc) =
