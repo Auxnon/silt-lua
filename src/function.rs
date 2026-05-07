@@ -187,6 +187,10 @@ pub struct FunctionObject<'chnk> {
     /// without requiring a secondary parse pass.  Defaults to 0 for the root
     /// script object and for functions compiled before this field was added.
     pub start_line: usize,
+    /// Source line of the matching `end` keyword (1-indexed).  Captured from the
+    /// lexer token during `block()` compilation, giving the exact closing line of
+    /// the function body for hotswap range detection.  Defaults to 0.
+    pub end_line: usize,
 }
 
 impl<'chnk> FunctionObject<'chnk> {
@@ -201,6 +205,7 @@ impl<'chnk> FunctionObject<'chnk> {
             is_variadic: false,
             varidic_index: 0,
             start_line: 0,
+            end_line: 0,
         }
     }
 

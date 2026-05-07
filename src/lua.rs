@@ -639,15 +639,15 @@ impl<'gc> VM<'gc> {
         // 3. Scan every CLOSURE instruction in the new root chunk.
         //
         //    For each compiled function we use:
-        //      • `fn_gc.start_line` – the line of the `function` keyword, stored in the
-        //        FunctionObject by the compiler during `build_function`.
-        //      • `fn_gc.chunk.last_line()` – the line of the last instruction inside the
-        //        function body, used as a conservative end-line estimate.
+        //      • `fn_gc.start_line` – the line of the `function` keyword.
+        //      • `fn_gc.end_line`   – the line of the matching `end` keyword, captured
+        //        directly from the lexer token in `block()` during compilation.  This is
+        //        more precise than using the last instruction's line, since the `end`
+        //        keyword itself never generates bytecode.
         //
         //    A function "overlaps the diff" when at least one changed line falls within
-        //    [start_line, end_line].  Nested functions are represented by swapping their
-        //    entire containing root-level function (since they live in that function's
-        //    constants, not in the root chunk).
+        //    [start_line, end_line].  Nested / anonymous functions are handled because
+        //    their containing root-level function's span covers them.
         let mut changed_fn_names: Vec<String> = vec![];
         // (start_line, end_line) for every function that overlaps the diff.
         let mut covered_ranges: Vec<(usize, usize)> = vec![];
@@ -662,8 +662,13 @@ impl<'gc> VM<'gc> {
                     new_root.chunk.get_constant(*constant)
                 {
                     let fn_start_line = fn_gc.start_line;
-                    // Use the last instruction's line as a conservative end-line.
-                    let fn_end_line = fn_gc.chunk.last_line();
+                    // Prefer the compiler-recorded `end` keyword line for precise detection.
+                    // Fall back to the last instruction's line if end_line wasn't set.
+                    let fn_end_line = if fn_gc.end_line > 0 {
+                        fn_gc.end_line
+                    } else {
+                        fn_gc.chunk.last_line()
+                    };
 
                     // A function overlaps the diff when any changed line falls in its span.
                     let overlaps = changed_lines

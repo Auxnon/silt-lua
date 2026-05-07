@@ -374,6 +374,10 @@ pub struct Compiler {
     // correctly. If we walk our setters all the way to find an assignment (:=)
     /// can we gather multivars for setters? multivar return or gets must skip this
     can_multivar_set: bool,
+    /// Source line of the most recently consumed `end` token (set by `block()`).
+    /// Used by `build_function` to record the precise closing line of a function
+    /// body for hotswap range detection.
+    last_end_line: usize,
 }
 
 impl Compiler {
@@ -413,6 +417,7 @@ impl Compiler {
             var_set_stack: Vec::with_capacity(4),
             expected_multi: 0,
             can_multivar_set: true,
+            last_end_line: 0,
         }
     }
 
@@ -1699,6 +1704,10 @@ fn build_function<'c>(
 
     // this.override_pop=true; // the function declare is inside our scope and it would trigger a pop
     block(this, mc, fr2, it)?;
+    // Capture the exact `end` keyword line before emitting any more opcodes.
+    // `block()` records the End token's line in `last_end_line` so we can store it
+    // in the FunctionObject for hotswap range detection.
+    fr2.end_line = this.last_end_line;
 
     if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() { //read_last_code
     } else {
@@ -1842,7 +1851,31 @@ fn block<'c>(
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     devnote!(this it "block");
-    build_block_until_then_eat!(this, mc, f, it, End);
+    // Inline the block-until-end loop so we can capture the End token's line number
+    // directly from the lexer before consuming it.  This gives the hotswap engine the
+    // precise source line of the closing `end` keyword for each function body.
+    loop {
+        match it.peek() {
+            Some(Ok((Token::End, triple))) => {
+                this.last_end_line = triple.line;
+                this.eat(it);
+                break;
+            }
+            Some(Ok((Token::EOF, _))) | None => {
+                return Err(this.error_at(SiltError::UnterminatedBlock));
+            }
+            Some(Err(e)) => {
+                let err = ErrorTuple {
+                    code: e.code.clone(),
+                    location: e.location,
+                };
+                return Err(err);
+            }
+            _ => {
+                declaration(this, mc, f, it)?;
+            }
+        }
+    }
 
     Ok(())
 }
