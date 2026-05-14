@@ -7,7 +7,7 @@ use crate::{
     code::OpCode,
     compiler::Compiler,
     error::{ErrorOut, ErrorTuple, SiltError, ValueTypes},
-    function::{CallFrame, Closure, FunctionObject, NativeFunctionRaw, UpValue, WrappedFn},
+    function::{self, CallFrame, Closure, FunctionObject, NativeFunctionRaw, UpValue, WrappedFn},
     prelude::UserData,
     table::{ExTable, Table},
     userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
@@ -360,8 +360,10 @@ impl<'gc> Lua {
         new_source: &str,
         compiler: &mut Compiler,
     ) -> Result<HotswapResult, ErrorOut> {
-        self.arena
-            .mutate_root(|mc, vm| vm.borrow_mut().hotswap(mc, name, old_source, new_source, compiler))
+        self.arena.mutate_root(|mc, vm| {
+            vm.borrow_mut()
+                .hotswap(mc, name, old_source, new_source, compiler)
+        })
     }
 
     /// enter into the VM state to modify the VM directly
@@ -1720,9 +1722,16 @@ impl<'gc> VM<'gc> {
                     code: e,
                     location: frame.get_loc_by_count(self.stack_count),
                 };
+                let stack = frames
+                    .iter()
+                    .map(|f| f.function.function.name.as_deref().unwrap_or("~")).collect::<Vec<&str>>()
+                    .join("::");
+                // let source = frame.function.function.name.clone();
+                // let e = source.clone().unwrap_or("unknown".to_string());
+
                 Err(ErrorOut {
                     errors: vec![t],
-                    source: frame.function.function.name.clone(),
+                    source: Some(stack),
                 })
             }
         }
@@ -1831,6 +1840,8 @@ impl<'gc> VM<'gc> {
     where
         T: for<'e> ToLuaMulti<'e>,
     {
+        let source = name.map(|o| o.to_string());
+
         let res = match params.to_lua_multi(self, mc) {
             Ok(v) => v,
             Err(e) => {
@@ -1839,10 +1850,7 @@ impl<'gc> VM<'gc> {
                         code: e,
                         location: (0, 0),
                     }],
-                    source: match name {
-                        Some(o) => Some(o.to_string()),
-                        None => None,
-                    },
+                    source,
                 })
             }
         };
@@ -1862,7 +1870,7 @@ impl<'gc> VM<'gc> {
                     code: SiltError::Unknown,
                     location: (0, 0),
                 }],
-                source: to_op_string(name),
+                source,
             }),
         }
         // Ok(ExVal::Nil)
@@ -2405,8 +2413,5 @@ impl<'gc> VM<'gc> {
 }
 
 pub(crate) fn to_op_string(name: Option<&str>) -> Option<String> {
-    match name {
-        Some(o) => Some(o.to_string()),
-        None => None,
-    }
+    name.map(|o| o.to_string())
 }

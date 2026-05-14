@@ -1,5 +1,6 @@
 use std::{fmt::Display, rc::Rc};
 
+use colored::Colorize;
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
 use crate::{

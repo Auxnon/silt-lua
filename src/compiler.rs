@@ -3234,10 +3234,7 @@ pub fn void<'c>(
 }
 
 pub(crate) fn to_op_string(name: Option<&str>) -> Option<String> {
-    match name {
-        Some(o) => Some(o.to_string()),
-        None => None,
-    }
+    name.map(|o| o.to_string())
 }
 
 // pub fn invalid(_: &mut Compiler) { // TODO
