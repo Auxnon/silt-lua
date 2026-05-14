@@ -1417,6 +1417,7 @@ fn _add_local(
     //     0
     // };
 
+
     let i = this.local_count; //- offset;
     if i == 255 {
         return Err(this.error_at(SiltError::TooManyLocals));
@@ -1450,6 +1451,7 @@ fn resolve_local(
 ) -> Option<(u8, bool)> {
     // println!("❓resolve_local {}", ident);
     devnote!(this _it "resolve_local");
+    devout!("{} {}::{}","resolve stack".on_magenta(),ident,this.locals.iter().map(|l|l.ident.clone().unwrap_or("~".to_string())).collect::<Vec<String>>().join(","));
     for (i, l) in this.locals.iter_mut().enumerate().rev() {
         // println!(
         //     " ⭐ test {} ({}) against {}",
@@ -2499,7 +2501,6 @@ fn named_variable<'c>(
     let ops = if let Token::Identifier(ident) = t {
         // devout!("assigning to identifier: {}", ident);
         if this.local_declare_mode {
-            // println!("💡we added ident {} here", ident);
             add_local(this, ident.clone())?;
             // this.eat(it);
         }
@@ -2598,6 +2599,8 @@ fn named_variable<'c>(
     match this.peek(it)? {
         Token::Assign => {
             if can_assign {
+            // TODO is this the best fix for local passing?
+            this.local_declare_mode=false;
                 this.eat(it);
                 let assign_need = this.var_stack.len() as isize;
                 this.expected_multi = assign_need as u8;
