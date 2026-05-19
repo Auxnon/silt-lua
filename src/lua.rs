@@ -1036,10 +1036,18 @@ impl<'gc> VM<'gc> {
         let mut frame_count = 1;
         // monkey patch for variadic as an argument since CALL op tries to count varibles used
         // body.chunk.print_chunk(None);
+        #[cfg(feature = "dev-out")]
+        let mut step_count = 0;
         let results: Result<ExVal, SiltError> = loop {
             let instruction = frame.current_instruction();
 
             // devout!("ip: {:p} | {}", self.ip, instruction);
+
+            #[cfg(feature = "dev-out")]
+            {
+                step_count += 1;
+                println!("[ {step_count} ]============");
+            }
             devout!(" | {}", instruction);
 
             // TODO how much faster would it be to order these ops in order of usage, does match hash? probably.
