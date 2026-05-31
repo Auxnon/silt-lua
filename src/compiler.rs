@@ -1789,7 +1789,8 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
             }
 
             this.set_vararg();
-            add_local(this,  "...".to_string())?;
+            add_local_placeholder(this)?;
+            // add_local(this,  "...".to_string())?;
         }
         _ => {
             return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
@@ -2408,6 +2409,7 @@ fn vararg_variable(
     let is_arg = this.is_arg_mode();
 
     this.emit_at(f, OpCode::VARARG { is_arg, count });
+    add_local_placeholder(this)?;
 
     Ok(())
 }
