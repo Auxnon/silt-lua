@@ -1710,6 +1710,7 @@ fn build_function<'c>(
     // `block()` records the End token's line in `last_end_line` so we can store it
     // in the FunctionObject for hotswap range detection.
     fr2.end_line = this.last_end_line;
+    fr2.arity=arity;
 
     if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() { //read_last_code
     } else {

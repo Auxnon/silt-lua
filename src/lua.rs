@@ -1200,13 +1200,22 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::GET_LOCAL { index } => {
                     self.push(ep, frame.get_val(*index).clone());
+                    let ind= if frame.function.is_variadic(){
+                    frame.call_arity - frame.function.get_arity()}else{0}+index;
+                    self.push(ep, frame.get_val(ind).clone());
+
+                    #[cfg(feature = "dev-out")]
+                    {
+                        println!("after {}", self.stack_count);
+                        frame.print_local_stack();
+                    }
                     // self.push(frame.stack[*index as usize].clone());
                     // TODO ew cloning, is our cloning optimized yet?
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
                 OpCode::VARARG { is_arg, count } => {
                     let arity = frame.call_arity;
-                    let index = frame.function.get_variadic();
+                    let index = frame.function.get_variadic() ;
                     let non_nils = arity - index;
 
                     // TODO compiler should ignore count ==1

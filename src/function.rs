@@ -84,6 +84,8 @@ impl<'frame> CallFrame<'frame> {
         unsafe { &*self.local_stack.add(index as usize) }
     }
 
+    /// get a slice of size count from local stack offset by index. 
+    /// Exclusive to VarArg
     pub fn get_vals(&self, index: u8, count: u8) -> &[Value<'frame>] {
         // &self.stack[index as usize]
         println!("get_val index: {} count: {}", index, count);
@@ -102,9 +104,10 @@ impl<'frame> CallFrame<'frame> {
 
     #[cfg(feature = "dev-out")]
     pub fn print_local_stack(&self) {
-        println!("local stack: {:?}", unsafe {
+        print!("local stack: {:?}", unsafe {
             std::slice::from_raw_parts(self.local_stack, 10)
         });
+        println!("(top: {})", unsafe { &*self.local_stack });
     }
 
     // pub fn push(&mut self, value: Value) {
@@ -443,6 +446,9 @@ impl<'chnk> Closure<'chnk> {
     pub fn get_variadic(&self) -> u8 {
         self.function.varidic_index
     }
+    pub fn get_arity(&self)->u8{
+        self.function.arity
+}
 
     pub fn print_upvalues(&self) {
         self.upvalues.iter().enumerate().for_each(|(i, f)| {
