@@ -308,6 +308,8 @@ struct UpLocal {
 struct FunctionalState {
     pub up_values: Vec<UpLocal>,
     pub vararg: u8,
+    /// we're making a function call or multi assignment and a vararg is at the end
+    pub trailing_vararg: bool,
     /// Are we walking arguments for a function call or table build? Changes vararg stack behavior
     pub argument_mode: bool,
     /// tracks the number of values on the stack from comma-separated expressions
@@ -320,6 +322,7 @@ impl FunctionalState {
         FunctionalState {
             up_values: vec![],
             vararg: 0,
+            trailing_vararg: false,
             argument_mode: false,
             expression_count: 0,
             should_override_pop: false,
@@ -837,6 +840,20 @@ impl Compiler {
             self.functional_states[self.functional_depth - 1].argument_mode
         } else {
             self.root_state.argument_mode
+        }
+    }
+fn is_trailing_vararg(&self) -> bool {
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].trailing_vararg
+        } else {
+            self.root_state.trailing_vararg
+        }
+    }
+fn set_trailing_vararg(&mut self,bool: bool){
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].trailing_vararg=bool;
+        } else {
+            self.root_state.trailing_vararg=bool;
         }
     }
 
@@ -2408,6 +2425,12 @@ fn vararg_variable(
     // let _index = if vararg > 0 { vararg - 1 } else { 0 };
     let count = this.expected_multi;
     let is_arg = this.is_arg_mode();
+    if is_arg {
+        this.set_trailing_vararg(true);
+        println!("we trail");
+    }
+        
+    
 
     this.emit_at(f, OpCode::VARARG { is_arg, count });
     add_local_placeholder(this)?;
@@ -2636,11 +2659,12 @@ fn named_variable<'c>(
                         // we have room so spread the last if possible
                         // let offset = this.current_index - 1;
                         match f.chunk.read_last_code() {
-                            OpCode::CALL(u, _) => {
+                            OpCode::CALL(u, _, _) => {
                                 // the remainder is how much MORE we would need, at least 1 is
                                 // already assumed so we add 1+remainder
                                 // devout!("{} {}", "modify call to ".red(), remainder + 1);
-                                f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8));
+                                f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8,this.is_trailing_vararg()));
+                                this.set_trailing_vararg(false);
                             }
                             // we have exception for vararg because they set their own stack lengths and dont need nil padding
                             OpCode::VARARG {
@@ -3097,7 +3121,7 @@ fn call<'c>(
     // println!("{} ", "TIME TO COUNT".on_cyan());
     let arg_count = arguments(this, mc, f, it, start)?;
     devout!("{} {}", "ARG COUNT".on_cyan(), arg_count);
-    this.emit(f, OpCode::CALL(arg_count, 0), start);
+    this.emit(f, OpCode::CALL(arg_count, 0,false), start);
     Ok(())
 }
 
@@ -3118,7 +3142,7 @@ fn call_table<'c>(
 
     this.set_arg_mode(false);
     this.set_can_multivar_set(true);
-    this.emit(f, OpCode::CALL(1, 0), start);
+    this.emit(f, OpCode::CALL(1, 0,false), start);
     Ok(())
 }
 
@@ -3138,7 +3162,7 @@ fn call_string<'c>(
 
     this.set_arg_mode(false);
     this.set_can_multivar_set(true);
-    this.emit(f, OpCode::CALL(1, 0), start);
+    this.emit(f, OpCode::CALL(1, 0,false), start);
     Ok(())
 }
 

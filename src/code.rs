@@ -72,7 +72,7 @@ pub enum OpCode {
     META(u8),
     /// Call function with CALL.0 parameters, and CALL.1 count of desired assignments. On call frame return, pops
     /// stack until CALL.1 is met, even if nils
-    CALL(u8, u8),
+    CALL(u8, u8,bool),
     /// Push vararg values onto stack from starting point
     VARARG {
         /// is the argument of a function call or a table, not assignment
@@ -121,7 +121,7 @@ pub enum OpCode {
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CALL(i, m) => write!(f, "OP_CALL({},{})", i, m),
+            Self::CALL(i, m,v) => write!(f, "OP_CALL({},{},{})", i, m,v),
             Self::VARARG { is_arg, count } => write!(f, "OP_VARARG({},{})", is_arg, count),
             Self::REGISTER_UPVALUE {
                 index: i,

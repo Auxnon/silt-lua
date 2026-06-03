@@ -7,7 +7,7 @@ use crate::{
     code::OpCode,
     compiler::Compiler,
     error::{ErrorOut, ErrorTuple, SiltError, ValueTypes},
-    function::{self, CallFrame, Closure, FunctionObject, NativeFunctionRaw, UpValue, WrappedFn},
+    function::{CallFrame, Closure, FunctionObject, NativeFunctionRaw, UpValue, WrappedFn},
     prelude::UserData,
     table::{ExTable, Table},
     userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
@@ -261,8 +261,7 @@ fn find_changed_lines(old: &str, new: &str) -> Vec<usize> {
     let max_len = old_lines.len().max(new_lines.len());
     (0..max_len)
         .filter(|&i| {
-            old_lines.get(i).copied().unwrap_or("")
-                != new_lines.get(i).copied().unwrap_or("")
+            old_lines.get(i).copied().unwrap_or("") != new_lines.get(i).copied().unwrap_or("")
         })
         .map(|i| i + 1)
         .collect()
@@ -660,8 +659,7 @@ impl<'gc> VM<'gc> {
         for opcode in new_root.chunk.code.iter() {
             if let crate::code::OpCode::CLOSURE { constant } = opcode {
                 let k = *constant as usize;
-                if let crate::value::Value::Function(fn_gc) =
-                    new_root.chunk.get_constant(*constant)
+                if let crate::value::Value::Function(fn_gc) = new_root.chunk.get_constant(*constant)
                 {
                     let fn_start_line = fn_gc.start_line;
                     // Prefer the compiler-recorded `end` keyword line for precise detection.
@@ -830,7 +828,7 @@ impl<'gc> VM<'gc> {
         let c = need;
         if is_rev {
             // TODO this is sloppy make this DRYer
-            let mut vv = values.into_iter().rev();
+            let mut vv = values.iter().rev();
             for _ in 0..c {
                 // TODO pushing nil is stupid, right? popping always writes nils so we shouldnt leak?
                 // let v= match vv.next(){
@@ -1199,8 +1197,16 @@ impl<'gc> VM<'gc> {
                     frame.set_val(*index, value)
                 }
                 OpCode::GET_LOCAL { index } => {
-                    self.push(ep, frame.get_val(*index).clone());
+                    #[cfg(feature = "dev-out")]
+                    {
+                        println!("before {}", self.stack_count);
+                        frame.print_local_stack();
+                    }
+                    println!("variadic? {}",frame.function.get_variadic());
                     let ind= if frame.function.is_variadic(){
+
+                    println!("variadic ar? {}",frame.function.get_arity());
+                    println!("call ar? {}",frame.call_arity);
                     frame.call_arity - frame.function.get_arity()}else{0}+index;
                     self.push(ep, frame.get_val(ind).clone());
 
@@ -1224,9 +1230,10 @@ impl<'gc> VM<'gc> {
 
                     // let offset=self.stack_count; // the right amount of vars before this fn scope
                     println!(
-                        "{} count of slice: {}, arity: {}, expected: {} o: {} (snap: {} op_index: {} )",
-                        "HEREEE".on_red(),
+                        "{} count of slice: {}, stack_count: {}, arity: {}, expected: {} o: {} (snap: {} op_index: {} )",
+                        "VARARG OP".on_red(),
                         non_nils,
+                        self.stack_count,
                         arity,
                         count,
                         o,
@@ -1234,19 +1241,35 @@ impl<'gc> VM<'gc> {
                         index
                     );
 
+                    #[cfg(feature = "dev-out")]
+                    {
+                        println!("before {}", self.stack_count);
+                        frame.print_local_stack();
+                    }
                     // if *is_arg {
                     //     _var_extra = non_nils;
                     // }
                     // let _pull = non_nils; // u8::min(non_nils, *count);
-                    let raw = frame.get_vals(0, *count);
-                    // println!()
-                    raw.iter().for_each(|v| println!("val: {},", v.to_string()));
-                    // PUSH EQUAL amount of NILS to amtch count
-                    self.pushn(ep, raw, *count as usize, false);
+                    let val_count=
+                    if *is_arg{
+                        frame.call_arity - (frame.function.get_arity()-1)
+                    }else {
+                        *count
+                    };
+
+                    let raw = frame.get_vals(1, val_count);
+                    raw.iter().for_each(|v| println!("🟦 val: {},", v.to_string()));
+                    // PUSH EQUAL amount of NILS to match count
+                    self.pushn(ep, raw, val_count as usize, false);
                     if *count > non_nils {
                         let extra = count - non_nils;
                         //     println!("push {} nils", extra);
                         self.push_nils(ep, extra.into());
+                    }
+                    #[cfg(feature = "dev-out")]
+                    {
+                        println!("after {}", self.stack_count);
+                        frame.print_local_stack();
                     }
                 }
                 OpCode::NEED(_) => {}
@@ -1500,9 +1523,13 @@ impl<'gc> VM<'gc> {
                     // unsafe { *upvalue.value = value };
                 }
 
-                OpCode::CALL(arity, multi) => {
-                    // println!("CALL {} {} ", arity, multi);
-                    let value = self.peekn(ep, *arity);
+                OpCode::CALL(arity, multi,variadic) => {
+                    let ar=if *variadic{
+                        arity+(frame.call_arity-(frame.function.get_arity()-1))
+                    }else {
+                        *arity
+                    };
+                    let value = self.peekn(ep, ar);
                     devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
@@ -1523,37 +1550,37 @@ impl<'gc> VM<'gc> {
                             // frames.push(new_frame);
                             // frame = frames.last_mut().unwrap();
                             // frame.local_stack = frame_top;
-                            let arity = *arity as usize;
-                            // println!("arity {}",arity);
+                            let arity = ar;
+                            println!("arity {}",arity);
                             let offset = if c.is_variadic() {
                                 // let offset=frame.call_arity
-                                (arity - c.get_variadic() as usize) - 1
-                            } else {
+                                (arity - c.get_variadic())                             } else {
                                 arity
                             };
+                            println!("{} {}","arity offset".on_blue(),offset);
 
-                            let frame_top = unsafe { ep.ip.sub(offset + 1) };
-                            // let t = unsafe { frame_top.as_mut().unwrap() };
-                            // println!(
-                            //     "{} top is {} (offset: {} var: {} ar: {}  )",
-                            //     "TOP IS".on_white().black(),
-                            //     t,
-                            //     arity,
-                            //     c.get_variadic(),
-                            //     offset
-                            // );
+                            let frame_top = unsafe { ep.ip.sub((offset as usize) + 1) };
+                            let t = unsafe { frame_top.as_mut().unwrap() };
+                            println!(
+                                "{} top is {} (offset: {} var: {} ar: {}  )",
+                                "TOP IS".on_white().black(),
+                                t,
+                                arity,
+                                c.get_variadic(),
+                                offset
+                            );
 
                             let new_frame = CallFrame::new(
                                 *c,
-                                self.stack_count - arity - 1,
-                                arity as u8,
+                                self.stack_count - (arity as usize) - 1,
+                                arity,
                                 *multi,
                             );
                             frames.push(new_frame);
                             frame = frames.last_mut().unwrap();
                             frame.local_stack = frame_top;
                             frame_count += 1;
-                            devout!("{} top of frame stack {}", "SUP".on_yellow(), unsafe {
+                            println!("{} top of frame stack {}", "SUP".on_yellow(), unsafe {
                                 &*frame.local_stack
                             });
                         }
@@ -1741,7 +1768,8 @@ impl<'gc> VM<'gc> {
                 };
                 let stack = frames
                     .iter()
-                    .map(|f| f.function.function.name.as_deref().unwrap_or("~")).collect::<Vec<&str>>()
+                    .map(|f| f.function.function.name.as_deref().unwrap_or("~"))
+                    .collect::<Vec<&str>>()
                     .join("::");
                 // let source = frame.function.function.name.clone();
                 // let e = source.clone().unwrap_or("unknown".to_string());
