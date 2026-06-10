@@ -1078,10 +1078,15 @@ impl<'gc> VM<'gc> {
                         // one by one back on to the stack but further down? Literally wasteful!
                         // so we will rewrite eventually
 
-                        ep.ip = frame.local_stack;
+                        // Truncate to the original function slot (== local_stack for
+                        // plain calls, but below it for variadic calls where the
+                        // fixed params were copied above the overflow). Deriving it
+                        // from the snapshot reclaims that overflow + copies too.
+                        let snapshot = frame.stack_snapshot;
+                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
                         self.close_upvalues_by_return(ep.ip);
                         devout!("stack top {}", unsafe { &*ep.ip });
-                        self.stack_count = frame.stack_snapshot;
+                        self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
                         devout!("next instruction {}", frame.current_instruction());
@@ -1096,10 +1101,15 @@ impl<'gc> VM<'gc> {
                             self.pop(ep)
                         };
 
-                        ep.ip = frame.local_stack;
+                        // Truncate to the original function slot (== local_stack for
+                        // plain calls, but below it for variadic calls where the
+                        // fixed params were copied above the overflow). Deriving it
+                        // from the snapshot reclaims that overflow + copies too.
+                        let snapshot = frame.stack_snapshot;
+                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
                         self.close_upvalues_by_return(ep.ip);
                         devout!("stack top {}", unsafe { &*ep.ip });
-                        self.stack_count = frame.stack_snapshot;
+                        self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
                         devout!("next instruction {}", frame.current_instruction());
@@ -1202,13 +1212,10 @@ impl<'gc> VM<'gc> {
                         println!("before {}", self.stack_count);
                         frame.print_local_stack();
                     }
-                    println!("variadic? {}",frame.function.get_variadic());
-                    let ind= if frame.function.is_variadic(){
-
-                    println!("variadic ar? {}",frame.function.get_arity());
-                    println!("call ar? {}",frame.call_arity);
-                    frame.call_arity - frame.function.get_arity()}else{0}+index;
-                    self.push(ep, frame.get_val(ind).clone());
+                    // For variadic functions the frame base already sits past the
+                    // variadic range (the fixed params are copied above the
+                    // overflow at call time), so locals are addressed uniformly.
+                    self.push(ep, frame.get_val(*index).clone());
 
                     #[cfg(feature = "dev-out")]
                     {
@@ -1220,52 +1227,30 @@ impl<'gc> VM<'gc> {
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
                 }
                 OpCode::VARARG { is_arg, count } => {
-                    let arity = frame.call_arity;
-                    let index = frame.function.get_variadic() ;
-                    let non_nils = arity - index;
+                    // `nextra` = how many variadic overflow values this call actually
+                    // received (call arity minus the number of fixed params).
+                    let numfixed = frame.function.get_variadic();
+                    let nextra = frame.call_arity.saturating_sub(numfixed);
 
-                    // TODO compiler should ignore count ==1
-                    let ind = frame.stack_snapshot;
-                    let o = (self.stack_count as u8 - arity) + (index) - 1;
-
-                    // let offset=self.stack_count; // the right amount of vars before this fn scope
-                    println!(
-                        "{} count of slice: {}, stack_count: {}, arity: {}, expected: {} o: {} (snap: {} op_index: {} )",
-                        "VARARG OP".on_red(),
-                        non_nils,
-                        self.stack_count,
-                        arity,
-                        count,
-                        o,
-                        ind,
-                        index
-                    );
+                    // When spread as a call/return argument we forward every overflow
+                    // value; otherwise the compiler tells us how many slots to fill
+                    // (e.g. `local a = ...` wants exactly one, padding nils if short).
+                    let val_count = if *is_arg { nextra } else { *count };
+                    let take = val_count.min(nextra);
 
                     #[cfg(feature = "dev-out")]
                     {
                         println!("before {}", self.stack_count);
                         frame.print_local_stack();
                     }
-                    // if *is_arg {
-                    //     _var_extra = non_nils;
-                    // }
-                    // let _pull = non_nils; // u8::min(non_nils, *count);
-                    let val_count=
-                    if *is_arg{
-                        frame.call_arity - (frame.function.get_arity()-1)
-                    }else {
-                        *count
-                    };
 
-                    let raw = frame.get_vals(1, val_count);
-                    raw.iter().for_each(|v| println!("🟦 val: {},", v.to_string()));
-                    // PUSH EQUAL amount of NILS to match count
-                    self.pushn(ep, raw, val_count as usize, false);
-                    if *count > non_nils {
-                        let extra = count - non_nils;
-                        //     println!("push {} nils", extra);
-                        self.push_nils(ep, extra.into());
+                    let raw = frame.get_varargs(nextra);
+                    self.pushn(ep, &raw[..take as usize], take as usize, false);
+                    if val_count > nextra {
+                        // not enough overflow values to satisfy the requested count
+                        self.push_nils(ep, (val_count - nextra) as usize);
                     }
+
                     #[cfg(feature = "dev-out")]
                     {
                         println!("after {}", self.stack_count);
@@ -1524,65 +1509,59 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::CALL(arity, multi,variadic) => {
-                    let ar=if *variadic{
-                        arity+(frame.call_arity-(frame.function.get_arity()-1))
-                    }else {
+                    // Resolve the true argument count. When the call spreads `...`
+                    // the trailing arg expands to the caller's variadic overflow, so
+                    // the compile-time count (which counts `...` as a single arg) is
+                    // adjusted by the caller's own overflow.
+                    let ar = if *variadic {
+                        (*arity - 1) + (frame.call_arity - frame.function.get_variadic())
+                    } else {
                         *arity
                     };
                     let value = self.peekn(ep, ar);
                     devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
-                            // TODO this logic is identical to function, but to make this a function causes some lifetime issues. A macro would work but we're already a little macro heavy aren't we?
-                            // let frame_top = unsafe { ep.ip.sub((*param_count as usize) + 1) };
-                            // let new_frame = CallFrame::new(
-                            //     c.clone(),
-                            //     self.stack_count - (*param_count as usize) - 1,
-                            // );
-                            // frames.push(new_frame);
-                            // frame = frames.last_mut().unwrap();
-                            //
-                            // frame.local_stack = frame_top;
-
-                            // let frame_top = unsafe { ep.ip.sub((*arity as usize) + 1) };
-                            // let new_frame =
-                            //     CallFrame::new(c.clone(), self.stack_count - (*arity as usize) - 1);
-                            // frames.push(new_frame);
-                            // frame = frames.last_mut().unwrap();
-                            // frame.local_stack = frame_top;
-                            let arity = ar;
-                            println!("arity {}",arity);
-                            let offset = if c.is_variadic() {
-                                // let offset=frame.call_arity
-                                (arity - c.get_variadic())                             } else {
-                                arity
-                            };
-                            println!("{} {}","arity offset".on_blue(),offset);
-
-                            let frame_top = unsafe { ep.ip.sub((offset as usize) + 1) };
-                            let t = unsafe { frame_top.as_mut().unwrap() };
-                            println!(
-                                "{} top is {} (offset: {} var: {} ar: {}  )",
-                                "TOP IS".on_white().black(),
-                                t,
-                                arity,
-                                c.get_variadic(),
-                                offset
-                            );
-
-                            let new_frame = CallFrame::new(
-                                *c,
-                                self.stack_count - (arity as usize) - 1,
-                                arity,
-                                *multi,
-                            );
-                            frames.push(new_frame);
-                            frame = frames.last_mut().unwrap();
-                            frame.local_stack = frame_top;
+                            let cc = *c;
+                            if cc.is_variadic() {
+                                // Lua-style variadic adjust: the overflow args stay
+                                // where they are and we copy the function slot plus
+                                // the fixed params *above* them. The new frame base
+                                // begins just past the variadic range so body locals
+                                // address contiguously and the overflow is reachable
+                                // below the base via CallFrame::get_varargs.
+                                let total = ar as usize;
+                                let numfixed = cc.get_variadic() as usize;
+                                let snapshot = self.stack_count - total - 1;
+                                // original function slot, start of the copy source
+                                let func_ptr = unsafe { ep.ip.sub(total + 1) };
+                                // copies land at the current top -> this is the new base
+                                let frame_top = ep.ip;
+                                // clone function + fixed params before pushing so we
+                                // never read and write the stack at the same time
+                                let copies: Vec<Value<'gc>> = (0..=numfixed)
+                                    .map(|i| unsafe { (*func_ptr.add(i)).clone() })
+                                    .collect();
+                                for v in copies {
+                                    self.push(ep, v);
+                                }
+                                let new_frame = CallFrame::new(cc, snapshot, ar, *multi);
+                                frames.push(new_frame);
+                                frame = frames.last_mut().unwrap();
+                                frame.local_stack = frame_top;
+                            } else {
+                                let frame_top = unsafe { ep.ip.sub((ar as usize) + 1) };
+                                let new_frame = CallFrame::new(
+                                    cc,
+                                    self.stack_count - (ar as usize) - 1,
+                                    ar,
+                                    *multi,
+                                );
+                                frames.push(new_frame);
+                                frame = frames.last_mut().unwrap();
+                                frame.local_stack = frame_top;
+                            }
                             frame_count += 1;
-                            println!("{} top of frame stack {}", "SUP".on_yellow(), unsafe {
-                                &*frame.local_stack
-                            });
                         }
                         Value::Function(_func) => {
                             // let frame_top =
@@ -1606,7 +1585,9 @@ impl<'gc> VM<'gc> {
                         Value::NativeFunction(_) => {
                             // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
                             // TODO get a reference instead of the a-pop-olypse
-                            let mut args = self.popn(ep, *arity + 1);
+                            // Use the resolved arity (`ar`) so spread `...` arguments
+                            // pop the actual count, not the compile-time placeholder.
+                            let mut args = self.popn(ep, ar + 1);
                             // todo!("Hi there! we need to set arity of userdata functions to include self! At least this is hirting our abstraction, we could force it but that's dangerous! Let's perhas make userdata methods Option<Self>");
 
                             if let Value::NativeFunction(f) = args.remove(0) {

@@ -84,15 +84,24 @@ impl<'frame> CallFrame<'frame> {
         unsafe { &*self.local_stack.add(index as usize) }
     }
 
-    /// get a slice of size count from local stack offset by index. 
+    /// get a slice of size count from local stack offset by index.
     /// Exclusive to VarArg
     pub fn get_vals(&self, index: u8, count: u8) -> &[Value<'frame>] {
         // &self.stack[index as usize]
-        println!("get_val index: {} count: {}", index, count);
         unsafe {
             let i = self.local_stack.add((index) as usize);
-            println!(" VAL: {}", &*i);
             std::slice::from_raw_parts(i, count as usize)
+        }
+    }
+
+    /// Read the variadic overflow values for this frame. In a variadic call the
+    /// extra arguments are left on the stack *below* the frame base (the fixed
+    /// params and function are copied above them at call time), so the `nextra`
+    /// values sit at `local_stack[-nextra .. 0]`.
+    pub fn get_varargs(&self, nextra: u8) -> &[Value<'frame>] {
+        unsafe {
+            let start = self.local_stack.sub(nextra as usize);
+            std::slice::from_raw_parts(start, nextra as usize)
         }
     }
 

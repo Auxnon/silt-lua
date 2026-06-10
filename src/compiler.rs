@@ -1807,7 +1807,10 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
             }
 
             this.set_vararg();
-            add_local_placeholder(this)?;
+            // NOTE: the `...` parameter deliberately does NOT reserve a local
+            // slot. At runtime the variadic overflow lives below the frame base
+            // (see CallFrame::get_varargs), so body locals must be numbered
+            // contiguously right after the fixed params with no phantom gap.
             // add_local(this,  "...".to_string())?;
         }
         _ => {
@@ -2427,10 +2430,7 @@ fn vararg_variable(
     let is_arg = this.is_arg_mode();
     if is_arg {
         this.set_trailing_vararg(true);
-        println!("we trail");
     }
-        
-    
 
     this.emit_at(f, OpCode::VARARG { is_arg, count });
     add_local_placeholder(this)?;
@@ -2659,12 +2659,12 @@ fn named_variable<'c>(
                         // we have room so spread the last if possible
                         // let offset = this.current_index - 1;
                         match f.chunk.read_last_code() {
-                            OpCode::CALL(u, _, _) => {
+                            OpCode::CALL(u, _, v) => {
                                 // the remainder is how much MORE we would need, at least 1 is
-                                // already assumed so we add 1+remainder
+                                // already assumed so we add 1+remainder. Preserve the variadic
+                                // flag already resolved by call()/arguments().
                                 // devout!("{} {}", "modify call to ".red(), remainder + 1);
-                                f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8,this.is_trailing_vararg()));
-                                this.set_trailing_vararg(false);
+                                f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8, *v));
                             }
                             // we have exception for vararg because they set their own stack lengths and dont need nil padding
                             OpCode::VARARG {
@@ -3121,7 +3121,13 @@ fn call<'c>(
     // println!("{} ", "TIME TO COUNT".on_cyan());
     let arg_count = arguments(this, mc, f, it, start)?;
     devout!("{} {}", "ARG COUNT".on_cyan(), arg_count);
-    this.emit(f, OpCode::CALL(arg_count, 0,false), start);
+    // If the final argument was `...`, the call spreads the enclosing function's
+    // variadic overflow, so the real argument count is resolved at runtime.
+    let trailing = this.is_trailing_vararg();
+    this.emit(f, OpCode::CALL(arg_count, 0, trailing), start);
+    if trailing {
+        this.set_trailing_vararg(false);
+    }
     Ok(())
 }
 
