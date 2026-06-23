@@ -904,20 +904,25 @@ impl<'gc> VM<'gc> {
         }
     }
 
-    fn close_upvalues_by_return(&mut self, last: *mut Value<'gc>) {
-        // devout!("value: {}", unsafe { &*last });
+    /// Close every open upvalue that points at or above `last` (the returning
+    /// frame's base slot) and drop it from `open_upvalues`. Closing copies the
+    /// captured value off the soon-to-be-reclaimed stack into the UpValue's own
+    /// heap cell, so surviving closures keep seeing the right value after the
+    /// frame is gone. We must `borrow_mut` the actual Gc cell here — reading a
+    /// copy of the UpValue and closing that leaves the real cell open, pointing
+    /// at dead stack memory.
+    fn close_upvalues_by_return(&mut self, mc: &Mutation<'gc>, last: *mut Value<'gc>) {
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
-        for upvalue in self.open_upvalues.iter().rev() {
-            let mut up = unsafe { upvalue.as_ptr().read() }; // TODO more bad practice
-                                                             // let upv = unsafe { &*up.get_location() };
-                                                             // let vv = unsafe { &*last };
-                                                             // let b = up.get_location() < last;
-                                                             // println!("upvalue {} less than {} is {} ", upv, vv, b);
-            if up.get_location() < last {
-                break;
+        let mut i = 0;
+        while i < self.open_upvalues.len() {
+            let loc = self.open_upvalues[i].borrow().location;
+            if loc >= last {
+                let up = self.open_upvalues.remove(i);
+                up.borrow_mut(mc).close();
+            } else {
+                i += 1;
             }
-            up.close();
         }
     }
 
@@ -1084,7 +1089,7 @@ impl<'gc> VM<'gc> {
                         // from the snapshot reclaims that overflow + copies too.
                         let snapshot = frame.stack_snapshot;
                         ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
-                        self.close_upvalues_by_return(ep.ip);
+                        self.close_upvalues_by_return(ep.mc, ep.ip);
                         devout!("stack top {}", unsafe { &*ep.ip });
                         self.stack_count = snapshot;
                         frames.pop();
@@ -1107,7 +1112,7 @@ impl<'gc> VM<'gc> {
                         // from the snapshot reclaims that overflow + copies too.
                         let snapshot = frame.stack_snapshot;
                         ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
-                        self.close_upvalues_by_return(ep.ip);
+                        self.close_upvalues_by_return(ep.mc, ep.ip);
                         devout!("stack top {}", unsafe { &*ep.ip });
                         self.stack_count = snapshot;
                         frames.pop();
@@ -1952,26 +1957,27 @@ impl<'gc> VM<'gc> {
         devout!("2capture_upvalue at index {} : {}", index, unsafe {
             &*value
         });
-        let mut ind = None;
+        // `open_upvalues` is kept sorted ASCENDING by stack address (lowest
+        // first). That ordering is load-bearing: `close_n_upvalues` drains the
+        // tail (the most-recently-declared locals, which sit at the highest
+        // addresses). So to find or insert we scan upward and stop at the first
+        // entry whose address is >= ours: equal means an upvalue already exists
+        // for this slot and MUST be shared (so two closures over the same local
+        // see each other's writes); greater is the insertion point.
+        let mut insert_at = self.open_upvalues.len();
         for (i, up) in self.open_upvalues.iter().enumerate() {
-            let u = *up;
-            let upvalue = u.borrow();
-            if upvalue.location == value {
-                return u.clone();
+            let loc = up.borrow().location;
+            if loc == value {
+                return *up;
             }
-
-            if upvalue.location < value {
+            if loc > value {
+                insert_at = i;
                 break;
             }
-            ind = Some(i);
         }
 
         let u = Gc::new(ep.mc, RefLock::new(UpValue::new(index, value)));
-
-        match ind {
-            Some(i) => self.open_upvalues.insert(i, u.clone()),
-            None => self.open_upvalues.push(u.clone()),
-        }
+        self.open_upvalues.insert(insert_at, u);
 
         #[cfg(feature = "dev-out")]
         self.print_upvalues();

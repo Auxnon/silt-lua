@@ -1526,7 +1526,8 @@ fn resolve_upvalue(
     level: usize,
     target: usize,
 ) -> u8 {
-    let state = &mut functional_states[level];
+    // `level` is a functional depth (1-based); the matching state lives at `level - 1`.
+    let state = &mut functional_states[level - 1];
     let m = &mut state.up_values;
     for (u, i) in m.iter().enumerate() {
         if i.universal_ident == ident {
@@ -1544,7 +1545,7 @@ fn resolve_upvalue(
     } else {
         // drop(m);
         let higher = resolve_upvalue(functional_states, ident, scoped_ident, level - 1, target);
-        let state = &mut functional_states[level];
+        let state = &mut functional_states[level - 1];
         let m = &mut state.up_values;
         m.push(UpLocal {
             ident: higher,
