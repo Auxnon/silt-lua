@@ -18,10 +18,12 @@ exclude = [
 name = "silt_lua"
 path = "src/lib.rs"
 crate-type = ["cdylib", "lib"]
+bench = false   # only benches/interpreter.rs is a benchmark target (avoids cargo 6313 warning)
 
 [[bin]]
 name = "silt"
 path = "src/main.rs"
+bench = false
 
 [profile.release]
 strip = true    # Automatically strip symbols from the binary.
@@ -32,6 +34,18 @@ panic = "abort"
 
 [profile.wasm]
 inherits = "release"
+
+# Benchmarks want speed, not size (the release profile optimizes for size with `opt-level = "z"`).
+# `cargo bench` uses this profile; normal `cargo test`/`cargo build` are unaffected.
+[profile.bench]
+opt-level = 3
+lto = true
+
+[[bench]]
+name = "interpreter"
+harness = false       # use Criterion's harness, not libtest
+# NOTE: benches are NOT compiled or run by `cargo test`; they run only via `cargo bench`,
+# which keeps them out of the normal CI path (see PLAN.md §8).
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
@@ -64,3 +78,8 @@ colored = "3.0.0"
 lending-iterator = "0.1.7"
 # rustc-hash="1.1.0"
 # ahash="0.8.3"
+
+# Dev-dependencies are compiled only for tests/benches/examples — never for the library or a
+# release build, so Criterion adds zero overhead to normal consumers of the crate.
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
