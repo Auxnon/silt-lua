@@ -40,11 +40,12 @@ fn operator_precedence() {
 // =====================================================================================
 
 #[test]
-#[ignore = "PLAN.md §2.2 — grouping() never consumes ')', dropping any trailing operator"]
 fn parentheses_then_operator() {
     valeq!("return (1 + 2) * 3", ExVal::Integer(9));
     valeq!("return (10 + 5) * 2 - 3", ExVal::Integer(27));
     valeq!("return (1 + 2) + 3", ExVal::Integer(6));
+    valeq!("return ((1 + 2) * (3 + 4))", ExVal::Integer(21));
+    valeq!("return 2 * (3 + (4 - 1))", ExVal::Integer(12));
 }
 
 #[test]

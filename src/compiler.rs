@@ -2836,10 +2836,17 @@ fn grouping<'c>(
     _can_assign: bool,
 ) -> Catch {
     devnote!(this it "-> grouping");
+    let start = this.current_location;
     expression(this, mc, f, it, false)?;
-    //TODO expect
-    // expect_token!(self, CloseParen, SiltError::UnterminatedParenthesis(0, 0));
-    // self.consume(TokenType::RightParen, "Expect ')' after expression.");
+    // Consume the closing `)`. Without this the `)` is left at the cursor; since
+    // it has no infix rule the enclosing precedence loop halts and any operator
+    // after the group (e.g. the `* 3` in `(1+2)*3`) is silently dropped.
+    expect_token!(
+        this,
+        it,
+        CloseParen,
+        this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
+    );
     Ok(())
 }
 
