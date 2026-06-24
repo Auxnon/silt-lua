@@ -163,17 +163,21 @@ test binary.
   and add an `UnterminatedParenthesis` error path. This is a small fix with large blast radius —
   prioritize it.
 
-### 2.3 `elseif` fails to parse 🔴
+### 2.3 `elseif` fails to parse ✅ FIXED
 - **Repro:** `local x=2; if x==1 then return 10 elseif x==2 then return 20 else return 30 end`
 - **Observed:** `Expected token: then`.
 - **Expected:** returns `20`.
-- **Root cause:** `if_statement()` (`src/compiler.rs:1985`) eats the leading keyword with
-  `this.eat(it)` at line 1987, then for `elseif` it recurses into `if_statement()` *after*
-  already eating the `ElseIf` token (line 2002-2005). The recursive call eats the **first
-  token of the condition** as if it were the `if` keyword, so `elseif x==2 then` loses `x` and
-  the parser then expects `then` where `==` is.
-- **Fix sketch:** split the keyword-eat out of `if_statement`, or pass a `already_ate: bool`,
-  so the `elseif` branch parses the condition from the correct position.
+- **Root cause:** two bugs in the `ElseIf` arm of `if_statement` (`src/compiler.rs`). (a) It ate
+  the `ElseIf` token and *then* recursed into `if_statement`, whose own leading `eat()` consumed
+  the first token of the elseif condition — so `elseif x==2 then` lost `x` and the parser hit
+  `==` where it wanted `then`. (b) It emitted no forward jump over the chain, so a taken `if`
+  branch would fall through and also execute the elseif/else bodies.
+- **Resolution (2026-06):** the `ElseIf` arm now mirrors the `Else` arm: emit a `FORWARD(0)`
+  (`skip_chain`) after the block, patch `skip_if` to the elseif condition, then recurse WITHOUT
+  eating `ElseIf` (the recursion's leading `eat()` consumes it, just like an `if`), and finally
+  patch `skip_chain` to just past the whole chain (the recursion eats the single closing `end`).
+  Tests: `if_elseif_else`, `if_elseif_chain_and_fallthrough` (`tests/conditionals.rs`); that file
+  now has zero ignored tests.
 
 ### 2.4 String relational comparison unimplemented
 - **Repro:** `return 'abc' < 'abd'` → `Cannot < 'string' and 'string'`.

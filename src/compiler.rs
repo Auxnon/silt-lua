@@ -2063,11 +2063,16 @@ fn if_statement<'c>(
             expect_token!(this it End);
         }
         Token::ElseIf => {
-            this.eat(it);
-            this.patch(f, skip_if)?;
-            // the recursive if_statement consumes the single closing `end` for
-            // the whole if/elseif chain
+            // Once this branch's block has run, jump over the rest of the
+            // elseif/else chain (same role as `skip_else` in the Else arm).
+            let skip_chain = this.emit_index(f, OpCode::FORWARD(0));
+            this.patch(f, skip_if)?; // false condition -> start of the elseif
+            // Do NOT eat the `elseif` token here: the recursive if_statement's
+            // own leading eat() consumes it exactly as it would an `if`. Eating
+            // it twice would swallow the first token of the elseif condition.
+            // The recursion also consumes the single closing `end` for the chain.
             if_statement(this, mc, f, it)?;
+            this.patch(f, skip_chain)?; // lands just past the whole chain
         }
         _ => {
             this.patch(f, skip_if)?;
