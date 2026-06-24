@@ -628,12 +628,6 @@ impl Compiler {
             }
         }
     }
-    fn pull_getter(&mut self) -> OpCode {
-        // println!("we have {}", self.var_stack.len());
-        let o = self.var_stack.first().unwrap();
-        let oo = o.clone().unwrap();
-        oo.1
-    }
 
     /** only use after peek */
     // pub fn eat_out(&mut self) -> TokenResult {
@@ -2071,10 +2065,18 @@ fn if_statement<'c>(
         Token::ElseIf => {
             this.eat(it);
             this.patch(f, skip_if)?;
+            // the recursive if_statement consumes the single closing `end` for
+            // the whole if/elseif chain
             if_statement(this, mc, f, it)?;
         }
         _ => {
             this.patch(f, skip_if)?;
+            // a plain `if ... then ... end` must consume its own `end`.
+            // build_block_until! stops AT the `end` without eating it; if we
+            // leave it, the enclosing block feeds `end` to expression_statement,
+            // which emits a stray POP (corrupting a live local) and closes the
+            // wrong scope. The Else arm already eats its `end` via expect_token.
+            expect_token!(this it End);
         }
     }
     Ok(())
@@ -2764,26 +2766,30 @@ fn named_variable<'c>(
             // println!("drain 4");
             this.drain_getters(f); // TODO we should probably error if this is higher then 1
             let count = table_indexer(this, mc, f, it)? as u8;
-            if let Token::Assign = this.peek(it)? {
-                this.eat(it);
-                expression(this, mc, f, it, false)?;
-                this.emit_at(f, OpCode::TABLE_SET { depth: count });
-                // override statement end pop because instruction takes care of it
-                this.override_pop();
-            } else {
-                this.emit_at(f, OpCode::TABLE_GET { depth: count });
-                // add!(this);
+            match this.peek(it)? {
+                Token::Assign => {
+                    this.eat(it);
+                    expression(this, mc, f, it, false)?;
+                    this.emit_at(f, OpCode::TABLE_SET { depth: count });
+                    // override statement end pop because instruction takes care of it
+                    this.override_pop();
+                }
+                Token::Colon => {
+                    // method call on a chained receiver, e.g. `a.b:m()`. Resolve
+                    // the chain to leave the receiver on the stack, then METHOD_GET.
+                    this.emit_at(f, OpCode::TABLE_GET { depth: count });
+                    emit_method_get(this, f, it)?;
+                }
+                _ => {
+                    this.emit_at(f, OpCode::TABLE_GET { depth: count });
+                    // add!(this);
+                }
             }
         }
         Token::Colon => {
-            let target = this.pull_getter();
+            // method call on a bare variable receiver, e.g. `t:m()`.
             this.drain_getters(f);
-            single_table_index(this, f, it)?;
-            // we should only have one getter, table_indexer is just a faster getter opcode
-            // sequence anyway
-            this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
-            this.emit_at(f, target);
-            this.self_arg = true;
+            emit_method_get(this, f, it)?;
         }
         _ => {
             // this.return_count = this.var_stack.len() as u8;
@@ -2997,6 +3003,28 @@ fn single_table_index<'c>(
     } else {
         return Err(this.error_at(SiltError::ExpectedFieldIdentifier));
     }
+    Ok(())
+}
+
+/// Consume `:method` after a receiver that is already on the stack and emit
+/// `METHOD_GET`, leaving `[method, receiver]`. Caller sets `self_arg` so the
+/// following call counts the receiver as the implicit first argument. Works for
+/// any receiver expression (`t:m()`, `a.b:m()`, `f():m()`).
+fn emit_method_get<'c>(
+    this: &mut Compiler,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    this.eat(it); // ':'
+    let (res, loc) = this.pop(it);
+    this.current_location = loc;
+    let name = match res? {
+        Token::Identifier(ident) => ident,
+        _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
+    };
+    let constant = this.identifer_constant(f, name);
+    this.emit_at(f, OpCode::METHOD_GET { constant });
+    this.self_arg = true;
     Ok(())
 }
 

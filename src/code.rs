@@ -109,6 +109,13 @@ pub enum OpCode {
     TABLE_SET {
         depth: u8,
     },
+    /** Method lookup for `obj:method(...)`. The fully-evaluated receiver is on
+     * top of the stack; this looks up `receiver[constant]` and leaves
+     * `[method, receiver]` so the receiver becomes the implicit `self` arg.
+     * Mirrors PUC-Lua's OP_SELF and works for any receiver expression. */
+    METHOD_GET {
+        constant: u8,
+    },
     // TABLE_SET_BY_CONSTANT {
     //     constant: u8,
     // },
@@ -223,6 +230,7 @@ impl Display for OpCode {
                 write!(f, "OP_TABLE_GET_FROM {}", index)
             }
             Self::TABLE_SET { depth } => write!(f, "OP_TABLE_SET {}[]", depth),
+            Self::METHOD_GET { constant } => write!(f, "OP_METHOD_GET {}", constant),
             // Self::TABLE_SET_BY_CONSTANT { constant } => {
             //     write!(f, "OP_TABLE_SET_BY_CONSTANT {}", constant)
             // }

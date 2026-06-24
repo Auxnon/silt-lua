@@ -78,10 +78,41 @@ test binary.
   into the final key. `build_function` gained an `is_method` flag that injects an implicit `self`
   local (slot 0) for the colon form, matching the receiver the call site pushes as arg 0. Emitted
   code is stack-neutral so no statement pop is needed. Tests: `method_definition_colon`,
-  `method_definition_colon_with_args`, `dot_function_definition` pass. NOTE: chained-receiver
-  forms (`function a.b.c:m()` / `a.b:m(41)`) still fail, but only because of the pre-existing §2.10
-  chained table access/`{nested = {...}}` bug — the member-definition logic itself handles the
-  chain; un-blocks fully once §2.10 lands.
+  `method_definition_colon_with_args`, `dot_function_definition` pass.
+
+### 1.2.1 Colon-method *calls* on a chained receiver ✅ FIXED
+- **Repro:** `local a = {b={x=100}}; function a.b:add(n) return self.x+n end; return a.b:add(5)` → `105`.
+  Also `a.b.c:get()`.
+- **Observed:** the receiver was returned unchanged / `self` or args were wrong — the
+  `Token::Colon` method-call path only re-emitted a *single* getter as `self` (`pull_getter`),
+  so a chained receiver like `a.b` re-evaluated to just `a`, and the `Dot`/`Bracket` branch
+  consumed the chain and returned before the trailing `:m(...)` was parsed at all.
+- **Resolution (2026-06):** added a `METHOD_GET { constant }` opcode (mirrors PUC-Lua `OP_SELF`).
+  It takes the fully-evaluated receiver on the stack top and a method-name constant, looks up
+  `receiver[name]`, and leaves `[method, receiver]` so the receiver becomes the implicit `self`.
+  Both colon-call branches now funnel through `emit_method_get` — the bare-variable branch drains
+  its getter, the chained branch emits `TABLE_GET` first — and neither has to recompute the
+  receiver. Removed the now-dead `pull_getter`. Tests: `method_call_on_chained_receiver`,
+  `method_call_deep_chain`.
+
+### 1.2.2 Plain `if … then … end` corrupts a live local ✅ FIXED
+- **Repro:** `local x = 5 if x == 0 then x = 1 end return x + 100` → `Cannot + 'nil' and 'integer'`.
+  Also any `local function m(n) if n == 0 then return -1 end return n + 1 end`. Discovered while
+  finishing §1.2.1 — method bodies with an `if … return … end` guard were the only ones failing.
+- **Observed:** a local declared *before* a plain `if` reads as `nil` after the if-block. (Not
+  specific to early `return` or to functions — the trigger is simply having a live local on the
+  stack across a plain `if`.)
+- **Root cause:** a plain `if … then … end` (the no-`else` arm of `if_statement`,
+  `src/compiler.rs`) never consumed its own `end`. `build_block_until!` stops *at* `end` without
+  eating it; the `Else` arm eats it via `expect_token!` and the `ElseIf` arm recurses, but the
+  bare arm only patched the jump. The leftover `end` was then handed to `expression_statement`,
+  which compiled it as an empty expression and emitted a stray `OP_POP` — popping the slot of the
+  local sitting below — before the `end` was swallowed. Earlier if-tests passed only because they
+  read no local afterward, so the stray POP was invisible.
+- **Resolution (2026-06):** the bare arm now does `expect_token!(this it End)`. One-line fix; kills
+  both the leaked `end` and the stray POP. Tests: `plain_if_preserves_prior_local`,
+  `function_if_early_return_keeps_params`, `plain_if_no_semicolon_then_statement`
+  (`tests/conditionals.rs`).
 
 ### 1.3 Bitwise operators hang the compiler ♾️
 - **Repro:** `return 6 & 3` (also `|`). The process spins forever.
@@ -207,11 +238,8 @@ test binary.
 - **Resolution (2026-06):** index the key as `ip.sub(depth - i + 1)` so navigation runs
   left-to-right. Fixes get, set, and arbitrary depth in one line. Tests: `nested_field_read`,
   `nested_constructor`, `nested_field_write`, `deep_chain_read_write` pass.
-- **Residual (separate item):** colon-method *calls* on a multi-level receiver (`a.b:m(41)`,
-  `a.b.c:m()`) still misbehave — that is in the `Token::Colon` method-call path
-  (`src/compiler.rs` ~2710, `pull_getter`/`drain_getters`), which only re-pushes a single getter
-  as `self`, not a chained receiver. Single-level method calls (`t:m(args)`) work. Not part of
-  §2.10's field-access scope; track as its own fix to complete §1.2.
+- **Follow-up (FIXED):** colon-method *calls* on a multi-level receiver (`a.b:m(41)`,
+  `a.b.c:m()`) — see §1.2.1 below.
 
 ### 2.11 Under-supplied multiple local assignment doesn't nil extras (function scope) 🔴
 - **Repro:** `function t() local a, b, c = 5; if b == nil then return 999 end; return 0 end; return t()`

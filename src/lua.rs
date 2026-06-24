@@ -1675,6 +1675,20 @@ impl<'gc> VM<'gc> {
                 //         return Err(SiltError::VmNonTableOperations(table.to_error()));
                 //     }
                 // }
+                OpCode::METHOD_GET { constant } => {
+                    // `obj:method(...)` — the receiver is already on top of the
+                    // stack (any expression: variable, t.a.b chain, call result).
+                    // Look up the method and leave [method, receiver] so the
+                    // receiver is passed as the implicit `self` first argument.
+                    let key = Self::get_chunk(&frame).get_constant(*constant);
+                    let receiver = self.peek(ep).clone();
+                    let method = match &receiver {
+                        Value::Table(t) => (*t).borrow().get_value(&key),
+                        _ => break Err(SiltError::VmNonTableOperations(receiver.to_error())),
+                    };
+                    *self.peek_mut(ep) = method;
+                    self.push(ep, receiver);
+                }
                 OpCode::TABLE_GET { depth } => {
                     let u = *depth as usize + 1;
                     let table_point = unsafe { ep.ip.sub(u) };
