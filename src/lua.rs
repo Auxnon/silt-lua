@@ -2141,7 +2141,12 @@ impl<'gc> VM<'gc> {
         if let Value::Table(t) = table {
             let mut current = *t;
             for i in 1..=depth {
-                let key = unsafe { ep.ip.sub(i as usize).replace(Value::Nil) };
+                // Keys sit on the stack in source order above the table:
+                // [table, key1, key2, ... keyN] with keyN on top (ip.sub(1)).
+                // Navigation must consume them left-to-right, so step i reads
+                // key i at ip.sub(depth - i + 1) — NOT ip.sub(i), which would
+                // walk the chain backwards (t[keyN] first → nil for depth >= 2).
+                let key = unsafe { ep.ip.sub((depth - i + 1) as usize).replace(Value::Nil) };
                 devout!("get from table with key: {}", key);
                 if i == depth {
                     // let offset = depth as usize;

@@ -66,12 +66,22 @@ test binary.
   (global- and local-function forms both work). `method_definition_colon` remains ignored — it
   is §1.2 (colon-method parser `todo!`), unrelated to upvalues.
 
-### 1.2 Method/field function definition panics 🔴
+### 1.2 Method/field function definition panics ✅ FIXED
 - **Repro:** `local t = {x=5}; function t:get() return self.x end` — also `function t.get() ... end`.
 - **Observed:** Rust panic (same upvalue-resolution path as 1.1).
 - **Expected:** defines `t.get` with implicit `self` (colon form).
-- **Root cause:** the `function <expr>:<name>()` / `function <expr>.<name>()` path funnels into
-  the same broken upvalue resolution. Likely fixed together with 1.1; verify separately.
+- **Root cause:** the `function <expr>:<name>()` / `function <expr>.<name>()` path was not parsed
+  at all — `define_function` expected `(` straight after the name and otherwise the old `typing`
+  path hit a `todo!`. (The 1.1 panic was a red herring; this is purely a parser gap.)
+- **Resolution (2026-06):** added `define_function_member` (`src/compiler.rs`). It loads the base
+  receiver, walks intermediate `.field`s with `TABLE_GET`, builds the closure, and `TABLE_SET`s it
+  into the final key. `build_function` gained an `is_method` flag that injects an implicit `self`
+  local (slot 0) for the colon form, matching the receiver the call site pushes as arg 0. Emitted
+  code is stack-neutral so no statement pop is needed. Tests: `method_definition_colon`,
+  `method_definition_colon_with_args`, `dot_function_definition` pass. NOTE: chained-receiver
+  forms (`function a.b.c:m()` / `a.b:m(41)`) still fail, but only because of the pre-existing §2.10
+  chained table access/`{nested = {...}}` bug — the member-definition logic itself handles the
+  chain; un-blocks fully once §2.10 lands.
 
 ### 1.3 Bitwise operators hang the compiler ♾️
 - **Repro:** `return 6 & 3` (also `|`). The process spins forever.
@@ -180,18 +190,28 @@ test binary.
   `src/compiler.rs:2130/2167/2219`) but label tokenization/resolution is incorrect.
 - **Priority:** low — `goto` is rare in game scripts. Track but do not block on it.
 
-### 2.10 Chained/nested table field access `t.a.b` (depth ≥ 2) broken 🔴
+### 2.10 Chained/nested table field access `t.a.b` (depth ≥ 2) broken ✅ FIXED
 - **Repro:** `local t = {a = {b = 7}}; return t.a.b` → `Cannot perform table operations on a
   non-table value (nil)`. Also `local t = {a={}}; t.a.b = 7` (nested set) and the nested table
   literal `{inner = {value = 42}}` fail the same way.
 - **Observed:** `t.a` resolves to `nil` once a second `.field` follows.
 - **Expected:** `7`. Single-level access (`t.x`, `t['k']`, `t[1]`) and flat constructors work;
   only chained access / nested literals break.
-- **Root cause:** the `TABLE_GET`/`TABLE_SET` dot-access path (`src/compiler.rs` `dot`/index at
-  ~2709, `TABLE_GET{depth}` in the VM) does not keep the intermediate table on the stack for the
-  next `.field`, and the table constructor does not recurse into nested `{...}` values.
-- **Fix sketch:** make field access leave the resolved sub-table as the receiver for the next
-  link; make the constructor evaluate nested table literals as values.
+- **Root cause (actual):** the compiler was *correct* — `t.a.b` already emits one
+  `TABLE_GET { depth: 2 }` with keys pushed in source order `[t, "a", "b"]`, and nested
+  constructors already build sub-tables. The bug was entirely in the VM: `operate_table`
+  (`src/lua.rs`) read the keys with `ip.sub(i)`, i.e. **back-to-front** — step 1 used the
+  top-of-stack key (`"b"`) instead of `"a"`, so it dereferenced `t["b"]` (nil) and bailed. The
+  "nested literal broken" symptom was the same bug surfacing through the depth-2 *read* used to
+  verify it, not a constructor fault.
+- **Resolution (2026-06):** index the key as `ip.sub(depth - i + 1)` so navigation runs
+  left-to-right. Fixes get, set, and arbitrary depth in one line. Tests: `nested_field_read`,
+  `nested_constructor`, `nested_field_write`, `deep_chain_read_write` pass.
+- **Residual (separate item):** colon-method *calls* on a multi-level receiver (`a.b:m(41)`,
+  `a.b.c:m()`) still misbehave — that is in the `Token::Colon` method-call path
+  (`src/compiler.rs` ~2710, `pull_getter`/`drain_getters`), which only re-pushes a single getter
+  as `self`, not a chained receiver. Single-level method calls (`t:m(args)`) work. Not part of
+  §2.10's field-access scope; track as its own fix to complete §1.2.
 
 ### 2.11 Under-supplied multiple local assignment doesn't nil extras (function scope) 🔴
 - **Repro:** `function t() local a, b, c = 5; if b == nil then return 999 end; return 0 end; return t()`

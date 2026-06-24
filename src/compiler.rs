@@ -1669,6 +1669,16 @@ fn define_function<'c>(
         ("anonymous".to_string(), this.current_location)
     };
 
+    // `function t.a.b()` (field) or `function t:m()` (method). The name is not a
+    // plain variable binding — it assigns the closure into an existing table.
+    if matches!(this.peek(it)?, Token::Dot | Token::Colon) {
+        if local {
+            // `local function t:m()` / `local function t.x()` are not valid Lua.
+            return Err(this.error_at(SiltError::ExpectedToken(Token::OpenParen)));
+        }
+        return define_function_member(this, mc, f, it, ident, location);
+    }
+
     let ident_clone = ident.clone();
     let global_ident = if this.scope_depth > 0 && local {
         //local
@@ -1679,10 +1689,60 @@ fn define_function<'c>(
         Some((this.identifer_constant(f, ident), location))
     };
 
-    build_function(this, mc, f, it, ident_clone, false, location.0)?;
+    build_function(this, mc, f, it, ident_clone, false, false, location.0)?;
 
     define_variable(this, it, f, global_ident)?;
 
+    Ok(())
+}
+
+/// Compile `function base.a.b()` / `function base:m()`. We load `base`, walk any
+/// intermediate `.field`s with TABLE_GET to reach the owning table, build the
+/// closure, and TABLE_SET it into the final key. A `:` separator may only appear
+/// before the last name and makes the function a method (implicit `self`). The
+/// emitted sequence is stack-neutral: GET base + key constant + CLOSURE (+3) are
+/// all consumed by TABLE_SET, so no trailing statement pop is needed.
+fn define_function_member<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    base: String,
+    location: TokenCell,
+) -> Catch {
+    devnote!(this it "define_function_member");
+    // Push the receiver table.
+    let (_setter, getter) = resolve_etters(this, f, it, base);
+    this.emit_at(f, getter);
+
+    loop {
+        let (sep_res, _) = this.pop(it);
+        let is_method = matches!(sep_res?, Token::Colon);
+
+        let (field_res, field_loc) = this.pop(it);
+        let field = match field_res? {
+            Token::Identifier(s) => s,
+            _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
+        };
+        this.current_location = field_loc;
+
+        let more = matches!(this.peek(it)?, Token::Dot | Token::Colon);
+        if more {
+            if is_method {
+                // a `:` is only legal immediately before the final name
+                return Err(this.error_at(SiltError::ExpectedToken(Token::OpenParen)));
+            }
+            // descend into the intermediate table
+            this.emit_identifer_constant_at(f, field);
+            this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
+        } else {
+            // final component: key, closure, then assign
+            this.emit_identifer_constant_at(f, field.clone());
+            build_function(this, mc, f, it, field, false, is_method, location.0)?;
+            this.emit_at(f, OpCode::TABLE_SET { depth: 1 });
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -1694,6 +1754,7 @@ fn build_function<'c>(
     it: &mut Peekable<Lexer>,
     ident: String,
     is_script: bool,
+    is_method: bool,
     start_line: usize,
 ) -> Catch {
     // TODO this function could be called called rercursivelly due to the recursive decent nature of the parser, we should add a check to make sure we don't overflow the stack
@@ -1705,8 +1766,15 @@ fn build_function<'c>(
     // swap(f, &mut sidelined_func);
     begin_scope(this);
     begin_functional_scope(this);
-    expect_token!(this it OpenParen);
     let mut arity = 0;
+    // Colon-method definition: the implicit `self` occupies the first param slot
+    // so the receiver passed by `t:m(...)` (pushed as arg 0 at the call site)
+    // lands in it. It is a real local, just not written in the parameter list.
+    if is_method {
+        add_local(this, "self".to_string())?;
+        arity += 1;
+    }
+    expect_token!(this it OpenParen);
     if let Token::Identifier(_) | Token::VarArg = this.peek(it)? {
         arity += 1;
         build_param(this, it)?;
@@ -2357,7 +2425,7 @@ fn function_expression<'c>(
     // parse_precedence store() call that dispatched us here.
     let start_line = this.current_location.0;
     // build_function(this, mc, f, it, ident_clone, global_ident, false)?;
-    build_function(this, mc, f, it, "".to_owned(), false, start_line)
+    build_function(this, mc, f, it, "".to_owned(), false, false, start_line)
 }
 
 fn variable<'c>(

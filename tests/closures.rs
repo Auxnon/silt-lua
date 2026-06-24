@@ -102,7 +102,6 @@ fn shared_upvalue_between_closures() {
 }
 
 #[test]
-#[ignore = "PLAN.md §1.2 — colon-method definition unimplemented (parser todo! in `typing`), not an upvalue bug"]
 fn method_definition_colon() {
     valeq!(
         r#"
@@ -111,5 +110,31 @@ fn method_definition_colon() {
         return t:get()
     "#,
         ExVal::Integer(5)
+    );
+}
+
+#[test]
+fn method_definition_colon_with_args() {
+    // Implicit `self` must occupy slot 0 and the explicit param `n` slot 1.
+    valeq!(
+        r#"
+        local t = { x = 10 }
+        function t:add(n) return self.x + n end
+        return t:add(5)
+    "#,
+        ExVal::Integer(15)
+    );
+}
+
+#[test]
+fn dot_function_definition() {
+    // `function t.get(self)` — field assignment, no implicit self.
+    valeq!(
+        r#"
+        local t = { x = 9 }
+        function t.get(s) return s.x end
+        return t.get(t)
+    "#,
+        ExVal::Integer(9)
     );
 }

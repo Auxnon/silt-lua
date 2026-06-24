@@ -55,21 +55,25 @@ fn negative_index() {
 // =====================================================================================
 
 #[test]
-#[ignore = "PLAN.md §2.10 — chained field read t.a.b (depth >= 2) resolves t.a to nil"]
 fn nested_field_read() {
     valeq!("local t = {a = {b = 7}} return t.a.b", ExVal::Integer(7));
 }
 
 #[test]
-#[ignore = "PLAN.md §2.10 — nested table literal not stored as a subtable"]
 fn nested_constructor() {
     valeq!("local t = {inner = {value = 42}} return t.inner.value", ExVal::Integer(42));
 }
 
 #[test]
-#[ignore = "PLAN.md §2.10 — chained field write t.a.b = v errors on the intermediate"]
 fn nested_field_write() {
     valeq!("local t = {a = {}} t.a.b = 7 return t.a.b", ExVal::Integer(7));
+}
+
+#[test]
+fn deep_chain_read_write() {
+    // depth-3 navigation in both directions
+    valeq!("local t = {a = {b = {c = 99}}} return t.a.b.c", ExVal::Integer(99));
+    valeq!("local t = {a = {b = {}}} t.a.b.c = 5 return t.a.b.c", ExVal::Integer(5));
 }
 
 #[test]
