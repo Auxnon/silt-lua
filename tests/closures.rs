@@ -138,3 +138,30 @@ fn dot_function_definition() {
         ExVal::Integer(9)
     );
 }
+
+#[test]
+fn method_call_on_chained_receiver() {
+    // `a.b:m(...)` — the receiver is a chained field access, not a bare
+    // variable. METHOD_GET must use the fully-resolved receiver as `self`.
+    valeq!(
+        r#"
+        local a = { b = { x = 100 } }
+        function a.b:add(n) return self.x + n end
+        return a.b:add(5)
+    "#,
+        ExVal::Integer(105)
+    );
+}
+
+#[test]
+fn method_call_deep_chain() {
+    // depth-3 receiver chain feeding a colon call
+    valeq!(
+        r#"
+        local a = { b = { c = { x = 7 } } }
+        function a.b.c:get() return self.x end
+        return a.b.c:get()
+    "#,
+        ExVal::Integer(7)
+    );
+}
