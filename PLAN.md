@@ -114,54 +114,76 @@ test binary.
   `function_if_early_return_keeps_params`, `plain_if_no_semicolon_then_statement`
   (`tests/conditionals.rs`).
 
-### 1.3 Bitwise operators hang the compiler ♾️
+### 1.3 Bitwise operators hang the compiler ✅ FIXED
 - **Repro:** `return 6 & 3` (also `|`). The process spins forever.
 - **Observed:** infinite loop; no error, no result.
 - **Expected:** Lua 5.3 integer bitwise: `6 & 3 == 2`, `4 | 1 == 5`, `5 ~ 1 == 4`,
   `~0 == -1`, `1 << 4 == 16`, `256 >> 2 == 64`.
-- **Root cause:** `&`, `|`, `^` (and the binary `~`/shift forms) are **not lexed** — the lexer
-  (`src/lexer.rs`, char match ending at the catch-all `cw =>` at line 648) has no arm for `&`
-  or `|`, so they hit `SiltError::UnexpectedCharacter`, eat one char, and the parser's
-  precedence loop fails to advance past the error token, spinning. **A hang is worse than an
-  error** — at minimum the parser must make forward progress on an unexpected character.
-- **Fix sketch:** (a) make the parser error-recovery always advance the token cursor (kills the
-  hang for *any* future stray char); (b) lex `&`, `|`, `<<`, `>>`, and binary `~`; (c) add the
-  opcodes in §2.1.
+- **Root cause:** two issues. (1) `synchronize()` was a **no-op**, so when `compile()`'s
+  `while iter.peek().is_some()` loop hit a `declaration` error that left the offending token in
+  place (e.g. an unlexable char surfacing as a peek `Err`), it re-parsed that token forever.
+  (2) `&`, `|`, `<<`, `>>` were not lexed and binary `~` had no infix rule.
+- **Resolution (2026-06):**
+  - (a) `synchronize(iter)` now always consumes at least one token and skips to the next
+    statement boundary — kills the hang class for *any* stray character, not just `&`/`|`.
+  - (b) lexer emits `&`/`|` (`BitAnd`/`BitOr`), `<<`/`>>` (`ShiftLeft`/`ShiftRight`); `~` is
+    unary not (prefix) and binary xor (infix), reusing `Operator::Tilde`.
+  - (c) added `BIT_AND`/`BIT_OR`/`BIT_XOR`/`BIT_NOT`/`SHIFT_LEFT`/`SHIFT_RIGHT` opcodes and the
+    Lua 5.3 precedence ladder (`|` < `~` < `&` < `<< >>`, all between comparison and concat).
+    VM coerces operands to integers (float with exact integer value ok; else
+    `ExpInvalidBitwise`); shifts are logical 64-bit with Lua's out-of-range/negative semantics.
+  - Tests: `bitwise`, `bitwise_precedence` (`tests/arithmetic.rs`), `bitwise_on_non_integer_errors`
+    (`tests/errors.rs`). `cargo test -- --ignored` no longer hangs.
+  - **Not done (separate):** table `__band`/etc metamethods aren't dispatched (tables error); hex
+    integer literals (`0xff`) are unrelated and still unsupported by the lexer.
 
 ---
 
 ## 2. Major correctness bugs
 
-### 2.1 Arithmetic operators with no opcode: `%`, `^`, `//` 🔴
+### 2.1 Arithmetic operators with no opcode: `%`, `^`, `//` ✅ FIXED (bitwise still pending §1.3)
 - **Repro:** `return 5 % 2` → `5`; `return 17 % 5` → `17`; `return 2 ^ 10` → `2`;
   `return 7 // 2` → error/garbage.
 - **Observed:** the operator is silently dropped; the result is the **left operand**.
 - **Expected:** `5 % 2 == 1`, `5.5 % 2 == 1.5` (floored modulo), `2 ^ 10 == 1024.0`
   (`^` always float), `7 // 2 == 3` (floor division).
-- **Root cause:** there are **no `MODULUS`, `POWER`, `FLOOR_DIVIDE`, or bitwise opcodes** in
-  `src/code.rs` (`OpCode` enum). In `binary()` (`src/compiler.rs:2934`) only `ADD/SUB/MULTIPLY/
-  DIVIDE/CONCAT/comparisons` are emitted; everything else falls through to `_ => todo!()`
-  (line 2964) — but because `%`/`^`/`//` have no infix **rule** in the Pratt table they never
-  reach `binary()`; the precedence loop just stops and the trailing tokens are abandoned.
-- **Fix sketch:** add `MODULUS`, `POWER`, `FLOOR_DIVIDE`, `BIT_AND`, `BIT_OR`, `BIT_XOR`,
-  `BIT_NOT`, `SHIFT_L`, `SHIFT_R` opcodes; wire their precedence rules (`^` is
-  right-associative and binds tighter than unary; `%`,`//` share `*`/`/` precedence; bitwise
-  sit between comparison and concat per the 5.3 grammar); implement in the VM with Lua's
-  integer/float coercion rules (`%` is floored, `^` always float, bitwise require integer
-  representability or error).
+- **Root cause:** `%` lexed to `Operator::Modulus` but had no Pratt rule/opcode; `^` and `//`
+  were not lexed at all. With no infix rule the precedence loop just stopped and trailing tokens
+  were abandoned.
+- **Resolution (2026-06):** lexer now emits `^` (`Operator::Exponent`) and `//`
+  (`Operator::FloorDivide`); added `MODULUS`/`POWER`/`FLOOR_DIVIDE` opcodes (`src/code.rs`);
+  Pratt rules — `%` and `//` at `Factor`, and a new `Exponent` precedence level above `Unary`
+  for `^` with a dedicated right-associative `exponent` infix (so `2^2^3 == 256` and
+  `-2^2 == -4`). VM handlers implement Lua coercion: `%` floored (sign of divisor, integer-by-0
+  errors instead of panicking), `^` always float, `//` floored toward -inf; tables dispatch the
+  `Mod`/`Pow`/`IDiv` metamethods. Tests: `modulo`, `power`, `floor_division`,
+  `arithmetic_precedence` (`tests/arithmetic.rs`).
+- **Still pending:** bitwise `&` `|` `~` `<<` `>>` remain unlexed and are blocked on §1.3
+  (`&`/`|` hang the parser). `bitwise` test stays ignored.
+
+### 2.1b Compound assignment (Luau-style `+= -= *= /= //= %= ^= ..=`) ✅ NEW FEATURE
+- New cargo feature `compound-assignment` (in the default `silt` set) plus a runtime flag
+  `LanguageFlags::compound_assignment` (defaults from the feature). The lexer only emits the
+  compound tokens when the feature is on (otherwise `+=` falls back to `+` then `=`).
+- `x op= e` desugars to `x = x op e`, evaluating the target **once**. Simple variables
+  (local/upvalue/global) emit getter → RHS → op → setter. Table targets (`t.f op= e`,
+  `t[k] op= e`, chained `a.b.c op= e`) use a new `DUP_N(n)` opcode to duplicate the
+  receiver+keys so the same operands feed a `TABLE_GET` and a `TABLE_SET` with no
+  re-evaluation. Multiple targets (`a, b += 1`) are rejected. Tests: `tests/compound_assign.rs`.
 
 ### 2.2 Parenthesized sub-expression drops trailing operators 🔴
 - **Repro:** `return (1+2)*3` → `3`; `return (10+5)*2-3` → `15`; `return (1+2)+3` → `3`.
   (Note: `2*(1+2)` → `6` works, because the paren group is not followed by another operator.)
 - **Observed:** any operator *after* a closing `)` is dropped; the value is just the group.
 - **Expected:** `(1+2)*3 == 9`, `(10+5)*2-3 == 27`.
-- **Root cause:** `grouping()` (`src/compiler.rs:2751`) calls `expression()` but **never
-  consumes the closing `)`** — the `expect CloseParen` is commented out (lines 2760-2762). The
+- **Root cause:** `grouping()` (`src/compiler.rs`) calls `expression()` but **never
+  consumes the closing `)`** — the `expect CloseParen` was commented out. The
   stray `)` then sits at the cursor with no infix rule, so the enclosing precedence loop halts
   and the following operator is never parsed.
-- **Fix sketch:** consume `)` at the end of `grouping()` (re-enable the `expect_token!(... CloseParen ...)`),
-  and add an `UnterminatedParenthesis` error path. This is a small fix with large blast radius —
-  prioritize it.
+- **Resolution (2026-06) ✅ FIXED:** `grouping()` now `expect_token!`s `CloseParen` at the end,
+  erroring with `UnterminatedParenthesis(line,col)` (col captured from the open paren) when it is
+  missing. One small fix, large blast radius. Tests: `parentheses_then_operator` (extended with
+  nested groups `((1+2)*(3+4))`, `2*(3+(4-1))`).
 
 ### 2.3 `elseif` fails to parse ✅ FIXED
 - **Repro:** `local x=2; if x==1 then return 10 elseif x==2 then return 20 else return 30 end`
@@ -439,10 +461,11 @@ jobs:
       - run: cargo test --all-features      # never runs benches (see §8)
 ```
 
-> ⚠️ Do **not** add `cargo test -- --ignored` to CI yet. The `bitwise` test (§1.3) hangs the
-> test binary forever because `&`/`|` send the parser into an infinite loop. Run `--ignored`
-> manually only after §1.3's parser-forward-progress fix lands; then it becomes safe to wire as
-> an informational, non-blocking job.
+> ✅ `cargo test -- --ignored` is now **safe** (§1.3 fixed: `synchronize()` always makes forward
+> progress, so a stray/unlexable char errors instead of hanging). It can be wired as an
+> informational, non-blocking job. Note one remaining `#[ignore]`d stub — `chunk_validity` in
+> `src/lib.rs` — intentionally `panic!`s ("direct hand-built Chunk execution not wired up yet"),
+> so `--ignored` reports one expected failure unrelated to language conformance.
 
 ---
 

@@ -123,6 +123,27 @@ pub enum OpCode {
     INCREMENT {
         index: u8,
     },
+    /// `%` floored modulo (Lua semantics)
+    MODULUS,
+    /// `^` exponentiation — always yields a float
+    POWER,
+    /// `//` floor division
+    FLOOR_DIVIDE,
+    /// `&` bitwise and (integer operands)
+    BIT_AND,
+    /// `|` bitwise or
+    BIT_OR,
+    /// `~` (binary) bitwise xor
+    BIT_XOR,
+    /// `~` (unary) bitwise not
+    BIT_NOT,
+    /// `<<` left shift
+    SHIFT_LEFT,
+    /// `>>` right shift
+    SHIFT_RIGHT,
+    /// Duplicate the top `n` stack values in order (used by compound assignment
+    /// to a table field so the receiver+keys can feed both a GET and a SET).
+    DUP_N(u8),
 }
 
 impl Display for OpCode {
@@ -235,6 +256,16 @@ impl Display for OpCode {
             //     write!(f, "OP_TABLE_SET_BY_CONSTANT {}", constant)
             // }
             Self::INCREMENT { index } => write!(f, "OP_INCREMENT {}", index),
+            Self::MODULUS => write!(f, "OP_MODULUS"),
+            Self::POWER => write!(f, "OP_POWER"),
+            Self::FLOOR_DIVIDE => write!(f, "OP_FLOOR_DIVIDE"),
+            Self::BIT_AND => write!(f, "OP_BIT_AND"),
+            Self::BIT_OR => write!(f, "OP_BIT_OR"),
+            Self::BIT_XOR => write!(f, "OP_BIT_XOR"),
+            Self::BIT_NOT => write!(f, "OP_BIT_NOT"),
+            Self::SHIFT_LEFT => write!(f, "OP_SHIFT_LEFT"),
+            Self::SHIFT_RIGHT => write!(f, "OP_SHIFT_RIGHT"),
+            Self::DUP_N(n) => write!(f, "OP_DUP_N {}", n),
         }
     }
 }

@@ -163,10 +163,15 @@ enum Precedence {
     And,        // and
     Equality,   // == ~= !=
     Comparison, // < > <= >=
+    BitOr,      // |
+    BitXor,     // ~ (binary)
+    BitAnd,     // &
+    Shift,      // << >>
     Concat,     // ..
     Term,       // + -
-    Factor,     // * /
+    Factor,     // * / // %
     Unary,      // ~ - !
+    Exponent,   // ^ (right-assoc, binds tighter than unary)
     Call,       // . ()
     Primary,
 }
@@ -183,6 +188,9 @@ pub struct LanguageFlags {
     pub arrow_functions: bool,
     #[allow(dead_code)]
     pub bang_operator: bool,
+    /// Luau-style compound assignment (`+= -= *= /= //= %= ^= ..=`). Defaults to
+    /// the `compound-assignment` cargo feature; an embedder may still toggle it.
+    pub compound_assignment: bool,
 }
 
 impl Default for LanguageFlags {
@@ -191,6 +199,7 @@ impl Default for LanguageFlags {
             implicit_returns: false,
             arrow_functions: false,
             bang_operator: false,
+            compound_assignment: cfg!(feature = "compound-assignment"),
         }
     }
 }
@@ -203,11 +212,16 @@ impl Precedence {
             Precedence::Or => Precedence::And,
             Precedence::And => Precedence::Equality,
             Precedence::Equality => Precedence::Comparison,
-            Precedence::Comparison => Precedence::Concat,
+            Precedence::Comparison => Precedence::BitOr,
+            Precedence::BitOr => Precedence::BitXor,
+            Precedence::BitXor => Precedence::BitAnd,
+            Precedence::BitAnd => Precedence::Shift,
+            Precedence::Shift => Precedence::Concat,
             Precedence::Concat => Precedence::Term,
             Precedence::Term => Precedence::Factor,
             Precedence::Factor => Precedence::Unary,
-            Precedence::Unary => Precedence::Call,
+            Precedence::Unary => Precedence::Exponent,
+            Precedence::Exponent => Precedence::Call,
             Precedence::Call => Precedence::Primary,
             Precedence::Primary => Precedence::Primary, // TODO over?
         }
@@ -223,10 +237,15 @@ impl Display for Precedence {
             Precedence::And => write!(f, "And"),
             Precedence::Equality => write!(f, "Equality"),
             Precedence::Comparison => write!(f, "Comparison"),
+            Precedence::BitOr => write!(f, "BitOr"),
+            Precedence::BitXor => write!(f, "BitXor"),
+            Precedence::BitAnd => write!(f, "BitAnd"),
+            Precedence::Shift => write!(f, "Shift"),
             Precedence::Concat => write!(f, "Concat"),
             Precedence::Term => write!(f, "Term"),
             Precedence::Factor => write!(f, "Factor"),
             Precedence::Unary => write!(f, "Unary"),
+            Precedence::Exponent => write!(f, "Exponent"),
             Precedence::Call => write!(f, "Call"),
             Precedence::Primary => write!(f, "Primary"),
         }
@@ -435,6 +454,7 @@ impl Compiler {
             implicit_returns,
             arrow_functions,
             bang_operator,
+            ..LanguageFlags::default()
         };
         compiler
     }
@@ -940,6 +960,11 @@ fn set_trailing_vararg(&mut self,bool: bool){
                 Operator::Add => rule!(void, binary, Term),
                 Operator::Multiply => rule!(void, binary, Factor),
                 Operator::Divide => rule!(void, binary, Factor),
+                Operator::Modulus => rule!(void, binary, Factor),
+                Operator::FloorDivide => rule!(void, binary, Factor),
+                // `^` is right-associative and binds tighter than unary, so it
+                // uses a dedicated infix and the Exponent precedence level.
+                Operator::Exponent => rule!(void, exponent, Exponent),
                 Operator::Not => rule!(unary, void, None),
                 Operator::NotEqual => rule!(void, binary, Equality),
                 Operator::Equal => rule!(void, binary, Equality),
@@ -950,6 +975,12 @@ fn set_trailing_vararg(&mut self,bool: bool){
                 Operator::Concat => rule!(void, concat, Concat),
                 Operator::And => rule!(void, and, And),
                 Operator::Or => rule!(void, or, Or),
+                Operator::BitOr => rule!(void, binary, BitOr),
+                // `~` is unary bitwise-not (prefix) and binary xor (infix)
+                Operator::Tilde => rule!(unary, binary, BitXor),
+                Operator::BitAnd => rule!(void, binary, BitAnd),
+                Operator::ShiftLeft => rule!(void, binary, Shift),
+                Operator::ShiftRight => rule!(void, binary, Shift),
                 Operator::Length => rule!(unary, void, None),
                 _ => rule!(void, void, None),
             },
@@ -993,7 +1024,7 @@ fn set_trailing_vararg(&mut self,bool: bool){
                 Ok(()) => {}
                 Err(e) => {
                     self.push_error(e);
-                    self.synchronize();
+                    self.synchronize(&mut iter);
                 }
             }
         }
@@ -1203,16 +1234,41 @@ pub fn lsp(source: &str, format: bool) -> String {
 }
 
 impl Compiler {
-    fn synchronize(&mut self) {
-        // TODO should we unwind or just dump it all?
-        // self.eat();
-        // while !self.is_end() {
-        //     match self.get_current() {
-        //         Ok(Token::Print) => return,
-        //         _ => {}
-        //     }
-        //     self.eat();
-        // }
+    /// Error recovery. CRITICAL: this must always consume at least one token.
+    /// `compile()` loops `while iter.peek().is_some()`, so if a failed
+    /// `declaration` left the offending token in place (e.g. an unlexable char
+    /// that surfaces as a peek `Err`), the loop would re-parse it forever and
+    /// hang. After guaranteeing progress we skip ahead to a likely statement
+    /// boundary so a single bad token doesn't cascade into a flood of errors.
+    fn synchronize(&mut self, iter: &mut Peekable<Lexer>) {
+        self.eat(iter);
+        loop {
+            let at_boundary = match iter.peek() {
+                None => true,
+                Some(Ok(tt)) => matches!(
+                    &tt.0,
+                    Token::Local
+                        | Token::Global
+                        | Token::Function
+                        | Token::If
+                        | Token::While
+                        | Token::For
+                        | Token::Return
+                        | Token::Do
+                        | Token::End
+                        | Token::Print
+                        | Token::Goto
+                        | Token::ColonColon
+                        | Token::SemiColon
+                ),
+                // a run of unlexable characters: keep eating so we don't spin
+                Some(Err(_)) => false,
+            };
+            if at_boundary {
+                break;
+            }
+            self.eat(iter);
+        }
     }
 
     fn parse_precedence<'c>(
@@ -2564,6 +2620,57 @@ fn print_var_stack(_v: &[Option<(OpCode, OpCode)>]) {
     }
 }
 
+/// Map a compound-assignment token to the binary opcode it applies.
+/// `x += e` desugars to `x = x <op> e`.
+fn compound_op(token: &Token) -> Option<OpCode> {
+    Some(match token {
+        Token::AddAssign => OpCode::ADD,
+        Token::SubAssign => OpCode::SUB,
+        Token::MultiplyAssign => OpCode::MULTIPLY,
+        Token::DivideAssign => OpCode::DIVIDE,
+        Token::ModulusAssign => OpCode::MODULUS,
+        Token::PowerAssign => OpCode::POWER,
+        Token::FloorDivideAssign => OpCode::FLOOR_DIVIDE,
+        Token::ConcatAssign => OpCode::CONCAT,
+        _ => return None,
+    })
+}
+
+/// `x <op>= e` for a simple variable (local / upvalue / global). The variable's
+/// (setter, getter) pair was just gathered onto `var_stack`. We emit the getter
+/// to push the current value, evaluate the RHS, apply `op`, then store back.
+fn compound_assign_var<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    op: OpCode,
+) -> Catch {
+    devnote!(this it "compound_assign_var");
+    // Compound assignment never has multiple targets (`a, b += 1` is invalid).
+    let pair = match this.var_stack.len() {
+        1 => this.var_stack.pop().flatten(),
+        _ => None,
+    };
+    let (setter, getter) = match pair {
+        Some(p) => p,
+        None => {
+            let tok = this.peek(it)?.clone();
+            return Err(this.error_at(SiltError::InvalidAssignment(tok)));
+        }
+    };
+    this.eat(it); // the compound operator
+    this.emit_at(f, getter); // current value of the target
+    this.set_can_multivar_set(false);
+    expression_single(this, mc, f, it, false)?; // right-hand side
+    this.set_can_multivar_set(true);
+    this.emit_at(f, op); // current <op> rhs
+    this.emit_at(f, setter); // store result (leaves a copy on the stack)
+    this.emit_at(f, OpCode::POP); // drop that copy
+    this.override_pop(); // statement pop already accounted for
+    Ok(())
+}
+
 fn named_variable<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -2767,6 +2874,22 @@ fn named_variable<'c>(
                 this.drain_getters(f);
             }
         }
+        ct @ (Token::AddAssign
+        | Token::SubAssign
+        | Token::MultiplyAssign
+        | Token::DivideAssign
+        | Token::ModulusAssign
+        | Token::PowerAssign
+        | Token::FloorDivideAssign
+        | Token::ConcatAssign) => {
+            // `x <op>= e` on a simple variable.
+            if !can_assign || !this.language_flags.compound_assignment {
+                let tok = ct.clone();
+                return Err(this.error_at(SiltError::InvalidAssignment(tok)));
+            }
+            let op = compound_op(ct).unwrap();
+            compound_assign_var(this, mc, f, it, op)?;
+        }
         Token::OpenBracket | Token::Dot => {
             // println!("drain 4");
             this.drain_getters(f); // TODO we should probably error if this is higher then 1
@@ -2777,6 +2900,32 @@ fn named_variable<'c>(
                     expression(this, mc, f, it, false)?;
                     this.emit_at(f, OpCode::TABLE_SET { depth: count });
                     // override statement end pop because instruction takes care of it
+                    this.override_pop();
+                }
+                ct @ (Token::AddAssign
+                | Token::SubAssign
+                | Token::MultiplyAssign
+                | Token::DivideAssign
+                | Token::ModulusAssign
+                | Token::PowerAssign
+                | Token::FloorDivideAssign
+                | Token::ConcatAssign) => {
+                    // `t.f <op>= e` / `t[k] <op>= e`. Duplicate the receiver+keys
+                    // (DUP_N) so the same operands feed a TABLE_GET (read current)
+                    // and a TABLE_SET (store result) — no re-evaluation of `t`/`k`.
+                    if !can_assign || !this.language_flags.compound_assignment {
+                        let tok = ct.clone();
+                        return Err(this.error_at(SiltError::InvalidAssignment(tok)));
+                    }
+                    let op = compound_op(ct).unwrap();
+                    this.eat(it);
+                    this.emit_at(f, OpCode::DUP_N(count + 1));
+                    this.emit_at(f, OpCode::TABLE_GET { depth: count });
+                    this.set_can_multivar_set(false);
+                    expression_single(this, mc, f, it, false)?;
+                    this.set_can_multivar_set(true);
+                    this.emit_at(f, op);
+                    this.emit_at(f, OpCode::TABLE_SET { depth: count });
                     this.override_pop();
                 }
                 Token::Colon => {
@@ -2953,6 +3102,7 @@ fn unary<'c>(
         Token::Op(Operator::Sub) => this.emit_at(f, OpCode::NEGATE),
         Token::Op(Operator::Not) => this.emit_at(f, OpCode::NOT),
         Token::Op(Operator::Length) => this.emit_at(f, OpCode::LENGTH),
+        Token::Op(Operator::Tilde) => this.emit_at(f, OpCode::BIT_NOT),
         _ => {}
     }
     //     let operator = Self::de_op(self.eat_out());
@@ -3058,11 +3208,16 @@ fn binary<'c>(
             Operator::Sub => this.emit(f, OpCode::SUB, l),
             Operator::Multiply => this.emit(f, OpCode::MULTIPLY, l),
             Operator::Divide => this.emit(f, OpCode::DIVIDE, l),
+            Operator::Modulus => this.emit(f, OpCode::MODULUS, l),
+            Operator::FloorDivide => this.emit(f, OpCode::FLOOR_DIVIDE, l),
+            Operator::BitAnd => this.emit(f, OpCode::BIT_AND, l),
+            Operator::BitOr => this.emit(f, OpCode::BIT_OR, l),
+            Operator::Tilde => this.emit(f, OpCode::BIT_XOR, l),
+            Operator::ShiftLeft => this.emit(f, OpCode::SHIFT_LEFT, l),
+            Operator::ShiftRight => this.emit(f, OpCode::SHIFT_RIGHT, l),
 
             Operator::Concat => this.emit(f, OpCode::CONCAT, l),
 
-            // Operator::Modulus => self.emit(OpCode::MODULUS, t.1),
-            // Operator::Equal => self.emit(OpCode::EQUAL, t.1),
             Operator::Equal => this.emit(f, OpCode::EQUAL, l),
             Operator::NotEqual => this.emit(f, OpCode::NOT_EQUAL, l),
             Operator::Less => this.emit(f, OpCode::LESS, l),
@@ -3073,6 +3228,23 @@ fn binary<'c>(
             _ => todo!(),
         }
     }
+    Ok(())
+}
+
+/// Right-associative `^`. Parses the RHS at its OWN precedence (not `.next()`)
+/// so `2^2^3` groups as `2^(2^3)`. Because Exponent sits above Unary, `-2^2`
+/// already parses as `-(2^2)` via the unary operand parse.
+fn exponent<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
+    devnote!(this it "exponent");
+    let l = this.current_location;
+    this.parse_precedence(mc, f, it, Precedence::Exponent, false)?;
+    this.emit(f, OpCode::POWER, l);
     Ok(())
 }
 

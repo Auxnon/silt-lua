@@ -49,37 +49,54 @@ fn parentheses_then_operator() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2.1 — no MODULUS opcode; operator is silently dropped"]
 fn modulo() {
     valeq!("return 17 % 5", ExVal::Integer(2));
     valeq!("return 5 % 2", ExVal::Integer(1));
     valeq!("return 5.5 % 2", ExVal::Number(1.5)); // floored modulo
+    valeq!("return -5 % 3", ExVal::Integer(1)); // floored: sign of divisor
+    valeq!("return 5 % -3", ExVal::Integer(-1));
 }
 
 #[test]
-#[ignore = "PLAN.md §2.1 — no POWER opcode; '^' always yields a float"]
 fn power() {
     valeq!("return 2 ^ 3", ExVal::Number(8.0));
     valeq!("return 2 ^ 10", ExVal::Number(1024.0));
+    // right-associative, and binds tighter than unary minus
+    valeq!("return 2 ^ 2 ^ 3", ExVal::Number(256.0));
+    valeq!("return -2 ^ 2", ExVal::Number(-4.0));
 }
 
 #[test]
-#[ignore = "PLAN.md §2.1 — no FLOOR_DIVIDE opcode"]
 fn floor_division() {
     valeq!("return 7 // 2", ExVal::Integer(3));
     valeq!("return 7.0 // 2", ExVal::Number(3.0));
+    valeq!("return -7 // 2", ExVal::Integer(-4)); // rounds toward -inf
 }
 
-// ⚠️ WARNING: do NOT run this with `--ignored` until PLAN.md §1.3 is fixed. `&`/`|` are not
-// lexed and the parser spins forever on the resulting error token — this test will HANG the
-// whole test binary (not fail). Fix the parser forward-progress bug first.
 #[test]
-#[ignore = "PLAN.md §1.3 — bitwise operators are not lexed and '&'/'|' HANG the compiler (do not run --ignored)"]
+fn arithmetic_precedence() {
+    valeq!("return 2 + 3 % 4", ExVal::Integer(5)); // % binds tighter than +
+    valeq!("return 10 // 3 + 1", ExVal::Integer(4));
+    valeq!("return 2 * 3 ^ 2", ExVal::Number(18.0)); // ^ tighter than *
+}
+
+#[test]
 fn bitwise() {
     valeq!("return 6 & 3", ExVal::Integer(2));
     valeq!("return 4 | 1", ExVal::Integer(5));
-    valeq!("return 5 ~ 1", ExVal::Integer(4));
-    valeq!("return ~0", ExVal::Integer(-1));
+    valeq!("return 5 ~ 1", ExVal::Integer(4)); // binary xor
+    valeq!("return ~0", ExVal::Integer(-1)); // unary not
+    valeq!("return ~5", ExVal::Integer(-6));
     valeq!("return 1 << 4", ExVal::Integer(16));
     valeq!("return 256 >> 2", ExVal::Integer(64));
+}
+
+#[test]
+fn bitwise_precedence() {
+    // shift binds tighter than | ; + binds tighter than & ; xor tighter than |
+    valeq!("return 1 << 2 | 1", ExVal::Integer(5));
+    valeq!("return 7 & 3 + 1", ExVal::Integer(4));
+    valeq!("return 2 | 1 ~ 3", ExVal::Integer(2));
+    // comparison is looser than bitwise: (5 & 3) == 1
+    valeq!("return 5 & 3 == 1", ExVal::Bool(true));
 }

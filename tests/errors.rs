@@ -40,3 +40,10 @@ fn string_coercion_in_arithmetic_succeeds() {
     // Sanity counter-case: numeric strings DO coerce.
     assert_eq!(run_err("return '5' + 2"), Ok("7".to_string()));
 }
+
+#[test]
+fn bitwise_on_non_integer_errors() {
+    // A float with a fractional part has no integer representation (Lua).
+    let e = run_err("return 1.5 & 1").expect_err("bitwise on non-integer must raise");
+    assert!(!e.is_empty(), "unexpected: {e}");
+}

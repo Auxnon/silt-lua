@@ -142,6 +142,46 @@ macro_rules! num_op_str{
     }
 }
 
+/// Coerce a value to an integer for bitwise ops, per Lua: integers pass through,
+/// floats with an exact integer value convert, everything else has "no integer
+/// representation" and is rejected by the caller.
+fn bit_int(v: &Value<'_>) -> Option<i64> {
+    match v {
+        Value::Integer(i) => Some(*i),
+        Value::Number(f) => {
+            if f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 {
+                Some(*f as i64)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Lua logical left shift on 64 bits: shifts >= 64 give 0, negative counts shift
+/// the other direction.
+fn lua_shl(a: i64, b: i64) -> i64 {
+    if b <= -64 || b >= 64 {
+        0
+    } else if b >= 0 {
+        ((a as u64).wrapping_shl(b as u32)) as i64
+    } else {
+        ((a as u64).wrapping_shr((-b) as u32)) as i64
+    }
+}
+
+/// Lua logical right shift (mirror of `lua_shl`).
+fn lua_shr(a: i64, b: i64) -> i64 {
+    if b <= -64 || b >= 64 {
+        0
+    } else if b >= 0 {
+        ((a as u64).wrapping_shr(b as u32)) as i64
+    } else {
+        ((a as u64).wrapping_shl((-b) as u32)) as i64
+    }
+}
+
 macro_rules! binary_op_push {
     ($src:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $op:tt, $opp:tt) => {{
         #[cfg(feature = "dev-out")]
@@ -1304,6 +1344,166 @@ impl<'gc> VM<'gc> {
                                 r.to_error(),
                             ))
                         }
+                    }
+                }
+
+                OpCode::MODULUS => {
+                    let right = self.pop(ep);
+                    let left = self.pop(ep);
+                    match (left, right) {
+                        (Value::Integer(a), Value::Integer(b)) => {
+                            if b == 0 {
+                                break Err(SiltError::ExpOpValueWithValue(
+                                    Value::Integer(a).to_error(),
+                                    MetaMethod::Mod,
+                                    Value::Integer(b).to_error(),
+                                ));
+                            }
+                            // Lua's `%` is floored: the result takes the sign of
+                            // the divisor (Rust's `%` is truncated toward zero).
+                            let r = a % b;
+                            let m = if r != 0 && (r < 0) != (b < 0) { r + b } else { r };
+                            self.push(ep, Value::Integer(m));
+                        }
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                        }
+                        (Value::Number(a), Value::Integer(b)) => {
+                            let b = b as f64;
+                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                        }
+                        (Value::Integer(a), Value::Number(b)) => {
+                            let a = a as f64;
+                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                        }
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, rr, Mod
+                            );
+                            self.push(ep, v);
+                        }
+                        (l, r) => {
+                            break Err(SiltError::ExpOpValueWithValue(
+                                l.to_error(),
+                                MetaMethod::Mod,
+                                r.to_error(),
+                            ))
+                        }
+                    }
+                }
+                OpCode::POWER => {
+                    // `^` always yields a float, per Lua.
+                    let right = self.pop(ep);
+                    let left = self.pop(ep);
+                    match (left, right) {
+                        (Value::Integer(a), Value::Integer(b)) => {
+                            self.push(ep, Value::Number((a as f64).powf(b as f64)))
+                        }
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number(a.powf(b)))
+                        }
+                        (Value::Number(a), Value::Integer(b)) => {
+                            self.push(ep, Value::Number(a.powf(b as f64)))
+                        }
+                        (Value::Integer(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number((a as f64).powf(b)))
+                        }
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, rr, Pow
+                            );
+                            self.push(ep, v);
+                        }
+                        (l, r) => {
+                            break Err(SiltError::ExpOpValueWithValue(
+                                l.to_error(),
+                                MetaMethod::Pow,
+                                r.to_error(),
+                            ))
+                        }
+                    }
+                }
+                OpCode::FLOOR_DIVIDE => {
+                    let right = self.pop(ep);
+                    let left = self.pop(ep);
+                    match (left, right) {
+                        (Value::Integer(a), Value::Integer(b)) => {
+                            if b == 0 {
+                                break Err(SiltError::ExpOpValueWithValue(
+                                    Value::Integer(a).to_error(),
+                                    MetaMethod::IDiv,
+                                    Value::Integer(b).to_error(),
+                                ));
+                            }
+                            // floored integer division (rounds toward -inf),
+                            // consistent with the floored `%` above.
+                            let q = a / b;
+                            let r = a % b;
+                            let q = if r != 0 && (r < 0) != (b < 0) { q - 1 } else { q };
+                            self.push(ep, Value::Integer(q));
+                        }
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number((a / b).floor()))
+                        }
+                        (Value::Number(a), Value::Integer(b)) => {
+                            self.push(ep, Value::Number((a / b as f64).floor()))
+                        }
+                        (Value::Integer(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number((a as f64 / b).floor()))
+                        }
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, rr, IDiv
+                            );
+                            self.push(ep, v);
+                        }
+                        (l, r) => {
+                            break Err(SiltError::ExpOpValueWithValue(
+                                l.to_error(),
+                                MetaMethod::IDiv,
+                                r.to_error(),
+                            ))
+                        }
+                    }
+                }
+                // Bitwise binary ops. Operands must have an integer representation
+                // (Lua); tables are not yet dispatched to __band/etc and error.
+                OpCode::BIT_AND
+                | OpCode::BIT_OR
+                | OpCode::BIT_XOR
+                | OpCode::SHIFT_LEFT
+                | OpCode::SHIFT_RIGHT => {
+                    let r = self.pop(ep);
+                    let l = self.pop(ep);
+                    match (bit_int(&l), bit_int(&r)) {
+                        (Some(a), Some(b)) => {
+                            let res = match instruction {
+                                OpCode::BIT_AND => a & b,
+                                OpCode::BIT_OR => a | b,
+                                OpCode::BIT_XOR => a ^ b,
+                                OpCode::SHIFT_LEFT => lua_shl(a, b),
+                                _ => lua_shr(a, b),
+                            };
+                            self.push(ep, Value::Integer(res));
+                        }
+                        (None, _) => break Err(SiltError::ExpInvalidBitwise(l.to_error())),
+                        (_, None) => break Err(SiltError::ExpInvalidBitwise(r.to_error())),
+                    }
+                }
+                OpCode::BIT_NOT => {
+                    let v = self.pop(ep);
+                    match bit_int(&v) {
+                        Some(a) => self.push(ep, Value::Integer(!a)),
+                        None => break Err(SiltError::ExpInvalidBitwise(v.to_error())),
+                    }
+                }
+                OpCode::DUP_N(n) => {
+                    // Duplicate the top `n` values, preserving order: [a,b] -> [a,b,a,b].
+                    // After each push the window shifts up by one, so grab(n) keeps
+                    // yielding the next original value.
+                    for _ in 0..*n {
+                        let v = self.grab(ep, *n as usize).clone();
+                        self.push(ep, v);
                     }
                 }
 

@@ -56,6 +56,7 @@ silt = [
     "global",
 "implicit-return",
     "short-declare",
+    "compound-assignment",
     # "vectors",
 ]
 wasm=["wasm-bindgen", "serde", "serde-wasm-bindgen"]
@@ -64,6 +65,8 @@ bang = []
 global = []
 short-declare = []
 implicit-return = []
+# Luau-style compound assignment operators: += -= *= /= //= %= ^= ..=
+compound-assignment = []
 vectors = []
 dev-out = []
 

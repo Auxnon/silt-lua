@@ -434,6 +434,11 @@ impl<'c> Lexer<'c> {
                             self.eat();
                             match self.peek() {
                                 Some('.') => self.eat_send(Token::VarArg),
+                                #[cfg(feature = "compound-assignment")]
+                                Some('=') => {
+                                    self.eat();
+                                    self.send(Token::ConcatAssign)
+                                }
                                 _ => self.send(Token::Op(Operator::Concat)),
                             }
                         }
@@ -454,11 +459,24 @@ impl<'c> Lexer<'c> {
                 '+' => {
                     self.eat();
                     let t = match self.peek() {
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             Token::AddAssign
                         }
                         _ => Token::Op(Operator::Add),
+                    };
+                    self.send(t)
+                }
+                '^' => {
+                    self.eat();
+                    let t = match self.peek() {
+                        #[cfg(feature = "compound-assignment")]
+                        Some('=') => {
+                            self.eat();
+                            Token::PowerAssign
+                        }
+                        _ => Token::Op(Operator::Exponent),
                     };
                     self.send(t)
                 }
@@ -486,6 +504,7 @@ impl<'c> Lexer<'c> {
                                 t
                             }
                         }
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             self.send(Token::SubAssign)
@@ -500,6 +519,18 @@ impl<'c> Lexer<'c> {
                 '/' => {
                     self.eat();
                     match self.peek() {
+                        Some('/') => {
+                            self.eat();
+                            match self.peek() {
+                                #[cfg(feature = "compound-assignment")]
+                                Some('=') => {
+                                    self.eat();
+                                    self.send(Token::FloorDivideAssign)
+                                }
+                                _ => self.send(Token::Op(Operator::FloorDivide)),
+                            }
+                        }
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             self.send(Token::DivideAssign)
@@ -510,6 +541,7 @@ impl<'c> Lexer<'c> {
                 '*' => {
                     self.eat();
                     match self.peek() {
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             self.send(Token::MultiplyAssign)
@@ -520,6 +552,7 @@ impl<'c> Lexer<'c> {
                 '%' => {
                     self.eat();
                     match self.peek() {
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             self.send(Token::ModulusAssign)
@@ -552,6 +585,10 @@ impl<'c> Lexer<'c> {
                             self.eat();
                             self.send(Token::Op(Operator::LessEqual))
                         }
+                        Some('<') => {
+                            self.eat();
+                            self.send(Token::Op(Operator::ShiftLeft))
+                        }
                         _ => self.send(Token::Op(Operator::Less)),
                     }
                 }
@@ -562,8 +599,20 @@ impl<'c> Lexer<'c> {
                             self.eat();
                             self.send(Token::Op(Operator::GreaterEqual))
                         }
+                        Some('>') => {
+                            self.eat();
+                            self.send(Token::Op(Operator::ShiftRight))
+                        }
                         _ => self.send(Token::Op(Operator::Greater)),
                     }
+                }
+                '&' => {
+                    self.eat();
+                    self.send(Token::Op(Operator::BitAnd))
+                }
+                '|' => {
+                    self.eat();
+                    self.send(Token::Op(Operator::BitOr))
                 }
                 '[' => {
                     self.eat();
