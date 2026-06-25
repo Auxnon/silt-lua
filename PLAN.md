@@ -169,7 +169,17 @@ test binary.
   (local/upvalue/global) emit getter → RHS → op → setter. Table targets (`t.f op= e`,
   `t[k] op= e`, chained `a.b.c op= e`) use a new `DUP_N(n)` opcode to duplicate the
   receiver+keys so the same operands feed a `TABLE_GET` and a `TABLE_SET` with no
-  re-evaluation. Multiple targets (`a, b += 1`) are rejected. Tests: `tests/compound_assign.rs`.
+  re-evaluation. Multiple targets (`a, b += 1`) are rejected. `^=` (PowerAssign) maps to the
+  §2.1 `POWER` opcode. Tests: `tests/compound_assign.rs`.
+
+### 2.1c `LanguageFlags` fields are feature-gated ✅
+- `LanguageFlags` fields now only exist when their backing cargo feature is compiled in:
+  `bang_operator` is behind `#[cfg(feature = "bang")]` and `compound_assignment` behind
+  `#[cfg(feature = "compound-assignment")]`, with `Default`, `new_with_flags`, and every read
+  (the two compound-assign match arms + the `compound_op`/`compound_assign_var` helpers) under
+  the same `#[cfg]`. A disabled feature leaves no dead config surface. (`implicit_returns` and
+  `arrow_functions` are left ungated — the former is always-on core behavior, the latter has no
+  feature flag yet.) Verified compiling under `--no-default-features` and each feature alone.
 
 ### 2.2 Parenthesized sub-expression drops trailing operators 🔴
 - **Repro:** `return (1+2)*3` → `3`; `return (10+5)*2-3` → `15`; `return (1+2)+3` → `3`.

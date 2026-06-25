@@ -241,23 +241,42 @@ fn main() {
         // return sum()
         // "#;
     }
-    // load string from scripts/closure4.lua
-    let file = if args.len() > 1 {
-        match std::fs::read_to_string(args[1].as_str()) {
+    // Source resolution:
+    //   silt --help          (or -h)  print usage and exit
+    //   silt --run "<lua>"   (or -r)  run the given string directly
+    //   silt <path>                   run a lua file
+    //   silt                          (debug builds) fall back to FALLBACK_FILE
+    let file = match args.get(1).map(String::as_str) {
+        Some("--help") | Some("-h") => {
+            print_help();
+            return;
+        }
+        Some("--run") | Some("-r") => {
+            // Everything after the flag is the program. Joining args[2..] lets an
+            // unquoted snippet still work, while a single quoted arg is unchanged.
+            let src = args[2..].join(" ");
+            if src.trim().is_empty() {
+                println!("Usage: silt --run \"<lua source>\"");
+                return;
+            }
+            src
+        }
+        Some(path) => match std::fs::read_to_string(path) {
             Ok(f) => f,
             Err(e) => {
                 println!("Invalid file path {}", e.to_string());
                 return;
             }
+        },
+        None => {
+            #[cfg(not(debug_assertions))]
+            {
+                println!("REPL not yet available! Pass a lua file path or --run \"<lua>\"");
+                return;
+            }
+            #[cfg(debug_assertions)]
+            std::fs::read_to_string(FALLBACK_FILE).unwrap()
         }
-    } else {
-        #[cfg(not(debug_assertions))]
-        {
-            println!("REPL not yet available! Pass a lua file path");
-            return;
-        }
-        #[cfg(debug_assertions)]
-        std::fs::read_to_string(FALLBACK_FILE).unwrap()
     };
     let source_in = file.as_str();
     // let source_in = r#"
@@ -344,6 +363,30 @@ fn main() {
             println!("!!Err: {}",e.to_string());
         }
     }
+}
+
+fn print_help() {
+    println!(
+        "silt {} — a Lua interpreter in pure Rust
+
+USAGE:
+    silt [OPTIONS] [FILE]
+
+ARGS:
+    <FILE>             Path to a Lua script to run
+
+OPTIONS:
+    -r, --run <LUA>    Run a Lua program string directly
+    -h, --help         Show this help
+
+EXAMPLES:
+    silt script.lua
+    silt --run \"return 1 + 2\"
+    silt -r 'print(\"hello\")'
+
+The final returned value is printed after a separator line.",
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 // fn cli(source: &str, global: &mut environment::Environment) -> value::Value {
