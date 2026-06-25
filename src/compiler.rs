@@ -181,15 +181,22 @@ type Ident = u8;
 
 type Catch = Result<(), ErrorTuple>;
 
+/// Toggles for silt's opt-in language extensions. A flag field only exists when
+/// its backing cargo feature is compiled in — e.g. `bang_operator` is present
+/// only under `feature = "bang"`, and every read of it is behind the same
+/// `#[cfg]`. This keeps a disabled feature from leaving dead config surface.
 #[derive(Clone, Copy, Debug)]
 pub struct LanguageFlags {
     pub implicit_returns: bool,
     #[allow(dead_code)]
     pub arrow_functions: bool,
+    #[cfg(feature = "bang")]
     #[allow(dead_code)]
     pub bang_operator: bool,
-    /// Luau-style compound assignment (`+= -= *= /= //= %= ^= ..=`). Defaults to
-    /// the `compound-assignment` cargo feature; an embedder may still toggle it.
+    /// Luau-style compound assignment (`+= -= *= /= //= %= ^= ..=`). Present
+    /// only with the `compound-assignment` feature; an embedder may still toggle
+    /// it off at runtime.
+    #[cfg(feature = "compound-assignment")]
     pub compound_assignment: bool,
 }
 
@@ -198,8 +205,10 @@ impl Default for LanguageFlags {
         Self {
             implicit_returns: false,
             arrow_functions: false,
+            #[cfg(feature = "bang")]
             bang_operator: false,
-            compound_assignment: cfg!(feature = "compound-assignment"),
+            #[cfg(feature = "compound-assignment")]
+            compound_assignment: true,
         }
     }
 }
@@ -443,7 +452,9 @@ impl Compiler {
         }
     }
 
-    /** Create a new compiler instance with language flags */
+    /** Create a new compiler instance with language flags. `bang_operator` is
+    ignored unless the `bang` feature is enabled (the field only exists then). */
+    #[allow(unused_variables)]
     pub fn new_with_flags(
         implicit_returns: bool,
         arrow_functions: bool,
@@ -453,6 +464,7 @@ impl Compiler {
         compiler.language_flags = LanguageFlags {
             implicit_returns,
             arrow_functions,
+            #[cfg(feature = "bang")]
             bang_operator,
             ..LanguageFlags::default()
         };
@@ -2622,6 +2634,7 @@ fn print_var_stack(_v: &[Option<(OpCode, OpCode)>]) {
 
 /// Map a compound-assignment token to the binary opcode it applies.
 /// `x += e` desugars to `x = x <op> e`.
+#[cfg(feature = "compound-assignment")]
 fn compound_op(token: &Token) -> Option<OpCode> {
     Some(match token {
         Token::AddAssign => OpCode::ADD,
@@ -2639,6 +2652,7 @@ fn compound_op(token: &Token) -> Option<OpCode> {
 /// `x <op>= e` for a simple variable (local / upvalue / global). The variable's
 /// (setter, getter) pair was just gathered onto `var_stack`. We emit the getter
 /// to push the current value, evaluate the RHS, apply `op`, then store back.
+#[cfg(feature = "compound-assignment")]
 fn compound_assign_var<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -2874,6 +2888,7 @@ fn named_variable<'c>(
                 this.drain_getters(f);
             }
         }
+        #[cfg(feature = "compound-assignment")]
         ct @ (Token::AddAssign
         | Token::SubAssign
         | Token::MultiplyAssign
@@ -2902,6 +2917,7 @@ fn named_variable<'c>(
                     // override statement end pop because instruction takes care of it
                     this.override_pop();
                 }
+                #[cfg(feature = "compound-assignment")]
                 ct @ (Token::AddAssign
                 | Token::SubAssign
                 | Token::MultiplyAssign
