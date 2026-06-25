@@ -211,21 +211,26 @@ test binary.
   Tests: `if_elseif_else`, `if_elseif_chain_and_fallthrough` (`tests/conditionals.rs`); that file
   now has zero ignored tests.
 
-### 2.4 String relational comparison unimplemented
+### 2.4 String relational comparison unimplemented ✅ FIXED
 - **Repro:** `return 'abc' < 'abd'` → `Cannot < 'string' and 'string'`.
 - **Expected:** lexicographic: `'abc' < 'abd' == true`, `'b' > 'a' == true`, `'abc' <= 'abc' == true`.
 - **Root cause:** the `LESS`/`LESS_EQUAL`/`GREATER`/`GREATER_EQUAL` opcode handlers in the VM
   (`src/lua.rs`) only accept numeric operands. (`==`/`~=` on strings already work.)
-- **Fix sketch:** extend the comparison opcodes to compare two `Value::String` lexicographically;
-  keep the type-error for mixed string/number per Lua.
+- **Resolution (2026-06):** added `(String, String)` arms to `is_less`/`is_greater` comparing by
+  Rust `str` `Ord` — byte order, matching Lua's default-locale `strcmp`. `<=`/`>=` reuse these via
+  the existing negation in the opcode handlers. Mixed string/number still type-errors per Lua.
+  Tests: `string_comparison` (`tests/strings.rs`).
 
-### 2.5 String escape sequences not decoded
+### 2.5 String escape sequences not decoded ✅ FIXED (bare-minimum set)
 - **Repro:** `return 'a\nb'` → the literal three chars `a`, `\`, `n`, `b` (backslash kept).
 - **Expected:** `\n`, `\t`, `\\`, `\"`, `\'`, `\r`, `\0`, `\xHH`, `\ddd`, `\u{XXXX}`, `\z` decoded.
-- **Root cause:** `Lexer::string()` (`src/lexer.rs`, around the `'"' =>`/`'\'' =>` arms) copies
-  the raw slice without an escape-decoding pass. (Long-bracket strings `[[ ... ]]` correctly do
-  **not** decode escapes — keep that.)
-- **Fix sketch:** decode escapes while scanning quoted strings; error on invalid escapes.
+- **Root cause:** `Lexer::string()` copied the raw slice without an escape-decoding pass.
+- **Resolution (2026-06):** `Lexer::string()` now accumulates decoded characters and handles the
+  single-character escapes `\n \t \r \\ \" \' \0 \a \b \f \v`; an escaped quote no longer
+  terminates the literal, and an unknown escape errors. Long-bracket `[[ … ]]` strings still do
+  **not** decode (verified). **Deferred:** the multi-character forms `\xHH`, `\ddd`, `\u{XXXX}`,
+  and line-continuation `\z` are not handled yet. Tests: `string_escape_sequences`
+  (`tests/strings.rs`).
 
 ### 2.6 `break` and `repeat … until` unimplemented
 - **Repro (break):** `for i=1,10 do if i>5 then break end ... end` → `Cannot > 'nil' and 'integer'`

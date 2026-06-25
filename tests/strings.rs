@@ -59,20 +59,28 @@ fn string_arithmetic_coercion() {
 // =====================================================================================
 
 #[test]
-#[ignore = "PLAN.md §2.4 — string relational comparison not implemented"]
 fn string_comparison() {
     valeq!("return 'abc' < 'abd'", ExVal::Bool(true));
     valeq!("return 'abc' <= 'abc'", ExVal::Bool(true));
     valeq!("return 'def' > 'abc'", ExVal::Bool(true));
     valeq!("return 'b' >= 'a'", ExVal::Bool(true));
+    valeq!("return 'abc' < 'ab'", ExVal::Bool(false)); // prefix is greater
+    valeq!("return 'Z' < 'a'", ExVal::Bool(true)); // byte order: upper < lower
 }
 
 #[test]
-#[ignore = "PLAN.md §2.5 — quoted-string escape sequences are not decoded by the lexer"]
 fn string_escape_sequences() {
     valeq!(r#"return 'hello\nworld'"#, ExVal::String("hello\nworld".to_string()));
     valeq!(r#"return 'tab\there'"#, ExVal::String("tab\there".to_string()));
     valeq!(r#"return 'quote: \"x\"'"#, ExVal::String("quote: \"x\"".to_string()));
+    valeq!(r#"return 'back\\slash'"#, ExVal::String("back\\slash".to_string()));
+    valeq!(r#"return 'a\rb\0c'"#, ExVal::String("a\rb\0c".to_string()));
+    // escaped delimiter does not terminate the literal
+    valeq!(r#"return 'it\'s'"#, ExVal::String("it's".to_string()));
+    // #-length sees decoded bytes, not the backslash
+    valeq!(r#"return #'a\nb'"#, ExVal::Integer(3));
+    // long-bracket strings do NOT decode escapes
+    valeq!("return [[a\\nb]]", ExVal::String("a\\nb".to_string()));
 }
 
 #[test]

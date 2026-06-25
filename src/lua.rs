@@ -2023,6 +2023,8 @@ impl<'gc> VM<'gc> {
             (Value::Integer(left), Value::Integer(right)) => left < right,
             (Value::Number(left), Value::Integer(right)) => *left < *right as f64,
             (Value::Integer(left), Value::Number(right)) => (*left as f64) < (*right),
+            // strings compare lexicographically by byte order (Lua's default)
+            (Value::String(left), Value::String(right)) => left < right,
             (Value::Infinity(left), Value::Infinity(right)) => left != right && *left,
             (_, _) => Err(SiltError::ExpOpValueWithValue(
                 l.to_error(),
@@ -2041,6 +2043,7 @@ impl<'gc> VM<'gc> {
             }
             (Value::Number(left), Value::Integer(right)) => *left > *right as f64,
             (Value::Integer(left), Value::Number(right)) => (*left as f64) > (*right),
+            (Value::String(left), Value::String(right)) => left > right,
             (Value::Infinity(left), Value::Infinity(right)) => left != right && !*left,
             (_, _) => Err(SiltError::ExpOpValueWithValue(
                 l.to_error(),
