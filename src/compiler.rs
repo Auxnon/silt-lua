@@ -324,6 +324,15 @@ struct Local {
     is_captured: bool,
 }
 
+/// Bookkeeping for one active loop so `break` can unwind cleanly.
+struct LoopCtx {
+    /// `local_count` captured before the loop pushed its control/body slots; a
+    /// `break` pops `local_count - base_local_count` runtime values to undo them.
+    base_local_count: usize,
+    /// chunk indices of emitted `FORWARD(0)` break jumps, patched to the loop exit.
+    break_jumps: Vec<usize>,
+}
+
 struct UpLocal {
     /** location on the overall stack */
     ident: u8,
@@ -388,6 +397,10 @@ pub struct Compiler {
     // previous: TokenTuple,
     // pre_previous: TokenTuple,
     pending_gotos: Vec<(String, usize, TokenCell)>,
+    /// Stack of enclosing loops (innermost last). Each entry records the
+    /// `local_count` just before the loop pushed its control/body slots and the
+    /// chunk indices of any `break` jumps awaiting a patch to the loop exit.
+    loops: Vec<LoopCtx>,
     /// flag that a self calling method was used
     self_arg: bool,
     /** language flags for optional features */
@@ -438,6 +451,7 @@ impl Compiler {
             local_declare_mode: false,
             labels: HashMap::new(),
             pending_gotos: vec![],
+            loops: vec![],
             // location: (0, 0),
             // previous: (Token::Nil, (0, 0)),
             // pre_previous: (Token::Nil, (0, 0)),
@@ -1980,6 +1994,8 @@ fn statement<'c>(
             end_scope(this, f, false);
         }
         Token::While => while_statement(this, mc, f, it)?,
+        Token::Repeat => repeat_statement(this, mc, f, it)?,
+        Token::Break => break_statement(this, f, it)?,
         Token::For => for_statement(this, mc, f, it)?,
         Token::Return => return_statement(this, mc, f, it)?,
         // Token::OpenBrace => block(this),
@@ -2155,6 +2171,80 @@ fn if_statement<'c>(
     Ok(())
 }
 
+/// Record the current `local_count` as a loop's break-unwind base.
+fn begin_loop(this: &mut Compiler) {
+    this.loops.push(LoopCtx {
+        base_local_count: this.local_count,
+        break_jumps: vec![],
+    });
+}
+
+/// Patch every pending `break` to the current position (the loop exit) and pop
+/// the loop context.
+fn end_loop(this: &mut Compiler, f: FnRef) -> Catch {
+    if let Some(ctx) = this.loops.pop() {
+        for idx in ctx.break_jumps {
+            this.patch(f, idx)?;
+        }
+    }
+    Ok(())
+}
+
+/// `break`: unwind the loop's runtime slots and jump (forward) to the loop exit,
+/// recorded for patching by `end_loop`.
+fn break_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    devnote!(this it "break_statement");
+    this.eat(it); // 'break'
+    let base = match this.loops.last() {
+        Some(c) => c.base_local_count,
+        None => return Err(this.error_at(SiltError::InvalidTokenPlacement(Token::Break))),
+    };
+    let unwind = this.local_count.saturating_sub(base);
+    if unwind > 0 {
+        this.emit_at(f, OpCode::POPS(unwind as u8));
+    }
+    let idx = this.emit_index(f, OpCode::FORWARD(0));
+    this.loops.last_mut().unwrap().break_jumps.push(idx);
+    Ok(())
+}
+
+/// `repeat <body> until <cond>` — run the body, then test. The body's scope stays
+/// open while `cond` is compiled so `until` can see locals declared in the body.
+fn repeat_statement<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    devnote!(this it "repeat_statement");
+    this.eat(it); // 'repeat'
+    let loop_start = this.get_chunk_size(f);
+    begin_loop(this);
+    begin_scope(this);
+    let base = this.local_count;
+    build_block_until_then_eat!(this, mc, f, it, Until);
+    // `until` condition is evaluated with the body's locals still in scope.
+    expression(this, mc, f, it, false)?;
+    let body_locals = (this.local_count - base) as u8;
+    // cond TRUE -> stop (jump to exit); cond FALSE -> repeat. GOTO_IF_TRUE peeks,
+    // so each path pops the bool (and any body locals) before continuing.
+    let exit_jump = this.emit_index(f, OpCode::GOTO_IF_TRUE(0));
+    this.emit_at(f, OpCode::POP); // drop cond (repeat path)
+    if body_locals > 0 {
+        this.emit_at(f, OpCode::POPS(body_locals));
+    }
+    this.emit_rewind(f, loop_start);
+    this.patch(f, exit_jump)?; // exit path lands here
+    this.emit_at(f, OpCode::POP); // drop cond
+    if body_locals > 0 {
+        this.emit_at(f, OpCode::POPS(body_locals));
+    }
+    // runtime pops already emitted on both paths; just reconcile compile-time state
+    end_scope(this, f, true);
+    end_loop(this, f)?;
+    Ok(())
+}
+
 fn while_statement<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -2167,9 +2257,15 @@ fn while_statement<'c>(
     expression(this, mc, f, it, false)?;
     expect_token!(this it Do);
     let exit_jump = this.emit_index(f, OpCode::POP_AND_GOTO_IF_FALSE(0));
+    begin_loop(this);
+    // Scope the body so locals declared inside are popped each iteration (before
+    // the rewind) instead of leaking and shifting slot indices.
+    begin_scope(this);
     build_block_until_then_eat!(this, mc, f, it, End);
+    end_scope(this, f, false);
     this.emit_rewind(f, loop_start);
     this.patch(f, exit_jump)?;
+    end_loop(this, f)?;
     Ok(())
 }
 
@@ -2191,6 +2287,8 @@ fn for_statement<'c>(
     let t = pair.0?;
     if let Token::Identifier(ident) = t {
         // let offset = this.local_functional_offset[this.functional_depth - 1];
+        // capture base BEFORE the hidden control slots so `break` unwinds them too
+        begin_loop(this);
         let iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
         expect_token!(this it Assign);
         add_local_placeholder(this)?; // reserve end value with placeholder
@@ -2226,6 +2324,8 @@ fn for_statement<'c>(
         this.emit_rewind(f, for_start);
         this.patch(f, for_start)?;
         this.force_stack_pop(f, 3);
+        // break jumps land here, after the hidden control slots are reclaimed
+        end_loop(this, f)?;
         Ok(())
     } else {
         Err(this.error_at(SiltError::ExpectedLocalIdentifier))

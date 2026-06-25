@@ -96,7 +96,6 @@ fn nested_loops() {
 // =====================================================================================
 
 #[test]
-#[ignore = "PLAN.md §2.6 — `break` is not handled by the compiler; loop var is corrupted"]
 fn loop_with_break() {
     valeq!(
         r#"
@@ -112,7 +111,6 @@ fn loop_with_break() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2.6 — `break` inside while is not handled"]
 fn while_with_break() {
     valeq!(
         r#"
@@ -128,7 +126,6 @@ fn while_with_break() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2.6 — repeat/until is not handled by the compiler"]
 fn repeat_until_loop() {
     valeq!(
         r#"
@@ -141,6 +138,49 @@ fn repeat_until_loop() {
         return sum
     "#,
         ExVal::Integer(10)
+    );
+}
+
+#[test]
+fn nested_break_only_exits_inner() {
+    valeq!(
+        r#"
+        local count = 0
+        for i = 1, 3 do
+            for j = 1, 3 do
+                if j == 2 then break end
+                count = count + 1
+            end
+        end
+        return count
+    "#,
+        ExVal::Integer(3)
+    );
+}
+
+#[test]
+fn repeat_until_with_break() {
+    valeq!(
+        "local i = 0 repeat i = i + 1 if i == 3 then break end until i >= 10 return i",
+        ExVal::Integer(3)
+    );
+}
+
+#[test]
+fn repeat_until_sees_body_local() {
+    // the `until` condition can reference a local declared in the body
+    valeq!(
+        "local i = 0 repeat local done = i >= 4 i = i + 1 until done return i",
+        ExVal::Integer(5)
+    );
+}
+
+#[test]
+fn while_body_local_is_scoped() {
+    // regression: a local declared in a while body must be popped each iteration
+    valeq!(
+        "local s = 0 local i = 1 while i <= 3 do local x = i * 2 s = s + x i = i + 1 end return s",
+        ExVal::Integer(12)
     );
 }
 
