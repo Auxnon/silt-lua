@@ -4,7 +4,6 @@
 use silt_lua::{simple, valeq, ExVal};
 
 #[test]
-#[ignore = "PLAN.md §3 — base function `type` not implemented"]
 fn base_type() {
     valeq!("return type(5)", ExVal::String("number".to_string()));
     valeq!("return type('x')", ExVal::String("string".to_string()));
@@ -15,7 +14,6 @@ fn base_type() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — `tostring` not implemented"]
 fn base_tostring() {
     valeq!("return tostring(5)", ExVal::String("5".to_string()));
     valeq!("return tostring(true)", ExVal::String("true".to_string()));
@@ -23,7 +21,6 @@ fn base_tostring() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — `tonumber` not implemented"]
 fn base_tonumber() {
     valeq!("return tonumber('42')", ExVal::Integer(42));
     valeq!("return tonumber('3.5')", ExVal::Number(3.5));
@@ -32,7 +29,6 @@ fn base_tonumber() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — `assert` not implemented"]
 fn base_assert() {
     valeq!("assert(true) return 1", ExVal::Integer(1));
     valeq!("assert(1 == 1, 'should hold') return 2", ExVal::Integer(2));
@@ -53,7 +49,6 @@ fn base_select() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — `math` library not implemented"]
 fn math_library() {
     valeq!("return math.floor(3.7)", ExVal::Integer(3));
     valeq!("return math.ceil(3.2)", ExVal::Integer(4));
@@ -64,7 +59,6 @@ fn math_library() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — `string` library not implemented"]
 fn string_library() {
     valeq!("return string.len('hello')", ExVal::Integer(5));
     valeq!("return string.sub('hello', 2, 4)", ExVal::String("ell".to_string()));

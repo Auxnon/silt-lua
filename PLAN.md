@@ -232,18 +232,30 @@ test binary.
   and line-continuation `\z` are not handled yet. Tests: `string_escape_sequences`
   (`tests/strings.rs`).
 
-### 2.6 `break` and `repeat … until` unimplemented
+### 2.6 `break` and `repeat … until` unimplemented ✅ FIXED
 - **Repro (break):** `for i=1,10 do if i>5 then break end ... end` → `Cannot > 'nil' and 'integer'`
   (the loop variable is corrupted; break is not handled and the stack desyncs).
 - **Repro (repeat):** `local i=0 repeat i=i+1 until i>=5 return i` → `Cannot + 'nil' and 'integer'`.
 - **Expected:** `break` exits the innermost loop; `repeat`/`until` runs the body once then
   tests (and `until`'s condition can see locals declared in the body).
-- **Root cause:** the statement dispatcher (`src/compiler.rs`, around line 1850) has **no
-  `Token::Break`, `Token::Repeat`, or `Token::Until` arms**. `while` (`while_statement` 2014)
-  and numeric `for` (`for_statement` 2038) exist and work for the simple cases.
-- **Fix sketch:** implement `break` as a forward jump patched to the loop's end, tracked on a
-  per-loop "break list"; implement `repeat` as a backward jump with the `until` condition
-  compiled in the body's scope.
+- **Root cause:** the statement dispatcher had no `Token::Break`/`Token::Repeat` arms.
+- **Resolution (2026-06):**
+  - Added a `Compiler.loops: Vec<LoopCtx>` stack. Each `LoopCtx` records the `local_count`
+    *before* the loop pushed its control/body slots plus a list of pending `break` jump indices.
+    `begin_loop`/`end_loop` bracket each loop; `end_loop` patches every break to the loop exit.
+  - `break` emits `POPS(local_count - base)` to unwind the loop's live runtime slots (the numeric
+    `for`'s 3 hidden control values + loop var + any body locals; a `while`/`repeat` body's
+    locals), then a `FORWARD(0)` recorded for patching. Errors (`InvalidTokenPlacement`) outside a
+    loop.
+  - `repeat … until`: body compiled in an open scope so `until` sees its locals; `GOTO_IF_TRUE`
+    (peek) exits on a true condition, otherwise `REWIND`. The cond bool and body locals are popped
+    on both the repeat and exit paths.
+  - **Bonus:** `while` now scopes its body (`begin_scope`/`end_scope`), fixing a pre-existing leak
+    where body locals accumulated across iterations and corrupted slot indices
+    (`while i<=3 do local x=i*2 … end` returned 6 instead of 12).
+  - Tests (`tests/loops.rs`): `loop_with_break`, `while_with_break`, `repeat_until_loop`,
+    `nested_break_only_exits_inner`, `repeat_until_with_break`, `repeat_until_sees_body_local`,
+    `while_body_local_is_scoped`.
 
 ### 2.7 Generic `for … in` (with `pairs`/`ipairs`) unimplemented
 - **Repro:** `for k,v in pairs(t) do … end` → parse error (`Expected token ::=`).
@@ -290,15 +302,18 @@ test binary.
   not pad missing values with `nil` (interacts with the vararg/local-offset work on this branch,
   same area as §1.1).
 
-### 2.12 Descending numeric `for` (negative step) never runs 🔴
+### 2.12 Descending numeric `for` (negative step) never runs ✅ FIXED
 - **Repro:** `local s = 0; for i = 5, 1, -1 do s = s + i end; return s` → `0`.
 - **Expected:** `15` (iterates 5,4,3,2,1).
-- **Root cause:** `FOR_NUMERIC` (`src/code.rs`, handled in `src/lua.rs`) compares iterator vs.
-  limit with a fixed "greater-than ends the loop" test that assumes a positive step, so a
-  negative step fails the very first check and the body is skipped. Ascending loops and
-  positive steps work.
-- **Fix sketch:** branch the loop-continue test on the sign of the step (or normalize so the
-  comparison direction follows `step`), per the Lua numeric-for semantics.
+- **Root cause:** `FOR_NUMERIC` (`src/lua.rs`) compared iterator vs. limit with a fixed
+  "greater-than ends the loop" test that assumes a positive step, so a negative step failed the
+  very first check and the body was skipped.
+- **Resolution (2026-06):** `FOR_NUMERIC` now reads the step (top of the `[iterator, limit, step]`
+  window) and branches the loop-continue test on its sign — ascending stops once `iterator >
+  limit`, descending once `iterator < limit`. `INCREMENT` already adds the (possibly negative)
+  step, so countdowns work. Tests: `numeric_for_descending` (`tests/loops.rs`), incl. multi-step
+  `for i=10,2,-2` and an empty descending range. (A zero step still loops forever — pre-existing,
+  not addressed here.)
 
 ### 2.13 Under-supplied multiple-assignment from a call overflows the stack 🔴
 - **Repro:** `function f() return 42 end; local a, b, c = f(); return a` — `f` returns one value
@@ -323,23 +338,27 @@ test binary.
 
 ## 3. Missing standard library
 
-Only `print`, `clock`, `setmetatable`, `getmetatable`, `test_ent`, `table.insert`,
-`table.remove` are registered (`src/standard.rs`, `src/lua.rs:2280` `load_standard_library`).
-`select` is a `todo!()`. For a usable language/game-config runtime, implement at least:
+**Tier 1–3 landed (2026-06):** the single-return base/math/string functions are implemented in
+`src/standard.rs` and registered in `load_standard_library`.
 
-- **Base:** `type`, `tostring`, `tonumber`, `assert`, `error`, `pcall`, `xpcall`, `select`,
-  `next`, `pairs`, `ipairs`, `rawget`, `rawset`, `rawequal`, `rawlen`, `unpack`/`table.unpack`,
-  `ipairs`. (`pcall`/`error` are needed for any robust embedding.)
-- **`math`:** `floor`, `ceil`, `abs`, `sqrt`, `min`, `max`, `huge`, `pi`, `sin`/`cos`/`tan`,
-  `random`, `randomseed`, `fmod`, `modf`, `maxinteger`, `mininteger`, `tointeger`, `type`.
-- **`string`:** `len`, `sub`, `upper`, `lower`, `rep`, `reverse`, `byte`, `char`, `format`,
-  `find`, `match`, `gmatch`, `gsub` (patterns are a substantial sub-project). **Also wire the
-  string metatable** so `("hi"):upper()` resolves through `string.*` — currently
-  `("hi"):upper()` returns the receiver unchanged.
-- **`table`:** `concat`, `sort`, `unpack`, `pack`, `insert`/`remove` (improve existing).
-- **`os` (subset):** `time`, `clock`, `date`. **`io` (subset, optional)** for non-wasm.
+- **Base ✅:** `type`, `tostring`, `tonumber` (incl. base arg + `0x`), `assert`, `error`.
+  Still TODO (need native multi-return): `pcall`/`xpcall`, `select`, `next`, `pairs`, `ipairs`,
+  `rawget`/`rawset`/`rawequal`/`rawlen`, `unpack`.
+- **`math` ✅:** `floor`, `ceil`, `abs`, `sqrt`, `sin`/`cos`/`tan`, `min`, `max`, `random`,
+  `randomseed` (thread-local xorshift, no `rand` dep), `huge`, `pi`, `maxinteger`, `mininteger`.
+  Still TODO: `fmod`, `modf`, `tointeger`, `type`.
+- **`string` ✅:** `len`, `sub`, `upper`, `lower`, `rep`, `reverse`, `byte` (single-index only —
+  see below), `char`, `format` (`%d %i %u %x %X %o %f %e %g %s %c %q %%` with `- + space # 0`
+  flags + width + `.precision`). **String metatable wired** — `("hi"):upper()` and `s:method()`
+  resolve through the `string` table via `METHOD_GET` (and a new `Token::Colon` Pratt infix so a
+  non-identifier receiver like `("x"):m()` works). Still TODO: patterns (`find`/`match`/`gmatch`/
+  `gsub`) — a substantial sub-project.
+- **`table`:** `insert`/`remove` exist; `concat`, `sort`, `unpack`, `pack` still TODO.
+- **`os`/`io`:** not started.
 
-These are additive (no architectural risk) and well suited to parallel work once §1–§2 land.
+**Blocked on native multi-return** (the key remaining architectural item): `pairs`/`ipairs`/
+`next` (→ generic-for §2.7), `pcall`/`xpcall`, `select`, `string.byte` range form, `table.unpack`.
+Native fns currently return a single `Value` (`InnerResult = Result<Value, SiltError>`).
 
 ---
 

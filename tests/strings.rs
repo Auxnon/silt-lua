@@ -84,9 +84,11 @@ fn string_escape_sequences() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — string library + string metatable not wired (s:method())"]
 fn string_methods() {
     valeq!("return ('hi'):upper()", ExVal::String("HI".to_string()));
     valeq!("return string.sub('hello', 1, 3)", ExVal::String("hel".to_string()));
     valeq!("return string.rep('ab', 3)", ExVal::String("ababab".to_string()));
+    // method form on a variable receiver
+    valeq!("local s = 'Hello' return s:lower()", ExVal::String("hello".to_string()));
+    valeq!("local s = 'abc' return s:len()", ExVal::Integer(3));
 }

@@ -61,7 +61,6 @@ fn numeric_for_loop_with_step() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2.12 — descending numeric for (negative step) never executes the body"]
 fn numeric_for_descending() {
     valeq!(
         r#"
@@ -73,6 +72,9 @@ fn numeric_for_descending() {
     "#,
         ExVal::Integer(15)
     );
+    // multi-step descending and an empty descending range
+    valeq!("local s=0 for i=10,2,-2 do s=s+i end return s", ExVal::Integer(30));
+    valeq!("local n=0 for i=5,10,-1 do n=n+1 end return n", ExVal::Integer(0));
 }
 
 #[test]

@@ -285,6 +285,22 @@ impl<'v> Value<'v> {
             Value::Vec2(_) => ValueTypes::Vec2,
         }
     }
+    /// Lua `type()` name. Integers/floats/infinity are all "number"; any callable
+    /// is "function".
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Nil => "nil",
+            Value::Integer(_) | Value::Number(_) | Value::Infinity(_) => "number",
+            Value::Bool(_) => "boolean",
+            Value::String(_) => "string",
+            Value::Table(_) => "table",
+            Value::Function(_) | Value::Closure(_) | Value::NativeFunction(_) => "function",
+            Value::UserData(_) => "userdata",
+            #[cfg(feature = "vectors")]
+            Value::Vec3(_) | Value::Vec2(_) => "userdata",
+        }
+    }
+
     /** normal to_string takes some liberties for convenient display purposes. This more raw
      * approach is used for UserData hashmap lookup*/
     pub fn pure_string(&self) -> String {

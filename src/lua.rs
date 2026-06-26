@@ -1622,20 +1622,28 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::FOR_NUMERIC(skip) => {
-                    // for needs it's own version of the stack for upvalues?
-                    // compare, if greater then we skip, if less or equal we continue and then increment AFTER block
-                    // let increment = self.grab(1);
-                    let iterator = unsafe { &mut *ep.ip.sub(3) };
-                    let compare = self.grab(ep, 2);
-                    if bubble!(Self::is_greater(iterator, compare)) {
+                    // Stack layout: [iterator, limit, step] with step on top. The
+                    // loop-continue test depends on the step's sign: ascending ends
+                    // once iterator > limit, descending once iterator < limit.
+                    let iterator = unsafe { &*ep.ip.sub(3) };
+                    let compare = unsafe { &*ep.ip.sub(2) };
+                    let step = unsafe { &*ep.ip.sub(1) };
+                    let descending = match step {
+                        Value::Integer(i) => *i < 0,
+                        Value::Number(n) => *n < 0.0,
+                        _ => false,
+                    };
+                    let done = if descending {
+                        bubble!(Self::is_less(iterator, compare))
+                    } else {
+                        bubble!(Self::is_greater(iterator, compare))
+                    };
+                    if done {
                         frame.forward(*skip);
                     } else {
-                        self.push(ep, iterator.clone())
+                        let it = iterator.clone();
+                        self.push(ep, it);
                     }
-                    // self.push(iterator.clone());
-                    // if iterator > compare {
-                    //     frame.forward(*skip);
-                    // }
                 }
                 OpCode::INCREMENT { index } => {
                     let value = frame.get_val_mut(*index);
@@ -1884,6 +1892,12 @@ impl<'gc> VM<'gc> {
                     let receiver = self.peek(ep).clone();
                     let method = match &receiver {
                         Value::Table(t) => (*t).borrow().get_value(&key),
+                        // Strings dispatch methods through the `string` library
+                        // (Lua's string metatable: `("x"):upper()` == string.upper("x")).
+                        Value::String(_) => match self.globals.borrow().get("string") {
+                            Some(Value::Table(t)) => t.borrow().get_value(&key),
+                            _ => Value::Nil,
+                        },
                         _ => break Err(SiltError::VmNonTableOperations(receiver.to_error())),
                     };
                     *self.peek_mut(ep) = method;
@@ -2525,11 +2539,62 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", crate::standard::test_ent);
 
+        // base functions
+        self.register_native_function(mc, "type", crate::standard::lua_type);
+        self.register_native_function(mc, "tostring", crate::standard::tostring);
+        self.register_native_function(mc, "tonumber", crate::standard::tonumber);
+        self.register_native_function(mc, "assert", crate::standard::assert);
+        self.register_native_function(mc, "error", crate::standard::error);
+
         let mut table = self.raw_table();
         self.register_native_function_to(mc, &mut table, "insert", crate::standard::table_insert);
         self.register_native_function_to(mc, &mut table, "remove", crate::standard::table_remove);
         let t = self.wrap_table(mc, table);
         self.globals.borrow_mut(mc).set("table", t);
+
+        // math library
+        let mut math = self.raw_table();
+        self.register_native_function_to(mc, &mut math, "floor", crate::standard::math_floor);
+        self.register_native_function_to(mc, &mut math, "ceil", crate::standard::math_ceil);
+        self.register_native_function_to(mc, &mut math, "abs", crate::standard::math_abs);
+        self.register_native_function_to(mc, &mut math, "sqrt", crate::standard::math_sqrt);
+        self.register_native_function_to(mc, &mut math, "sin", crate::standard::math_sin);
+        self.register_native_function_to(mc, &mut math, "cos", crate::standard::math_cos);
+        self.register_native_function_to(mc, &mut math, "tan", crate::standard::math_tan);
+        self.register_native_function_to(mc, &mut math, "min", crate::standard::math_min);
+        self.register_native_function_to(mc, &mut math, "max", crate::standard::math_max);
+        self.register_native_function_to(mc, &mut math, "random", crate::standard::math_random);
+        self.register_native_function_to(
+            mc,
+            &mut math,
+            "randomseed",
+            crate::standard::math_randomseed,
+        );
+        math.set("pi", Value::Number(std::f64::consts::PI));
+        math.set("huge", Value::Number(f64::INFINITY));
+        math.set("maxinteger", Value::Integer(i64::MAX));
+        math.set("mininteger", Value::Integer(i64::MIN));
+        let math_t = self.wrap_table(mc, math);
+        self.globals.borrow_mut(mc).set("math", math_t);
+
+        // string library
+        let mut string = self.raw_table();
+        self.register_native_function_to(mc, &mut string, "len", crate::standard::string_len);
+        self.register_native_function_to(mc, &mut string, "sub", crate::standard::string_sub);
+        self.register_native_function_to(mc, &mut string, "upper", crate::standard::string_upper);
+        self.register_native_function_to(mc, &mut string, "lower", crate::standard::string_lower);
+        self.register_native_function_to(mc, &mut string, "rep", crate::standard::string_rep);
+        self.register_native_function_to(
+            mc,
+            &mut string,
+            "reverse",
+            crate::standard::string_reverse,
+        );
+        self.register_native_function_to(mc, &mut string, "byte", crate::standard::string_byte);
+        self.register_native_function_to(mc, &mut string, "char", crate::standard::string_char);
+        self.register_native_function_to(mc, &mut string, "format", crate::standard::string_format);
+        let string_t = self.wrap_table(mc, string);
+        self.globals.borrow_mut(mc).set("string", string_t);
 
         // Example of closure without turbofish
         // let test = Box::new(5);

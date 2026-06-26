@@ -981,6 +981,9 @@ fn set_trailing_vararg(&mut self,bool: bool){
             Token::OpenParen => rule!(grouping, call, Call),
             Token::OpenBrace => rule!(tabulate, void, None),
             Token::Assign => rule!(void, void, None),
+            // method call on a non-identifier receiver, e.g. `("hi"):upper()`.
+            // Identifier/table receivers are consumed earlier in named_variable.
+            Token::Colon => rule!(void, method_infix, Call),
             Token::Op(op) => match op {
                 Operator::Sub => rule!(unary, binary, Term),
                 Operator::Add => rule!(void, binary, Term),
@@ -3294,6 +3297,31 @@ fn emit_method_get<'c>(
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     this.eat(it); // ':'
+    let (res, loc) = this.pop(it);
+    this.current_location = loc;
+    let name = match res? {
+        Token::Identifier(ident) => ident,
+        _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
+    };
+    let constant = this.identifer_constant(f, name);
+    this.emit_at(f, OpCode::METHOD_GET { constant });
+    this.self_arg = true;
+    Ok(())
+}
+
+/// Infix `:method` after any expression whose value is already on the stack —
+/// e.g. `("hi"):upper()`, `f():m()`. The Pratt loop has already consumed the
+/// `:` (via `store`), so unlike `emit_method_get` we read the method name
+/// directly. Identifier/table receivers are handled earlier in `named_variable`,
+/// so this only fires for grouped / call-result receivers.
+fn method_infix<'c>(
+    this: &mut Compiler,
+    _mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
+    devnote!(this it "method_infix");
     let (res, loc) = this.pop(it);
     this.current_location = loc;
     let name = match res? {
