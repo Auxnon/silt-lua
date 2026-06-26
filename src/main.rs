@@ -351,7 +351,7 @@ fn main() {
     //     local z=6
     //     return test(x,z)
     //     "#;
-    let mut compiler = Compiler::new_with_flags(true, false, false);
+    let mut compiler = Compiler::new_with_flags(true, true, false);
     let mut lua = Lua::new_with_standard();
     match lua.run(None,source_in, &mut compiler) {
         Ok(o) => {

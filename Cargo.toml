@@ -57,6 +57,7 @@ silt = [
 "implicit-return",
     "short-declare",
     "compound-assignment",
+    "arrow",
     # "vectors",
 ]
 wasm=["wasm-bindgen", "serde", "serde-wasm-bindgen"]
@@ -67,6 +68,9 @@ short-declare = []
 implicit-return = []
 # Luau-style compound assignment operators: += -= *= /= //= %= ^= ..=
 compound-assignment = []
+# Arrow functions: `x -> x + 1`, `(a, b) -> a + b`, body may be a `do … end`
+# block. Always implicitly returns its last expression. On by default.
+arrow = []
 # Luau-style static type annotations (Phase 1: parse + track only, no checking yet).
 # Off by default.
 typing = []

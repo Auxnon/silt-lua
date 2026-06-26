@@ -188,7 +188,9 @@ type Catch = Result<(), ErrorTuple>;
 #[derive(Clone, Copy, Debug)]
 pub struct LanguageFlags {
     pub implicit_returns: bool,
-    #[allow(dead_code)]
+    /// Arrow functions (`x -> …`). Present only with the `arrow` feature; an
+    /// embedder may still toggle it off at runtime.
+    #[cfg(feature = "arrow")]
     pub arrow_functions: bool,
     #[cfg(feature = "bang")]
     #[allow(dead_code)]
@@ -204,7 +206,8 @@ impl Default for LanguageFlags {
     fn default() -> Self {
         Self {
             implicit_returns: false,
-            arrow_functions: false,
+            #[cfg(feature = "arrow")]
+            arrow_functions: true,
             #[cfg(feature = "bang")]
             bang_operator: false,
             #[cfg(feature = "compound-assignment")]
@@ -484,6 +487,7 @@ impl Compiler {
         let mut compiler = Self::new();
         compiler.language_flags = LanguageFlags {
             implicit_returns,
+            #[cfg(feature = "arrow")]
             arrow_functions,
             #[cfg(feature = "bang")]
             bang_operator,
@@ -2623,6 +2627,85 @@ fn function_expression<'c>(
     build_function(this, mc, f, it, "".to_owned(), false, false, start_line)
 }
 
+/// Compile an arrow function `params -> body`. `params` are the parameter names
+/// already collected by the caller; the `->` is the current peek and is consumed
+/// here. The body is either a single expression or a `do … end` block, and is
+/// ALWAYS implicitly returned (regardless of the `implicit-return` flag). Emits a
+/// `CLOSURE` (+ upvalue registrations) into the enclosing function `f`.
+#[cfg(feature = "arrow")]
+fn build_arrow_function<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    params: Vec<String>,
+    start_line: usize,
+) -> Catch {
+    devnote!(this it "build_arrow_function");
+    expect_token!(this it ArrowFunction); // '->'
+    let mut f2 = FunctionObject::new(Some("".to_owned()), false);
+    f2.start_line = start_line;
+    let fr2 = &mut f2;
+    begin_scope(this);
+    begin_functional_scope(this);
+    let arity = params.len() as u8;
+    for p in params {
+        add_local(this, p)?;
+    }
+    fr2.arity = arity;
+    // A normal function body opens with a POP of the (parser-absorbed) closing
+    // `)` token, which the VM's call convention relies on for frame alignment.
+    // An arrow has no `)` to absorb, so emit the equivalent leading POP here.
+    this.emit_at(fr2, OpCode::POP);
+
+    if let Token::Do = this.peek(it)? {
+        // multi-statement body: `do … end`, last expression implicitly returned
+        this.eat(it); // 'do'
+        block(this, mc, fr2, it)?; // parses statements until `end`, eats `end`
+        fr2.end_line = this.last_end_line;
+        if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() {
+            // an explicit `return` already closed the body
+        } else {
+            this.drop_last_if(fr2, &OpCode::POP);
+            // arrows always implicit-return the last expression
+            if !this.last_was_expression {
+                this.emit_at(fr2, OpCode::NIL);
+            }
+            this.emit_at(fr2, OpCode::RETURN(this.get_expression_count()));
+            this.set_expression_count(0);
+        }
+    } else {
+        // single-expression body, implicitly returned. Use expression_single so a
+        // following comma ends the arrow (e.g. in `f(x -> x*10, 5)` the `, 5` is
+        // f's next argument, not part of the arrow body). Multi-value returns need
+        // a `do … end` body.
+        this.set_expression_count(1);
+        expression_single(this, mc, fr2, it, false)?;
+        this.emit_at(fr2, OpCode::RETURN(this.get_expression_count()));
+        this.set_expression_count(0);
+    }
+
+    end_scope(this, fr2, true);
+    let state = end_functional_scope(this);
+    f2.upvalue_count = state.up_values.len() as u8;
+    f2.is_variadic = state.vararg > 0;
+    f2.varidic_index = if state.vararg > 0 { state.vararg - 1 } else { 0 };
+
+    let func_value = Value::Function(Gc::new(mc, f2));
+    let constant = f.chunk.write_constant(func_value) as u8;
+    this.emit_at(f, OpCode::CLOSURE { constant });
+    for val in state.up_values.iter() {
+        this.emit_at(
+            f,
+            OpCode::REGISTER_UPVALUE {
+                index: val.ident,
+                neighboring: val.neighboring,
+            },
+        );
+    }
+    Ok(())
+}
+
 fn variable<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -2631,6 +2714,14 @@ fn variable<'c>(
     can_assign: bool,
 ) -> Catch {
     devnote!(this it "variable");
+    // Single-param arrow `x -> body`: the receiver ident is followed by `->`.
+    #[cfg(feature = "arrow")]
+    if this.language_flags.arrow_functions && matches!(this.peek(it)?, Token::ArrowFunction) {
+        if let Token::Identifier(name) = this.copy_store()? {
+            let line = this.current_location.0;
+            return build_arrow_function(this, mc, f, it, vec![name], line);
+        }
+    }
     // let t = this.previous.clone();
     // let ident = if let Token::Identifier(ident) = t.0 {
     //     this.identifer_constant(ident)
@@ -3160,6 +3251,21 @@ fn grouping<'c>(
 ) -> Catch {
     devnote!(this it "-> grouping");
     let start = this.current_location;
+    // A `(` that opens with an identifier may be an arrow parameter list
+    // (`(a, b) -> …`, `(a) -> …`) rather than a grouped expression. Disambiguate
+    // there; everything else is an ordinary grouping.
+    #[cfg(feature = "arrow")]
+    if this.language_flags.arrow_functions {
+        match this.peek(it)? {
+            // `()` is only valid as a zero-parameter arrow `() -> body`
+            Token::CloseParen => {
+                this.eat(it); // ')'
+                return build_arrow_function(this, mc, f, it, vec![], start.0);
+            }
+            Token::Identifier(_) => return grouping_or_arrow(this, mc, f, it, start),
+            _ => {}
+        }
+    }
     expression(this, mc, f, it, false)?;
     // Consume the closing `)`. Without this the `)` is left at the cursor; since
     // it has no infix rule the enclosing precedence loop halts and any operator
@@ -3171,6 +3277,67 @@ fn grouping<'c>(
         this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
     );
     Ok(())
+}
+
+/// Entered from `grouping` when a `(` is immediately followed by an identifier.
+/// Resolves the ambiguity between an arrow parameter list and an ordinary
+/// parenthesized expression:
+///   `(a, b) -> …` / `(a) -> …` → arrow function
+///   `(a)`                      → grouped variable
+///   `(a + b)` / `(x -> …)`     → ordinary grouped expression
+#[cfg(feature = "arrow")]
+fn grouping_or_arrow<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    start: TokenCell,
+) -> Catch {
+    this.store(it); // current = first ident (consumed)
+    let first = match this.copy_store()? {
+        Token::Identifier(n) => n,
+        _ => unreachable!("grouping_or_arrow entered on a non-identifier"),
+    };
+    match this.peek(it)? {
+        Token::Comma => {
+            // `(a, b, …) -> …` — a multi-parameter list (only valid as arrow params)
+            let mut params = vec![first];
+            while matches!(this.peek(it)?, Token::Comma) {
+                this.eat(it); // ','
+                let (res, _) = this.pop(it);
+                match res? {
+                    Token::Identifier(n) => params.push(n),
+                    other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+                }
+            }
+            expect_token!(this it CloseParen);
+            build_arrow_function(this, mc, f, it, params, start.0)
+        }
+        Token::CloseParen => {
+            this.eat(it); // ')'
+            if matches!(this.peek(it)?, Token::ArrowFunction) {
+                // `(a) -> …` — single parenthesized parameter
+                build_arrow_function(this, mc, f, it, vec![first], start.0)
+            } else {
+                // `(a)` — ordinary parenthesized variable; emit its getter
+                let (_set, getter) = resolve_etters(this, f, it, first);
+                this.emit_at(f, getter);
+                Ok(())
+            }
+        }
+        _ => {
+            // ordinary grouped expression starting with an identifier, e.g.
+            // `(a + b)` or `(x -> x + 1)`. Resume parsing from the stored ident.
+            this.parse_precedence(mc, f, it, Precedence::Assignment, true)?;
+            expect_token!(
+                this,
+                it,
+                CloseParen,
+                this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
+            );
+            Ok(())
+        }
+    }
 }
 
 fn tabulate<'c>(

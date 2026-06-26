@@ -535,6 +535,7 @@ impl<'c> Lexer<'c> {
                             self.eat();
                             self.send(Token::SubAssign)
                         }
+                        #[cfg(feature = "arrow")]
                         Some('>') => {
                             self.eat();
                             self.send(Token::ArrowFunction)

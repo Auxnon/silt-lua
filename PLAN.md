@@ -387,6 +387,32 @@ emit), not a separate pass. Types are compile-time only and never reach the VM.
 
 ---
 
+## 3.6 Arrow functions (Luau/C#-style) — landed, behind `arrow` feature (on by default)
+
+`params -> body` first-class function expressions.
+- **Syntax:** single bare param `x -> …`; multiple params parenthesized `(a, b) -> …`; also
+  `(x) -> …` and zero-param `() -> …`. Body is a single expression OR a `do … end` block
+  (multi-statement). **Always implicitly returns** its last expression, regardless of the
+  `implicit-return` flag.
+- **Detection (single-token lookahead, not var_stack unwind):** `variable()` spots `ident ->`
+  for the bare single param; `grouping()` delegates a `(`-then-identifier to `grouping_or_arrow`,
+  which disambiguates `(a, b) -> …` / `(a) -> …` (arrow) from `(a)` (grouped var) and `(a + b)` /
+  `(x -> …)` (ordinary grouped expression). The var_stack-unwind approach the task suggested is
+  infeasible here because getters are emitted eagerly before `->` is seen; lookahead is robust and
+  the end behavior is identical.
+- **`build_arrow_function`** mirrors `build_function`'s scope/closure machinery but takes the
+  param names directly and parses the flexible body. Two subtleties found via testing: (1) the
+  body must emit a leading `POP` — a normal function body opens with a POP of the parser-absorbed
+  `)` token, which the VM's call convention relies on for frame alignment; an arrow has no `)`, so
+  it emits the POP explicitly. (2) the single-expression body uses `expression_single` (not
+  `expression`) so a trailing comma ends the arrow rather than greedily eating the next argument
+  (`f(x -> x*2, 5)` → two args).
+- **Feature/flag:** cargo feature `arrow` (in default `silt` set) gates the `->` lexer token, the
+  `LanguageFlags::arrow_functions` field, and all parser code; the runtime flag defaults from the
+  feature. Tests: `tests/arrow.rs` (single/multi param, do-block, as-argument, closures, currying,
+  IIFE, plus grouping-still-works regressions).
+- **Deferred:** multi-value single-expression returns (use a `do` block); typed arrow params.
+
 ## 4. Known deviations (documented, lower priority)
 
 - **`#` on tables returns hashmap length, not a border** (README limitation). Lua's `#`
