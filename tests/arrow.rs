@@ -69,6 +69,17 @@ fn zero_param() {
     valeq!("local g = () -> do return 7 end return g()", ExVal::Integer(7));
 }
 
+// Typed arrow parameters require both `arrow` and `typing`. The annotations are
+// parsed (and currently discarded — tracking on the param local is a follow-up);
+// the function runs with the usual dynamic semantics.
+#[cfg(feature = "typing")]
+#[test]
+fn typed_params() {
+    valeq!("local f = (a: number, b: number) -> a + b return f(3, 4)", ExVal::Integer(7));
+    valeq!("local f = (x: number) -> x * 2 return f(21)", ExVal::Integer(42));
+    valeq!("local f = (a: number, b: string) -> a return f(5, 'hi')", ExVal::Integer(5));
+}
+
 #[test]
 fn implicit_return_even_without_flag() {
     // arrows implicitly return their single-expression body

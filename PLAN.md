@@ -411,7 +411,13 @@ emit), not a separate pass. Types are compile-time only and never reach the VM.
   `LanguageFlags::arrow_functions` field, and all parser code; the runtime flag defaults from the
   feature. Tests: `tests/arrow.rs` (single/multi param, do-block, as-argument, closures, currying,
   IIFE, plus grouping-still-works regressions).
-- **Deferred:** multi-value single-expression returns (use a `do` block); typed arrow params.
+- **Typed params (with `typing`):** `(a: number, b: number) -> a + b` parses — `grouping_or_arrow`
+  treats a `:` after a param ident (or a `,`) as an arrow parameter list and consumes the
+  annotations. The annotation is currently parsed-and-discarded (not yet recorded on the param
+  local — a follow-up for the checking phase). Caveat: with `typing` on, `(a: …` is always read as
+  a typed param list, so a parenthesized method call must be written without the outer parens.
+- **Deferred:** multi-value single-expression returns (use a `do` block); recording arrow param
+  types on their locals.
 
 ## 4. Known deviations (documented, lower priority)
 

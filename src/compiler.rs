@@ -3282,9 +3282,10 @@ fn grouping<'c>(
 /// Entered from `grouping` when a `(` is immediately followed by an identifier.
 /// Resolves the ambiguity between an arrow parameter list and an ordinary
 /// parenthesized expression:
-///   `(a, b) -> …` / `(a) -> …` → arrow function
-///   `(a)`                      → grouped variable
-///   `(a + b)` / `(x -> …)`     → ordinary grouped expression
+///   `(a, b) -> …` / `(a) -> …`            → arrow function
+///   `(a: number, b: number) -> …`         → typed arrow params (with `typing`)
+///   `(a)`                                 → grouped variable
+///   `(a + b)` / `(x -> …)`                → ordinary grouped expression
 #[cfg(feature = "arrow")]
 fn grouping_or_arrow<'c>(
     this: &mut Compiler,
@@ -3298,21 +3299,36 @@ fn grouping_or_arrow<'c>(
         Token::Identifier(n) => n,
         _ => unreachable!("grouping_or_arrow entered on a non-identifier"),
     };
-    match this.peek(it)? {
-        Token::Comma => {
-            // `(a, b, …) -> …` — a multi-parameter list (only valid as arrow params)
-            let mut params = vec![first];
-            while matches!(this.peek(it)?, Token::Comma) {
-                this.eat(it); // ','
-                let (res, _) = this.pop(it);
-                match res? {
-                    Token::Identifier(n) => params.push(n),
-                    other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
-                }
-            }
-            expect_token!(this it CloseParen);
-            build_arrow_function(this, mc, f, it, params, start.0)
+    // A `,` after the first ident — or, with the `typing` feature, a `:` type
+    // annotation — marks an arrow parameter list. (When `typing` is on, `(a: …`
+    // is read as a typed param; a parenthesized `(a:method())` must drop the
+    // outer parens.)
+    let is_param_list = matches!(this.peek(it)?, Token::Comma)
+        || (cfg!(feature = "typing") && matches!(this.peek(it)?, Token::Colon));
+    if is_param_list {
+        let mut params = vec![first];
+        // optional type annotation on the first param (parsed and consumed; not
+        // yet recorded on the param local — a follow-up for the checking phase)
+        #[cfg(feature = "typing")]
+        if matches!(this.peek(it)?, Token::Colon) {
+            let _ = parse_type_annotation(this, it)?;
         }
+        while matches!(this.peek(it)?, Token::Comma) {
+            this.eat(it); // ','
+            let (res, _) = this.pop(it);
+            match res? {
+                Token::Identifier(n) => params.push(n),
+                other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+            }
+            #[cfg(feature = "typing")]
+            if matches!(this.peek(it)?, Token::Colon) {
+                let _ = parse_type_annotation(this, it)?;
+            }
+        }
+        expect_token!(this it CloseParen);
+        return build_arrow_function(this, mc, f, it, params, start.0);
+    }
+    match this.peek(it)? {
         Token::CloseParen => {
             this.eat(it); // ')'
             if matches!(this.peek(it)?, Token::ArrowFunction) {
