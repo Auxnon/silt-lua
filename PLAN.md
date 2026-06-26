@@ -362,6 +362,31 @@ Native fns currently return a single `Value` (`InnerResult = Result<Value, SiltE
 
 ---
 
+## 3.5 Static typing (Luau-style) — Phase 1 landed, behind `typing` feature (off by default)
+
+Goal: optional, gradual static types that error at **compile time**. The compiler is single-pass
+and AST-free, so checking will be done by a "type stack" mirroring the operand stack (woven into
+emit), not a separate pass. Types are compile-time only and never reach the VM.
+
+- **Phase 1 (done, 2026-06):** `src/types.rs` (gated `#[cfg(feature = "typing")]`) defines the
+  `Type` lattice (`Any`/`Nil`/`Boolean`/`Number`/`String`/`Table`/`Function`/`Optional`/`Named`),
+  `Type::from_name`, and the `assignable()` compatibility chokepoint (gradual: `Any` and
+  unresolved `Named` are compatible with everything). `Local` gained a `ty` field. Annotations
+  are **parsed and stored** — `local x: T`, `local a: T, b: U`, and `function f(a: T)` — via
+  `parse_type_annotation`, wired into `named_variable` and `build_param`. **No checking yet:**
+  typed code runs with identical dynamic semantics. With the feature off there is zero impact
+  (the colon stays a method-call operator). Tests: `tests/typing.rs`.
+- **Deferred:** return-type annotations (`function f(): T`) — the param `)` is currently absorbed
+  as a void-prefix no-op in the body block, so return types wait for Phase 3 (signatures). Also
+  `T?`/unions/table-shapes/generics, and the lexer `?` token.
+- **Next phases:** (2) cheap high-confidence checks via the type stack — annotated-assignment
+  mismatch, arithmetic on known-non-number, call/ index of known-non-callable/-table; (3) function
+  signatures + arg/return checking; (4) optionals/unions/shapes + `--!strict` gating + narrowing.
+- The dead `ColonIdentifier`/`Typer`/`colon_blow` lexer machinery is intentionally left in place
+  for now (it doesn't conflict); retire it in favor of plain `Token::Colon` when typing matures.
+
+---
+
 ## 4. Known deviations (documented, lower priority)
 
 - **`#` on tables returns hashmap length, not a border** (README limitation). Lua's `#`

@@ -10,6 +10,8 @@ pub mod prelude;
 pub mod standard;
 pub mod table;
 mod token;
+#[cfg(feature = "typing")]
+pub mod types;
 pub mod userdata;
 pub mod value;
 pub extern crate gc_arena;

@@ -322,6 +322,11 @@ struct Local {
     /** how many layers deep the local value is nested in a function, with 0 being global (should only happen once to reserve the root func on the stack) */
     functional_depth: usize,
     is_captured: bool,
+    /// Phase-1 static type annotation (compile-time only). Defaults to `Any`.
+    /// Only written in Phase 1; the checking phases will read it.
+    #[cfg(feature = "typing")]
+    #[allow(dead_code)]
+    ty: crate::types::Type,
 }
 
 /// Bookkeeping for one active loop so `break` can unwind cleanly.
@@ -444,6 +449,8 @@ impl Compiler {
                 depth: 0,
                 functional_depth: 0,
                 is_captured: false,
+                #[cfg(feature = "typing")]
+                ty: crate::types::Type::Any,
             }],
             local_functional_offset: vec![],
             local_offset: vec![],
@@ -1523,6 +1530,8 @@ fn _add_local(
         depth: this.scope_depth,
         functional_depth: this.functional_depth,
         is_captured: false,
+        #[cfg(feature = "typing")]
+        ty: crate::types::Type::Any,
     });
     this.local_count += 1;
     // let offset = if this.functional_depth > 0 {
@@ -1947,6 +1956,14 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
     match res? {
         Token::Identifier(ident) => {
             add_local(this,  ident)?;
+            // typed parameter `function f(a: number)` — record on the param local
+            #[cfg(feature = "typing")]
+            if matches!(this.peek(it)?, Token::Colon) {
+                let ty = parse_type_annotation(this, it)?;
+                if let Some(local) = this.locals.last_mut() {
+                    local.ty = ty;
+                }
+            }
         }
         Token::VarArg => {
             if this.is_vararg_function() {
@@ -2735,6 +2752,26 @@ fn print_var_stack(_v: &[Option<(OpCode, OpCode)>]) {
     }
 }
 
+/// Parse a `: Type` annotation (typing Phase 1). Assumes the upcoming token is
+/// `:`; consumes it and a single type name, returning the parsed `Type`. Union,
+/// optional (`T?`), function, and table-shape syntax are deferred to later
+/// phases. Compile-time only — nothing is emitted.
+#[cfg(feature = "typing")]
+fn parse_type_annotation(
+    this: &mut Compiler,
+    it: &mut Peekable<Lexer>,
+) -> Result<crate::types::Type, ErrorTuple> {
+    devnote!(this it "parse_type_annotation");
+    this.eat(it); // ':'
+    let (res, _) = this.pop(it);
+    Ok(match res? {
+        Token::Identifier(name) => crate::types::Type::from_name(&name),
+        Token::Nil => crate::types::Type::Nil,
+        Token::Function => crate::types::Type::Function,
+        other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+    })
+}
+
 /// Map a compound-assignment token to the binary opcode it applies.
 /// `x += e` desugars to `x = x <op> e`.
 #[cfg(feature = "compound-assignment")]
@@ -2835,6 +2872,16 @@ fn named_variable<'c>(
         unreachable!()
     };
 
+    // Typed local declaration `local x: T = …` — intercept the annotation before
+    // the colon reaches the method-call path. Compile-time only.
+    #[cfg(feature = "typing")]
+    if this.local_declare_mode && matches!(this.peek(it)?, Token::Colon) {
+        let ty = parse_type_annotation(this, it)?;
+        if let Some(local) = this.locals.last_mut() {
+            local.ty = ty;
+        }
+    }
+
     // println!("and then it's {} {}", ops.0, this.can_multivar_set);
     this.var_stack.push(if !this.local_declare_mode {
         Some(ops)
@@ -2861,6 +2908,14 @@ fn named_variable<'c>(
                 } else {
                     unreachable!()
                 };
+                // typed multi-var: `local a: T, b: U = …`
+                #[cfg(feature = "typing")]
+                if this.local_declare_mode && matches!(this.peek(it)?, Token::Colon) {
+                    let ty = parse_type_annotation(this, it)?;
+                    if let Some(local) = this.locals.last_mut() {
+                        local.ty = ty;
+                    }
+                }
                 this.var_stack.push(if !this.local_declare_mode {
                     Some(ops)
                 } else {

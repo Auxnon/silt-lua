@@ -67,6 +67,9 @@ short-declare = []
 implicit-return = []
 # Luau-style compound assignment operators: += -= *= /= //= %= ^= ..=
 compound-assignment = []
+# Luau-style static type annotations (Phase 1: parse + track only, no checking yet).
+# Off by default.
+typing = []
 vectors = []
 dev-out = []
 
