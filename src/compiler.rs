@@ -1338,26 +1338,7 @@ impl Compiler {
         let can_assign = precedence <= Precedence::Assignment;
         (rule.prefix)(self, mc, f, it, can_assign)?;
 
-        loop {
-            let c = self.peek_result(it);
-            let rule = match c {
-                Ok(&Token::EOF) => break,
-                Ok(t) => Self::get_rule(t),
-                Err(e) => {
-                    return Err(e.clone());
-                }
-            };
-            devout!(
-                "loop target precedence for :  {}, current precedence for  : {}",
-                precedence,
-                rule.precedence
-            );
-            if precedence > rule.precedence {
-                break;
-            }
-            self.store(it);
-            (rule.infix)(self, mc, f, it, false)?;
-        }
+        self.infix_loop(mc, f, it, precedence)?;
 
         // TODO test this with `local b="b" sprint b`
         if can_assign
@@ -1374,6 +1355,33 @@ impl Compiler {
         // if skip_step {
         //     self.store();
         // }
+        Ok(())
+    }
+
+    /// Run the Pratt infix loop given a value already produced on the stack:
+    /// consume and emit each infix operator whose precedence is >= `precedence`.
+    /// Shared by `parse_precedence` and by callers that have emitted a value
+    /// directly (e.g. recovering a grouped method call) and need to continue.
+    fn infix_loop<'c>(
+        &mut self,
+        mc: &Mutation<'c>,
+        f: FnRef<'_, 'c>,
+        it: &mut Peekable<Lexer>,
+        precedence: Precedence,
+    ) -> Catch {
+        loop {
+            let c = self.peek_result(it);
+            let rule = match c {
+                Ok(&Token::EOF) => break,
+                Ok(t) => Self::get_rule(t),
+                Err(e) => return Err(e.clone()),
+            };
+            if precedence > rule.precedence {
+                break;
+            }
+            self.store(it);
+            (rule.infix)(self, mc, f, it, false)?;
+        }
         Ok(())
     }
 }
@@ -3299,20 +3307,33 @@ fn grouping_or_arrow<'c>(
         Token::Identifier(n) => n,
         _ => unreachable!("grouping_or_arrow entered on a non-identifier"),
     };
-    // A `,` after the first ident — or, with the `typing` feature, a `:` type
-    // annotation — marks an arrow parameter list. (When `typing` is on, `(a: …`
-    // is read as a typed param; a parenthesized `(a:method())` must drop the
-    // outer parens.)
-    let is_param_list = matches!(this.peek(it)?, Token::Comma)
-        || (cfg!(feature = "typing") && matches!(this.peek(it)?, Token::Colon));
-    if is_param_list {
-        let mut params = vec![first];
-        // optional type annotation on the first param (parsed and consumed; not
-        // yet recorded on the param local — a follow-up for the checking phase)
-        #[cfg(feature = "typing")]
-        if matches!(this.peek(it)?, Token::Colon) {
-            let _ = parse_type_annotation(this, it)?;
+    // Decide whether this is an arrow parameter list. A `,` unambiguously means
+    // one. A `:` (typed first param, `typing` feature) needs disambiguation:
+    // `(a: T, …)` is a typed param list, but `(a:method(…))` is a parenthesized
+    // method call — decided by the token after the name (`(` ⇒ method call).
+    let mut in_param_list = false;
+    #[cfg(feature = "typing")]
+    if matches!(this.peek(it)?, Token::Colon) {
+        this.eat(it); // ':'
+        let (nres, _) = this.pop(it);
+        let name = match nres? {
+            Token::Identifier(n) => n,
+            Token::Nil => "nil".to_string(),
+            Token::Function => "function".to_string(),
+            other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+        };
+        if matches!(this.peek(it)?, Token::OpenParen) {
+            // `(a:method(…))` — a grouped method call, not a typed param list.
+            return finish_grouped_method_call(this, mc, f, it, first, name, start);
         }
+        // `name` annotated `first`; this is a typed parameter list
+        in_param_list = true;
+    }
+    if !in_param_list {
+        in_param_list = matches!(this.peek(it)?, Token::Comma);
+    }
+    if in_param_list {
+        let mut params = vec![first];
         while matches!(this.peek(it)?, Token::Comma) {
             this.eat(it); // ','
             let (res, _) = this.pop(it);
@@ -3320,6 +3341,8 @@ fn grouping_or_arrow<'c>(
                 Token::Identifier(n) => params.push(n),
                 other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
             }
+            // optional type annotation on each subsequent param (parsed and
+            // consumed; recording it on the param local is a follow-up)
             #[cfg(feature = "typing")]
             if matches!(this.peek(it)?, Token::Colon) {
                 let _ = parse_type_annotation(this, it)?;
@@ -3354,6 +3377,44 @@ fn grouping_or_arrow<'c>(
             Ok(())
         }
     }
+}
+
+/// Recover a parenthesized method call `(receiver:method(args))` that the typed
+/// arrow-param lookahead initially mistook for `(a: Type)`. The `receiver`, the
+/// `:`, and the `method` name are already consumed; the cursor is at the call's
+/// `(`. We emit the method call and close the grouping. Because we've committed
+/// to the not-an-arrow interpretation, a trailing `->` is a hard error.
+#[cfg(all(feature = "arrow", feature = "typing"))]
+fn finish_grouped_method_call<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    receiver: String,
+    method: String,
+    start: TokenCell,
+) -> Catch {
+    devnote!(this it "finish_grouped_method_call");
+    let (_set, getter) = resolve_etters(this, f, it, receiver);
+    this.emit_at(f, getter);
+    let constant = this.identifer_constant(f, method);
+    this.emit_at(f, OpCode::METHOD_GET { constant });
+    this.self_arg = true;
+    // The receiver+method are on the stack; resume the infix loop so the call's
+    // `(args)` and any trailing operators inside the parens (`(a:m() + 1)`) are
+    // parsed normally.
+    this.infix_loop(mc, f, it, Precedence::Assignment)?;
+    expect_token!(
+        this,
+        it,
+        CloseParen,
+        this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
+    );
+    if matches!(this.peek(it)?, Token::ArrowFunction) {
+        // `(a:m()) -> …` is contradictory: we already committed to a method call
+        return Err(this.error_at(SiltError::InvalidTokenPlacement(Token::ArrowFunction)));
+    }
+    Ok(())
 }
 
 fn tabulate<'c>(

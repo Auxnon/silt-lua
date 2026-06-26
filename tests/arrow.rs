@@ -80,6 +80,40 @@ fn typed_params() {
     valeq!("local f = (a: number, b: string) -> a return f(5, 'hi')", ExVal::Integer(5));
 }
 
+// With `typing` on, `(a: …` is normally a typed param list — but a parenthesized
+// method call `(obj:method(…))` is disambiguated by the `(` after the name and
+// recovered as an ordinary grouped expression.
+#[cfg(feature = "typing")]
+#[test]
+fn parenthesized_method_call_not_mistaken_for_typed_param() {
+    valeq!(
+        "local t = {x = 5} function t:get() return self.x end return (t:get())",
+        ExVal::Integer(5)
+    );
+    // a trailing operator inside the parens is handled too
+    valeq!(
+        "local t = {x = 5} function t:get() return self.x end return (t:get() + 1)",
+        ExVal::Integer(6)
+    );
+    valeq!(
+        "local t = {x = 5} function t:add(n) return self.x + n end return (t:add(10)) * 2",
+        ExVal::Integer(30)
+    );
+}
+
+// `(a:m()) -> …` is contradictory (we committed to a method call) and must error.
+#[cfg(feature = "typing")]
+#[test]
+fn arrow_after_grouped_method_call_errors() {
+    let out = simple(
+        "local t = {} function t:m() return 1 end local g = (t:m()) -> 1 return g",
+    );
+    match out {
+        ExVal::String(s) => assert!(!s.is_empty(), "expected an error message"),
+        other => panic!("expected an error, got {:?}", other),
+    }
+}
+
 #[test]
 fn implicit_return_even_without_flag() {
     // arrows implicitly return their single-expression body

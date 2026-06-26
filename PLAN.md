@@ -414,8 +414,11 @@ emit), not a separate pass. Types are compile-time only and never reach the VM.
 - **Typed params (with `typing`):** `(a: number, b: number) -> a + b` parses — `grouping_or_arrow`
   treats a `:` after a param ident (or a `,`) as an arrow parameter list and consumes the
   annotations. The annotation is currently parsed-and-discarded (not yet recorded on the param
-  local — a follow-up for the checking phase). Caveat: with `typing` on, `(a: …` is always read as
-  a typed param list, so a parenthesized method call must be written without the outer parens.
+  local — a follow-up for the checking phase). The `(a: …` ambiguity with a parenthesized method
+  call is **resolved**: after `(ident: name`, a following `(` means a method call, so it falls out
+  of param-list mode and recovers as an ordinary grouped expression (`(t:get())`, `(t:get() + 1)`
+  both work) via `finish_grouped_method_call` + the extracted `infix_loop` helper. Having committed
+  to the method-call interpretation, a trailing `->` (`(t:m()) -> …`) is a clean hard error.
 - **Deferred:** multi-value single-expression returns (use a `do` block); recording arrow param
   types on their locals.
 

@@ -10,7 +10,26 @@ There's also desire to add some custom non-lua syntax pulling syntactic sugar fr
 
 This library has been written from the ground up with observations of the lua language and documentation. Source code has not been referenced so naturally the VM will always have some noticeable differences that will hopefully be ironed out eventually. This includes the byte code, as lua now operates under wordcode to work with it's register based VM. Feel free to submit an issue for anything particularly glaring. This project is a learning exercise so there is a good deal of naive approaches I'm taking to make this a reality.
 
+## Running
+
+The `silt` binary takes either a file path or an inline program:
+
+```sh
+silt path/to/script.lua          # run a file
+silt --run "return 1 + 2"        # run a string directly (prints 3)
+silt -r 'print("hi")'            # short flag
+silt --help                      # usage (alias: -h)
+```
+
+With `--run`/`-r`, everything after the flag is treated as the Lua source (quote it so your shell passes it as one argument). The final returned value is printed after a separator line.
+
 ## Limitations
+
+> **Conformance status & roadmap:** see [`PLAN.md`](./PLAN.md) for the full audited list of
+> working features, known bugs (with reproductions and root-cause pointers), the missing
+> standard library, tail-call-optimization notes, and the stack-vs-register VM analysis. The
+> test suite under `tests/` encodes the target behavior — broken features have `#[ignore]`d
+> tests tagged with the relevant `PLAN.md` section.
 
 - Built as a stack based VM, not register based, this will change eventually.
 - Multiple returns is still WIP
@@ -33,8 +52,8 @@ Keep in mind these may be polarizing and an LSP will flag them as an error
 - `"short-declare"` Stolen right from Go you can now declare a local variable with `:=` such as `a := 2`
 - <del>`"implicit-return"` Blocks and statements will implicitly return the last value on the stack unless ending in a `;`</del>
 - <del> Top of file flags like --!local force implicit declaration to assign to the current scope instead of at the global level. You can still always declare globals anywhere via the keyword "global", python style </del>
-- <del> Anonymous arrow functions of the -> (C# style) are supported `func_name =param -> param+1` in addition to this arrow functions have implicit returns. The last value on the stack is always returned. Regular functions without a `return` keyword will return nil as before. </del>
-- <del> Incrementors like `+=` `-=` `*=` `/=` </del>
+- `"arrow"` Arrow functions: `x -> x + 1` (single param, bare), `(a, b) -> a + b` (multiple params, parenthesized). The body is a single expression, or a `do … end` block for multiple statements; either way the body is **always implicitly returned** (regardless of the `implicit-return` flag). They are first-class expressions — assign them, pass them as arguments, curry them (`x -> y -> x + y`), or call inline (`((x) -> x*x)(9)`). A comma ends an arrow body, so `f(x -> x*2, 5)` passes the arrow and `5` as two arguments.
+- `"compound-assignment"` Luau-style compound assignment operators: `+=` `-=` `*=` `/=` `//=` `%=` `^=` `..=`. `x op= e` is shorthand for `x = x op e` and evaluates the target once. Works on locals, upvalues, globals, and table fields/indexes (`t.x += 1`, `t[k] *= 2`, `self.count += 1`).
 
 ## Examples
 
