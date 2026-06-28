@@ -74,6 +74,10 @@ arrow = []
 # Luau-style static type annotations (Phase 1: parse + track only, no checking yet).
 # Off by default.
 typing = []
+# Live code hot-swapping: diff old/new source and surgically replace changed
+# function bodies in a running VM (top-level globals swap live, preserving state).
+# Off by default — only needed for live-reload / dev tooling, not normal embedding.
+hot-swap = []
 vectors = []
 dev-out = []
 

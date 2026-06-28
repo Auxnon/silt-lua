@@ -1,10 +1,11 @@
-/// Integration tests for the hotswap feature.
-///
-/// The hotswap method detects what changed between two Lua source strings and
-/// updates the VM with minimal disruption:
-///   - No change         → NoChange
-///   - Root-level diff   → RootChanged (full recompile + execute)
-///   - Function-only diff → FunctionChanged (update function tree, no re-execute)
+//! Integration tests for the hotswap feature (gated behind the `hot-swap` feature).
+//!
+//! The hotswap method detects what changed between two Lua source strings and
+//! updates the VM with minimal disruption:
+//!   - No change          → NoChange
+//!   - Root-level diff     → RootChanged (full recompile + execute)
+//!   - Function-only diff  → FunctionChanged (live-swap globals, no re-execute)
+#![cfg(feature = "hot-swap")]
 
 use silt_lua::{Compiler, HotswapResult, Lua};
 
@@ -296,6 +297,78 @@ fn hotswap_anonymous_function_as_global_detected() {
         HotswapResult::NoChange,
         "expected a change to be detected"
     );
+}
+
+// ── Stage 1: live swap (top-level globals apply immediately, state preserved) ─
+
+#[test]
+fn hotswap_function_change_takes_effect_without_cycle() {
+    let (mut lua, mut compiler) = make_vm();
+    let old = "function add(a, b)\n    return a + b\nend";
+    let new = "function add(a, b)\n    return a * b\nend";
+
+    lua.run(None, old, &mut compiler)
+        .map_err(|e| e.to_string())
+        .unwrap();
+
+    let result = hotswap(&mut lua, &mut compiler, old, new);
+    assert!(fn_changed_has(&result, "add"), "got {:?}", result);
+
+    // No cycle() — the live global closure was swapped in place, so the new
+    // (multiply) body is already in effect.
+    let val = run(&mut lua, "return add(3, 4)");
+    assert_eq!(val, silt_lua::ExVal::Integer(12));
+}
+
+#[test]
+fn hotswap_live_swap_preserves_mutated_state() {
+    // The core game-dev scenario: state has drifted from its initial value at
+    // runtime; editing a function must apply WITHOUT resetting that state.
+    let (mut lua, mut compiler) = make_vm();
+    let old = "score = 0\nfunction bump()\n    score = score + 1\nend";
+    let new = "score = 0\nfunction bump()\n    score = score + 10\nend";
+
+    lua.run(None, old, &mut compiler)
+        .map_err(|e| e.to_string())
+        .unwrap();
+
+    // Drive state away from its initialized value.
+    run(&mut lua, "bump()"); // score = 1
+    run(&mut lua, "bump()"); // score = 2
+    assert_eq!(run(&mut lua, "return score"), silt_lua::ExVal::Integer(2));
+
+    // Edit bump's body; do NOT cycle (cycle would re-run root and reset score).
+    let result = hotswap(&mut lua, &mut compiler, old, new);
+    assert!(fn_changed_has(&result, "bump"), "got {:?}", result);
+
+    // New body (+10) applies AND the mutated score (2) survived → 2 + 10 = 12.
+    run(&mut lua, "bump()");
+    assert_eq!(run(&mut lua, "return score"), silt_lua::ExVal::Integer(12));
+}
+
+#[test]
+fn hotswap_two_functions_swap_independently_live() {
+    // Scenario A: two separate top-level functions, edit only `foo`. `foo` swaps
+    // live; `bar` is untouched — all without cycle().
+    let (mut lua, mut compiler) = make_vm();
+    let old = "function foo()\n    return 1\nend\nfunction bar()\n    return 2\nend";
+    let new = "function foo()\n    return 100\nend\nfunction bar()\n    return 2\nend";
+
+    lua.run(None, old, &mut compiler)
+        .map_err(|e| e.to_string())
+        .unwrap();
+
+    let result = hotswap(&mut lua, &mut compiler, old, new);
+    assert!(fn_changed_has(&result, "foo"), "got {:?}", result);
+    // Only foo should be reported as changed.
+    assert!(
+        !fn_changed_has(&result, "bar"),
+        "bar must not be reported changed, got {:?}",
+        result
+    );
+
+    assert_eq!(run(&mut lua, "return foo()"), silt_lua::ExVal::Integer(100));
+    assert_eq!(run(&mut lua, "return bar()"), silt_lua::ExVal::Integer(2));
 }
 
 // ── Shared-line / unformatted source (root code co-located with a function) ──

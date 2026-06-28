@@ -18,9 +18,12 @@ pub extern crate gc_arena;
 
 
 pub use self::{
-    compiler::Compiler, error::SiltError as LuaError, lua::HotswapResult, lua::Lua, lua::VM,
+    compiler::Compiler, error::SiltError as LuaError, lua::Lua, lua::VM,
     value::ExVal, value::Value,
 };
+
+#[cfg(feature = "hot-swap")]
+pub use self::lua::HotswapResult;
 
 #[cfg(feature = "vectors")]
 pub mod vec;

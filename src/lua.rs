@@ -281,6 +281,7 @@ type LuaResult = Result<ExVal, ErrorOut>;
 type InnerUserData<'a> = Gc<'a, RefLock<UserDataWrapper>>;
 
 /// Outcome of a [`Lua::hotswap`] / [`VM::hotswap`] call.
+#[cfg(feature = "hot-swap")]
 #[derive(Debug, PartialEq)]
 pub enum HotswapResult {
     /// Old and new source are identical; no action was taken.
@@ -288,15 +289,19 @@ pub enum HotswapResult {
     /// Root-level code changed; the entire source was recompiled and re-executed.
     RootChanged,
     /// One or more function bodies changed.  The compiled function objects have been
-    /// replaced in the root function tree without re-executing root-level code, preserving
-    /// global state.  Call [`Lua::cycle`] / [`VM::cycle`] when ready to re-register all
-    /// function globals.  The inner `Vec<String>` contains the names of every changed
-    /// function (or `"anonymous"` for unnamed functions).
+    /// replaced in the root function tree without re-executing root-level code, and every
+    /// changed function that is bound as a top-level global closure has additionally been
+    /// swapped *live* — the new body takes effect on the next call with all global/runtime
+    /// state preserved (no `cycle()` required). Changed functions that aren't live global
+    /// closures (locals, nested/instance methods) update in the root tree only and take
+    /// effect on the next `cycle()` / re-instantiation.  The inner `Vec<String>` contains the
+    /// names of every changed function (or `"anonymous"` for unnamed functions).
     FunctionChanged(Vec<String>),
 }
 
 /// Returns 1-indexed line numbers for every line that differs between `old` and
 /// `new`.  An empty `Vec` means the two sources are identical.
+#[cfg(feature = "hot-swap")]
 fn find_changed_lines(old: &str, new: &str) -> Vec<usize> {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
@@ -385,15 +390,17 @@ impl<'gc> Lua {
     /// Hotswap Lua source code, detecting what changed between `old_source` and `new_source`
     /// and updating the VM accordingly with minimal disruption to runtime state.
     ///
-    /// * If only a single top-level function body changed, the root function object tree is
-    ///   updated with the newly-compiled function without re-executing root-level code.
-    ///   Call [`cycle`](Self::cycle) when you want the new definition to take effect in globals.
+    /// * If only function bodies changed, the root function object tree is updated with the
+    ///   newly-compiled functions without re-executing root-level code, and any changed
+    ///   top-level global functions are swapped live so the new bodies take effect on the
+    ///   next call with all global state preserved — no `cycle()` needed.
     /// * If root-level code changed (or the diff spans multiple functions / the root scope),
     ///   the entire source is recompiled and executed – equivalent to calling [`run`](Self::run).
     /// * If the sources are identical, nothing happens.
     ///
     /// The `compiler` is reset between calls; callers should pass the same `Compiler` instance
     /// they used for the initial compilation.
+    #[cfg(feature = "hot-swap")]
     pub fn hotswap(
         &mut self,
         name: Option<&str>,
@@ -662,6 +669,7 @@ impl<'gc> VM<'gc> {
     ///
     /// This approach handles named, anonymous, and nested functions correctly because it
     /// relies on the actual compiler output rather than a secondary parse pass.
+    #[cfg(feature = "hot-swap")]
     pub fn hotswap(
         &mut self,
         mc: &Mutation<'gc>,
@@ -697,6 +705,10 @@ impl<'gc> VM<'gc> {
         // Constant indices of root-level functions whose source did NOT change; they will
         // be restored from `self.root` to preserve GC object identity.
         let mut unchanged_indices: Vec<usize> = vec![];
+        // (name, new FunctionObject) for every CHANGED root-level *named* function, used by
+        // the stage-1 live swap below to update the matching global closure in place without
+        // re-running root-level code. Anonymous functions are skipped (no global to bind).
+        let mut changed_globals: Vec<(String, Gc<'gc, FunctionObject<'gc>>)> = vec![];
 
         for opcode in new_root.chunk.code.iter() {
             if let crate::code::OpCode::CLOSURE { constant } = opcode {
@@ -722,8 +734,12 @@ impl<'gc> VM<'gc> {
                             .name
                             .clone()
                             .unwrap_or_else(|| "anonymous".to_string());
-                        changed_fn_names.push(fn_name);
+                        changed_fn_names.push(fn_name.clone());
                         covered_ranges.push((fn_start_line, fn_end_line));
+                        // Only named functions can be bound as a global and swapped live.
+                        if fn_gc.name.is_some() {
+                            changed_globals.push((fn_name, *fn_gc));
+                        }
                     } else {
                         unchanged_indices.push(k);
                     }
@@ -792,9 +808,45 @@ impl<'gc> VM<'gc> {
         }
 
         // 6. Install the patched root without re-executing root-level code, thereby
-        //    preserving all global state.  The caller should invoke `cycle()` when ready
-        //    to re-register the updated function globals.
+        //    preserving all global state.  The patched root keeps the VM's notion of the
+        //    program consistent (used by any later `cycle()` and as the source for nested /
+        //    not-yet-instantiated functions).
         self.root = Gc::new(mc, new_root);
+
+        // 7. STAGE 1 — live-apply the change. For each changed *named* function that is
+        //    currently bound as a top-level global closure, replace that global with a fresh
+        //    closure wrapping the new code while REUSING the existing upvalue cells. Because
+        //    top-level functions are invoked by global-name lookup, every subsequent call
+        //    picks up the new body immediately — no `cycle()`, so all global/game state is
+        //    preserved. Functions that aren't live global closures (locals, nested methods)
+        //    are left to the patched root tree; truly surgical nested/instance swaps are
+        //    stage 2 (function-slot indirection).
+        for (fn_name, new_fn) in changed_globals {
+            // Capture the live closure's upvalue cells, if this name is a global closure.
+            let old_upvalues = match self.globals.borrow().get(fn_name.as_str()) {
+                Some(Value::Closure(old)) => Some(old.upvalues.clone()),
+                _ => None,
+            };
+            let Some(old_upvalues) = old_upvalues else {
+                continue; // not a live global closure — nothing to swap in place
+            };
+            // Reuse the existing cells only when the capture layout is unchanged (the
+            // body-only edit case). If the new body captures a different number of
+            // upvalues we can't safely rebind here, so leave the live global as-is; the
+            // patched root still carries the new code for a future full cycle.
+            let upvalues = if new_fn.upvalue_count as usize == old_upvalues.len() {
+                old_upvalues
+            } else if new_fn.upvalue_count == 0 {
+                vec![]
+            } else {
+                continue;
+            };
+            let new_closure = Gc::new(mc, Closure::new(new_fn, upvalues));
+            self.globals
+                .borrow_mut(mc)
+                .set(Value::String(fn_name), Value::Closure(new_closure));
+        }
+
         Ok(HotswapResult::FunctionChanged(changed_fn_names))
     }
 
