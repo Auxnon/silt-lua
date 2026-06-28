@@ -77,7 +77,6 @@ fn deep_chain_read_write() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2.7/§3 — generic for + pairs not implemented"]
 fn iteration_with_pairs() {
     valeq!(
         r#"

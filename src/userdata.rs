@@ -14,7 +14,7 @@ use gc_arena::{Collect, Gc, Mutation};
 use crate::{
     code::OpCode,
     error::SiltError,
-    function::{NativeFunctionRaw, WrappedFn},
+    function::{NativeFunctionRaw, NativeReturn, WrappedFn},
     lua::VM,
     value::{FromLua, FromLuaMulti, ToLua, Value, Variadic},
 };
@@ -274,7 +274,12 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
             //     // Value::Nil
             // };
             let native_fn = method_fn;
-            let raw = NativeFunctionRaw { func: native_fn };
+            // wrap the single-value userdata method closure into the native ABI
+            let raw = NativeFunctionRaw {
+                func: Box::new(move |vm, mc, args| {
+                    Ok(NativeReturn::Single(native_fn(vm, mc, args)?))
+                }),
+            };
             let r = Rc::new(raw);
             // self.method_cache.push(r.clone());
             self.getters.insert(

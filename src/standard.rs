@@ -1,10 +1,23 @@
-use gc_arena::Mutation;
+use std::rc::Rc;
+
+use gc_arena::{Gc, Mutation};
 
 use crate::{
+    error::SiltError,
+    function::{NativeFunctionRaw, WrappedFn},
     prelude::VM,
     userdata::{InnerResult, TestEnt},
     value::Value,
 };
+
+/// Build a `Value::NativeFunction` from a multi-return native closure — used to
+/// hand back the iterator functions from `pairs`/`ipairs`.
+fn make_native_multi<'gc>(
+    mc: &Mutation<'gc>,
+    f: fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> Result<Vec<Value<'gc>>, SiltError>,
+) -> Value<'gc> {
+    Value::NativeFunction(Gc::new(mc, WrappedFn::new(Rc::new(NativeFunctionRaw::new_multi(f)))))
+}
 
 pub fn clock<'lua>(_: &mut VM<'lua>, _: &Mutation<'lua>, _: ()) -> InnerResult<'lua> {
     Ok(Value::Number(
@@ -215,6 +228,73 @@ pub fn error<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> In
         .map(|m| m.coerce_string())
         .unwrap_or_else(|| "nil".to_string());
     Err(crate::LuaError::Custom(msg))
+}
+
+// ============================================================================
+// Iteration: next / pairs / ipairs (multi-return)
+// ============================================================================
+
+/// `next(t [,k])` — stateless step over a table; returns the next key/value, or
+/// a single `nil` when exhausted.
+pub fn lua_next<'lua>(
+    _: &mut VM<'lua>,
+    _: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let t = match args.first() {
+        Some(Value::Table(t)) => *t,
+        _ => return Err(SiltError::Custom("bad argument #1 to 'next' (table expected)".into())),
+    };
+    let key = args.get(1).cloned().unwrap_or(Value::Nil);
+    match t.borrow().next_entry(&key) {
+        Some((k, v)) => Ok(vec![k, v]),
+        None => Ok(vec![Value::Nil]),
+    }
+}
+
+/// `pairs(t)` → `(next, t, nil)` — the generic-for iteration triple.
+pub fn lua_pairs<'lua>(
+    _: &mut VM<'lua>,
+    mc: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let t = match args.first() {
+        Some(t @ Value::Table(_)) => t.clone(),
+        _ => return Err(SiltError::Custom("bad argument #1 to 'pairs' (table expected)".into())),
+    };
+    Ok(vec![make_native_multi(mc, lua_next), t, Value::Nil])
+}
+
+/// The iterator returned by `ipairs`: `iter(t, i)` → `(i+1, t[i+1])` or `nil`.
+fn ipairs_iter<'lua>(
+    _: &mut VM<'lua>,
+    _: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let t = match args.first() {
+        Some(Value::Table(t)) => *t,
+        _ => return Err(SiltError::Custom("bad argument to ipairs iterator".into())),
+    };
+    let i = args.get(1).map(|v| v.coerce_int()).unwrap_or(0) + 1;
+    let v = t.borrow().get_value(&Value::Integer(i));
+    if matches!(v, Value::Nil) {
+        Ok(vec![Value::Nil])
+    } else {
+        Ok(vec![Value::Integer(i), v])
+    }
+}
+
+/// `ipairs(t)` → `(iter, t, 0)` — sequential integer-key iteration from 1.
+pub fn lua_ipairs<'lua>(
+    _: &mut VM<'lua>,
+    mc: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let t = match args.first() {
+        Some(t @ Value::Table(_)) => t.clone(),
+        _ => return Err(SiltError::Custom("bad argument #1 to 'ipairs' (table expected)".into())),
+    };
+    Ok(vec![make_native_multi(mc, ipairs_iter), t, Value::Integer(0)])
 }
 
 // ============================================================================

@@ -324,8 +324,18 @@ pub type NativeFunctionRef<'a> = &'a NativeFunctionRaw<'a>;
 pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
 // pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
 
+/// What a native function hands back. Most functions return a single value;
+/// multi-return functions (`next`, `pairs`, `ipairs`, `select`, `pcall`, …)
+/// return several, which the CALL handler spreads onto the stack.
+pub enum NativeReturn<'gc> {
+    Single(Value<'gc>),
+    Multi(Vec<Value<'gc>>),
+}
+
+pub type NativeResult<'gc> = Result<NativeReturn<'gc>, SiltError>;
+
 pub struct NativeFunctionRaw<'a> {
-    pub func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> InnerResult<'a> + 'a>,
+    pub func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> NativeResult<'a> + 'a>,
 }
 
 impl<'gc> NativeFunctionRaw<'gc> {
@@ -344,8 +354,20 @@ impl<'gc> NativeFunctionRaw<'gc> {
         Self {
             func: Box::new(move |vm, mc, raw_args| {
                 let args = A::from_lua_multi(raw_args, vm, mc)?;
-                R::to_lua(f(vm, mc, args), vm, mc)
+                Ok(NativeReturn::Single(R::to_lua(f(vm, mc, args), vm, mc)?))
             }),
+        }
+    }
+
+    /// Register a native function that returns multiple values. The closure
+    /// takes the raw argument slice and yields a `Vec<Value>`.
+    pub fn new_multi<F>(f: F) -> Self
+    where
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> Result<Vec<Value<'gc>>, SiltError>
+            + 'gc,
+    {
+        Self {
+            func: Box::new(move |vm, mc, raw_args| Ok(NativeReturn::Multi(f(vm, mc, raw_args)?))),
         }
     }
 
@@ -364,7 +386,7 @@ impl<'gc> NativeFunctionRaw<'gc> {
         vm: &mut VM<'gc>,
         mutation: &Mutation<'gc>,
         args: &[Value<'gc>],
-    ) -> InnerResult<'gc> {
+    ) -> NativeResult<'gc> {
         (self.func)(vm, mutation, args)
     }
 }
@@ -393,7 +415,7 @@ impl<'gc> WrappedFn<'gc> {
         vm: &mut VM<'gc>,
         mc: &Mutation<'gc>,
         args: &[Value<'gc>],
-    ) -> InnerResult<'gc> {
+    ) -> NativeResult<'gc> {
         (self.f.func)(vm, mc, args)
     }
 }

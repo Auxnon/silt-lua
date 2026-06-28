@@ -257,15 +257,26 @@ test binary.
     `nested_break_only_exits_inner`, `repeat_until_with_break`, `repeat_until_sees_body_local`,
     `while_body_local_is_scoped`.
 
-### 2.7 Generic `for … in` (with `pairs`/`ipairs`) unimplemented
+### 2.7 Generic `for … in` (with `pairs`/`ipairs`) ✅ FIXED
 - **Repro:** `for k,v in pairs(t) do … end` → parse error (`Expected token ::=`).
 - **Expected:** the generic-for protocol: `for vars in explist do … end` calling
   `iterator(state, control)` until nil.
-- **Root cause:** `for_statement` only handles the numeric form; the generic form (multiple
-  loop vars + `in`) is not parsed, and `pairs`/`ipairs`/`next` don't exist (§3). CHANGELOG
-  already flags "Generic for still WIP".
-- **Fix sketch:** parse `for namelist in explist do`; emit the generic-for loop opcodes
-  (`TFORCALL`/`TFORLOOP` analog); implement `next`, then `pairs`/`ipairs` on top.
+- **Resolution (2026-06) — built on a new native multi-return ABI:**
+  - **Native multi-return:** native functions now return `NativeReturn::{Single,Multi}`
+    (`src/function.rs`); the CALL handler spreads `Multi` values and adjusts to the caller's
+    wanted count. `register_native_multi_function` registers them. This is the foundation that
+    `pcall`/`select`/`table.unpack` will also use.
+  - **`next`/`pairs`/`ipairs`** (`src/standard.rs`): `next(t,k)` steps the table via a new
+    `Table::next_entry` (hashmap order, O(n) resume — unspecified order, matching Lua); `pairs`
+    returns `(next, t, nil)`, `ipairs` returns `(iter, t, 0)` where the iterators are constructed
+    inline as native multi-return closures.
+  - **Generic-for:** `for_statement` branches on `,`/`in` to `generic_for_statement`; the iterator
+    triple is forced to 3 values (same remainder logic as multi-assign) and driven by a new
+    `FOR_GENERIC { count, exit }` opcode that calls the (native) iterator, advances the control,
+    and pushes the loop vars — mirroring the numeric-for stack discipline (`break`, body locals,
+    nesting all work). **Limitation:** the iterator must be a native function (covers
+    `pairs`/`ipairs`/`next`); custom Lua-closure iterators aren't driven yet.
+  - Tests: `tests/iteration.rs` (9), plus un-ignored `iteration_with_pairs` / `generic_for_ipairs`.
 
 ### 2.8 `goto` / labels buggy
 - **Repro:** `do goto skip ::skip:: end return 1` → `Expected identifier only inbetween label tokens '::'`.
@@ -341,9 +352,10 @@ test binary.
 **Tier 1–3 landed (2026-06):** the single-return base/math/string functions are implemented in
 `src/standard.rs` and registered in `load_standard_library`.
 
-- **Base ✅:** `type`, `tostring`, `tonumber` (incl. base arg + `0x`), `assert`, `error`.
-  Still TODO (need native multi-return): `pcall`/`xpcall`, `select`, `next`, `pairs`, `ipairs`,
-  `rawget`/`rawset`/`rawequal`/`rawlen`, `unpack`.
+- **Base ✅:** `type`, `tostring`, `tonumber` (incl. base arg + `0x`), `assert`, `error`,
+  `next`, `pairs`, `ipairs` (multi-return — see §2.7). Still TODO: `pcall`/`xpcall`, `select`,
+  `rawget`/`rawset`/`rawequal`/`rawlen`, `unpack` — all now unblocked by the native multi-return
+  ABI.
 - **`math` ✅:** `floor`, `ceil`, `abs`, `sqrt`, `sin`/`cos`/`tan`, `min`, `max`, `random`,
   `randomseed` (thread-local xorshift, no `rand` dep), `huge`, `pi`, `maxinteger`, `mininteger`.
   Still TODO: `fmod`, `modf`, `tointeger`, `type`.
@@ -356,9 +368,10 @@ test binary.
 - **`table`:** `insert`/`remove` exist; `concat`, `sort`, `unpack`, `pack` still TODO.
 - **`os`/`io`:** not started.
 
-**Blocked on native multi-return** (the key remaining architectural item): `pairs`/`ipairs`/
-`next` (→ generic-for §2.7), `pcall`/`xpcall`, `select`, `string.byte` range form, `table.unpack`.
-Native fns currently return a single `Value` (`InnerResult = Result<Value, SiltError>`).
+**Native multi-return ✅ DONE** (§2.7) — `next`/`pairs`/`ipairs` + generic-for shipped on it.
+Remaining multi-return consumers still to implement: `pcall`/`xpcall`, `select`, `string.byte`
+range form, `table.unpack`/`pack`. The ABI (`NativeReturn::Multi` + `register_native_multi_function`)
+is in place, so these are now straightforward.
 
 ---
 
@@ -379,9 +392,22 @@ emit), not a separate pass. Types are compile-time only and never reach the VM.
 - **Deferred:** return-type annotations (`function f(): T`) — the param `)` is currently absorbed
   as a void-prefix no-op in the body block, so return types wait for Phase 3 (signatures). Also
   `T?`/unions/table-shapes/generics, and the lexer `?` token.
-- **Next phases:** (2) cheap high-confidence checks via the type stack — annotated-assignment
-  mismatch, arithmetic on known-non-number, call/ index of known-non-callable/-table; (3) function
-  signatures + arg/return checking; (4) optionals/unions/shapes + `--!strict` gating + narrowing.
+- **Next phases** (full detail in `TYPING_PLAN.md`):
+  - **(1.5) Declaration pre-scan.** The single-pass, AST-free compiler can't resolve a type used
+    before its definition. Add a cheap first scan that collects only `type` aliases and top-level
+    function signatures into a type environment — ignoring expression bodies — so forward
+    references and mutually-recursive aliases work (as in Luau) *without* a full AST. The existing
+    single-pass emit then checks against that pre-built environment. This is the chosen approach
+    over a full AST rewrite (we stay single-pass for codegen).
+  - **(2) Cheap high-confidence checks** via a "type stack" mirroring the operand stack:
+    annotated-assignment mismatch, arithmetic on known-non-number, call/index of
+    known-non-callable/-table.
+  - **(3) Function signatures + arg/return checking** (uses the pre-scan environment).
+  - **(4) Optionals/unions/table-shapes/generics + flow narrowing + `--!strict` gating.**
+- Luau reference: builds a full AST and type-checks in a pass *separate* from codegen; hoists type
+  aliases per-scope (forward + mutually-recursive); infers local types; gradual (`any`) with
+  strict/nonstrict modes; flow-sensitive refinement. We approximate this within a single-pass VM
+  via the pre-scan + type-stack rather than a full AST.
 - The dead `ColonIdentifier`/`Typer`/`colon_blow` lexer machinery is intentionally left in place
   for now (it doesn't conflict); retire it in favor of plain `Token::Colon` when typing matures.
 
@@ -505,6 +531,15 @@ and multiple-returns/varargs are still WIP. The pragmatic path:
 a real win. Do not start the rewrite until both exist.
 
 ### 6.1 Robustness/efficiency wins for the current stack VM (do these regardless)
+- **PUC-Lua-style native-call ABI (deferred optimization).** Native functions currently take a
+  `Vec<Value>` of args (allocated by `popn` every call) and return `NativeReturn::{Single,Multi}`
+  (the `Multi` path heap-allocates a small `Vec` per call — e.g. once per `next` in a `pairs`
+  loop). The zero-allocation design, matching Lua's C API, is: pass args as a **slice of the VM
+  stack** (no copy in) and have the function **push results directly onto the stack, returning a
+  count** (no copy/alloc out). Requires threading the stack handle (`Ephemeral`/`ip`) into the
+  native ABI so functions can push. The current enum is byte-for-byte the size of a bare `Value`
+  and free on the single-value path, so this is **benchmark-gated** — adopt it when the bench
+  harness shows native-call/iteration-heavy code as hot, not before.
 - **Fixed-size, overflow-checked stack** instead of an unbounded `Vec` push/pop (SPEC asks for
   this) — predictable latency, no realloc spikes mid-frame.
 - **Stop pushing `Nil` on pop** (`src/lua.rs` has many "pushing nil is stupid" TODOs around

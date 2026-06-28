@@ -7,7 +7,9 @@ use crate::{
     code::OpCode,
     compiler::Compiler,
     error::{ErrorOut, ErrorTuple, SiltError, ValueTypes},
-    function::{CallFrame, Closure, FunctionObject, NativeFunctionRaw, UpValue, WrappedFn},
+    function::{
+        CallFrame, Closure, FunctionObject, NativeFunctionRaw, NativeReturn, UpValue, WrappedFn,
+    },
     prelude::UserData,
     table::{ExTable, Table},
     userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
@@ -729,17 +731,47 @@ impl<'gc> VM<'gc> {
             }
         }
 
-        // 4. Check whether every changed line is covered by at least one changed function.
-        //    If any changed line falls outside all function spans it means root-level code
-        //    changed and we must re-execute.
+        // 4. Decide whether root-level code changed. A changed line forces a full
+        //    reload if either:
+        //      (a) it lies outside every changed function's span, OR
+        //      (b) the ROOT chunk carries genuine root-level code at that line —
+        //          even if a function span also covers it. This catches edits on
+        //          a line *shared* between a function and root code (e.g. the
+        //          unformatted `counter = 5 function tick() … end`), which the
+        //          span check alone would silently mask as a function-only change.
+        //    Function bodies live in their own chunks, so the only root-chunk
+        //    instructions are root statements plus the function-definition
+        //    machinery (CLOSURE / REGISTER_UPVALUE / DEFINE_GLOBAL); we exclude
+        //    that machinery so a pure signature edit still counts as function-scope.
+        let mut root_code_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (i, opcode) in new_root.chunk.code.iter().enumerate() {
+            match opcode {
+                crate::code::OpCode::CLOSURE { .. }
+                | crate::code::OpCode::REGISTER_UPVALUE { .. }
+                | crate::code::OpCode::DEFINE_GLOBAL { .. } => {}
+                _ => {
+                    let (line, _) = new_root.chunk.get_loc(i);
+                    root_code_lines.insert(line);
+                }
+            }
+        }
         let root_level_changed = changed_lines.iter().any(|&line| {
-            !covered_ranges
-                .iter()
-                .any(|&(start, end)| start <= line && line <= end)
+            root_code_lines.contains(&line)
+                || !covered_ranges
+                    .iter()
+                    .any(|&(start, end)| start <= line && line <= end)
         });
 
         if root_level_changed || changed_fn_names.is_empty() {
-            // Root-level code changed: full recompile + execute.
+            // A root change is a FULL RESET: wipe all VM state and re-run the new
+            // program from scratch, exactly as a freshly constructed VM would —
+            // no stale globals/userdata from the previous version survive.
+            self.globals = Gc::new(mc, RefLock::new(Table::new(0)));
+            self.stack_count = 0;
+            if let Some(u) = &mut self.userdata_stack {
+                u.0.clear();
+            }
+            self.load_standard_library(mc);
             let func = Gc::new(mc, new_root);
             self.root = func;
             self.execute(mc, func)?;
@@ -1651,6 +1683,39 @@ impl<'gc> VM<'gc> {
                     bubble!(value.increment(step));
                 }
 
+                OpCode::FOR_GENERIC { count, exit } => {
+                    // The top three stack values are the iterator triple
+                    // (iterator f, state s, control). Call f(s, control).
+                    let f_val = unsafe { &*ep.ip.sub(3) }.clone();
+                    let s = unsafe { &*ep.ip.sub(2) }.clone();
+                    let control = unsafe { &*ep.ip.sub(1) }.clone();
+                    let results = match &f_val {
+                        Value::NativeFunction(nf) => {
+                            match bubble!(nf.f.call(self, ep.mc, &[s, control])) {
+                                NativeReturn::Single(v) => vec![v],
+                                NativeReturn::Multi(vals) => vals,
+                            }
+                        }
+                        _ => {
+                            break Err(SiltError::Custom(
+                                "'for' iterator must be a function (custom closures not yet supported)"
+                                    .into(),
+                            ))
+                        }
+                    };
+                    let first = results.first().cloned().unwrap_or(Value::Nil);
+                    if matches!(first, Value::Nil) {
+                        frame.forward(*exit);
+                    } else {
+                        // advance the control variable, then push the loop vars
+                        unsafe { *ep.ip.sub(1) = first };
+                        for i in 0..*count {
+                            let v = results.get(i as usize).cloned().unwrap_or(Value::Nil);
+                            self.push(ep, v);
+                        }
+                    }
+                }
+
                 OpCode::CLOSURE { constant } => {
                     let value = Self::get_chunk(&frame).get_constant(*constant);
                     devout!(" | => {}", value);
@@ -1804,9 +1869,29 @@ impl<'gc> VM<'gc> {
                             // todo!("Hi there! we need to set arity of userdata functions to include self! At least this is hirting our abstraction, we could force it but that's dangerous! Let's perhas make userdata methods Option<Self>");
 
                             if let Value::NativeFunction(f) = args.remove(0) {
-                                let res = f.f.call(self, ep.mc, &args);
-                                // self.popn_drop(*param_count);
-                                self.push(ep, bubble!(res));
+                                let res = bubble!(f.f.call(self, ep.mc, &args));
+                                match res {
+                                    NativeReturn::Single(v) => self.push(ep, v),
+                                    NativeReturn::Multi(vals) => {
+                                        // spread the values, then adjust to the
+                                        // caller's wanted count (`multi`): >1 keeps
+                                        // that many (nil-padded), else just one.
+                                        let n = vals.len();
+                                        for v in vals {
+                                            self.push(ep, v);
+                                        }
+                                        let want = if *multi > 1 { *multi as usize } else { 1 };
+                                        if n < want {
+                                            for _ in 0..(want - n) {
+                                                self.push(ep, Value::Nil);
+                                            }
+                                        } else {
+                                            for _ in 0..(n - want) {
+                                                self.pop(ep);
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
                                 unreachable!();
                             }
@@ -2545,6 +2630,9 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "tonumber", crate::standard::tonumber);
         self.register_native_function(mc, "assert", crate::standard::assert);
         self.register_native_function(mc, "error", crate::standard::error);
+        self.register_native_multi_function(mc, "next", crate::standard::lua_next);
+        self.register_native_multi_function(mc, "pairs", crate::standard::lua_pairs);
+        self.register_native_multi_function(mc, "ipairs", crate::standard::lua_ipairs);
 
         let mut table = self.raw_table();
         self.register_native_function_to(mc, &mut table, "insert", crate::standard::table_insert);
@@ -2632,6 +2720,18 @@ impl<'gc> VM<'gc> {
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
         // println!("add native {}, {}", name,v);
+        self.globals.borrow_mut(mc).set(name, v);
+    }
+
+    /// Register a multi-return native function (raw arg slice in, `Vec<Value>` out).
+    pub fn register_native_multi_function<F>(&mut self, mc: &Mutation<'gc>, name: &str, function: F)
+    where
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> Result<Vec<Value<'gc>>, SiltError>
+            + 'gc,
+    {
+        let raw = NativeFunctionRaw::new_multi(function);
+        let f = WrappedFn { f: Rc::new(raw) };
+        let v = Value::NativeFunction(Gc::new(mc, f));
         self.globals.borrow_mut(mc).set(name, v);
     }
     //

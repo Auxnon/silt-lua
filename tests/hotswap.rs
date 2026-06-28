@@ -297,3 +297,50 @@ fn hotswap_anonymous_function_as_global_detected() {
         "expected a change to be detected"
     );
 }
+
+// ── Shared-line / unformatted source (root code co-located with a function) ──
+
+#[test]
+fn hotswap_shared_line_root_change_is_full_reset() {
+    let (mut lua, mut compiler) = make_vm();
+    // Unformatted: root assignment shares a line with a single-line function.
+    let old = "counter = 5 function tick() return counter end";
+    let new = "counter = 9 function tick() return counter end";
+
+    lua.run(None, old, &mut compiler)
+        .map_err(|e| e.to_string())
+        .unwrap();
+
+    // The root edit (`counter = 5` -> `9`) must NOT be masked as a function-only
+    // change; it must be detected as a root change (full reset).
+    let result = hotswap(&mut lua, &mut compiler, old, new);
+    assert_eq!(
+        result,
+        HotswapResult::RootChanged,
+        "shared-line root edit must be RootChanged, got {:?}",
+        result
+    );
+    // The root change is applied (full reload), so counter is now 9.
+    assert_eq!(run(&mut lua, "return counter"), silt_lua::ExVal::Integer(9));
+}
+
+#[test]
+fn hotswap_root_change_clears_stale_globals() {
+    let (mut lua, mut compiler) = make_vm();
+    // Old defines a global `obsolete`; new removes it and changes root code.
+    let old = "obsolete = 1\nthreshold = 10";
+    let new = "threshold = 20";
+
+    lua.run(None, old, &mut compiler)
+        .map_err(|e| e.to_string())
+        .unwrap();
+
+    let result = hotswap(&mut lua, &mut compiler, old, new);
+    assert_eq!(result, HotswapResult::RootChanged);
+
+    // Fresh-reset semantics: `obsolete` should be gone (not lingering), and the
+    // standard library should still be available after the globals wipe.
+    assert_eq!(run(&mut lua, "return obsolete"), silt_lua::ExVal::Nil);
+    assert_eq!(run(&mut lua, "return threshold"), silt_lua::ExVal::Integer(20));
+    assert_eq!(run(&mut lua, "return type(3)"), silt_lua::ExVal::String("number".to_string()));
+}

@@ -141,6 +141,14 @@ pub enum OpCode {
     SHIFT_LEFT,
     /// `>>` right shift
     SHIFT_RIGHT,
+    /// Generic `for v1..vn in f, s, control do`. The iterator triple is the top
+    /// three stack values (f, s, control). Calls `f(s, control)`; if the first
+    /// result is nil, jumps `exit` to leave the loop; otherwise updates `control`
+    /// and pushes `count` loop variables for the body.
+    FOR_GENERIC {
+        count: u8,
+        exit: u16,
+    },
     /// Duplicate the top `n` stack values in order (used by compound assignment
     /// to a table field so the receiver+keys can feed both a GET and a SET).
     DUP_N(u8),
@@ -266,6 +274,7 @@ impl Display for OpCode {
             Self::SHIFT_LEFT => write!(f, "OP_SHIFT_LEFT"),
             Self::SHIFT_RIGHT => write!(f, "OP_SHIFT_RIGHT"),
             Self::DUP_N(n) => write!(f, "OP_DUP_N {}", n),
+            Self::FOR_GENERIC { count, exit } => write!(f, "OP_FOR_GENERIC {}[{}]", count, exit),
         }
     }
 }

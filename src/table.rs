@@ -85,6 +85,24 @@ impl<'v> Table<'v> {
         }
     }
 
+    /// Stateless iteration step for `next`/`pairs`. Given the previous key
+    /// (`Nil` to start), return the next `(key, value)` in the hashmap's
+    /// iteration order, or `None` when exhausted. Order is unspecified (Lua
+    /// makes no guarantee) but stable for an unmodified table within one pass.
+    pub fn next_entry(&self, key: &Value<'v>) -> Option<(Value<'v>, Value<'v>)> {
+        let mut iter = self.data.iter();
+        if matches!(key, Value::Nil) {
+            return iter.next().map(|(k, v)| (k.clone(), v.clone()));
+        }
+        // advance past `key`, then yield the following entry
+        for (k, _) in iter.by_ref() {
+            if k == key {
+                break;
+            }
+        }
+        iter.next().map(|(k, v)| (k.clone(), v.clone()))
+    }
+
     pub fn try_get_type<'f, T, R>(&self, key: T, vm: &VM<'v>, mc: &Mutation<'v>) -> Option<R>
     where
         'v: 'f,

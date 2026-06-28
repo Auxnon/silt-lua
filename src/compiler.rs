@@ -827,6 +827,10 @@ impl Compiler {
             OpCode::FORWARD(_) => self.change_code(f, offset, OpCode::FORWARD(jump as u16)),
             OpCode::REWIND(_) => self.change_code(f, offset, OpCode::REWIND(jump as u16)),
             OpCode::FOR_NUMERIC(_) => self.change_code(f, offset, OpCode::FOR_NUMERIC(jump as u16)),
+            OpCode::FOR_GENERIC { count, exit: _ } => {
+                let count = *count;
+                self.change_code(f, offset, OpCode::FOR_GENERIC { count, exit: jump as u16 })
+            }
             _ => {
                 return Err(self.error_at(SiltError::ChunkCorrupt));
             }
@@ -2318,6 +2322,11 @@ fn for_statement<'c>(
     let pair = this.pop(it);
     let t = pair.0?;
     if let Token::Identifier(ident) = t {
+        // Disambiguate numeric `for i = …` from generic `for k[,v…] in …`:
+        // a numeric loop has `=` after the single name, generic has `,` or `in`.
+        if matches!(this.peek(it)?, Token::Comma | Token::In) {
+            return generic_for_statement(this, mc, f, it, ident);
+        }
         // let offset = this.local_functional_offset[this.functional_depth - 1];
         // capture base BEFORE the hidden control slots so `break` unwinds them too
         begin_loop(this);
@@ -2364,12 +2373,70 @@ fn for_statement<'c>(
     }
 }
 
-/**
- * We run closure and if value is not nil we set that to iterator and push onto blocks scope, when we hit end we rewind and re-eval
- * If the for's iterator is nil we forward to end of do block and pop off the iterator
- */
-#[allow(dead_code)]
-fn generic_for_statement() {}
+/// Generic `for v1[,v2…] in explist do block end`. `explist` yields the
+/// iteration triple `(iterator, state, control)` (padded/truncated to 3); the
+/// `FOR_GENERIC` opcode drives it. Mirrors the numeric-for stack discipline: the
+/// 3 control values are hidden locals reclaimed after the loop, and each
+/// iteration pushes the loop variables which `end_scope` pops before the rewind.
+fn generic_for_statement<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    first: String,
+) -> Catch {
+    devnote!(this it "generic_for_statement");
+    // capture the break-unwind base before the hidden control slots
+    begin_loop(this);
+    // collect loop variable names
+    let mut names = vec![first];
+    while matches!(this.peek(it)?, Token::Comma) {
+        this.eat(it);
+        let (res, _) = this.pop(it);
+        match res? {
+            Token::Identifier(n) => names.push(n),
+            other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+        }
+    }
+    expect_token!(this it In);
+    // reserve the 3 hidden control slots: iterator, state, control
+    add_local_placeholder(this)?;
+    add_local_placeholder(this)?;
+    add_local_placeholder(this)?;
+    // evaluate the iterator expression list, forcing it to exactly 3 values
+    this.set_can_multivar_set(false);
+    this.set_expression_count(1);
+    this.expected_multi = 3;
+    expression(this, mc, f, it, false)?;
+    this.set_can_multivar_set(true);
+    let remainder = 3 - this.get_expression_count() as isize;
+    match remainder.cmp(&0) {
+        Ordering::Greater => match f.chunk.read_last_code() {
+            // a trailing call can spread to fill the missing slots
+            OpCode::CALL(u, _, v) => {
+                let (u, v) = (*u, *v);
+                f.chunk.patch_last(OpCode::CALL(u, (remainder + 1) as u8, v));
+            }
+            _ => this.emit_at(f, OpCode::NILS(remainder as u8)),
+        },
+        Ordering::Less => this.emit_at(f, OpCode::POPS((-remainder) as u8)),
+        Ordering::Equal => {}
+    }
+    expect_token!(this it Do);
+    let count = names.len() as u8;
+    let for_start = this.emit_index(f, OpCode::FOR_GENERIC { count, exit: 0 });
+    begin_scope(this);
+    for n in names {
+        add_local(this, n)?;
+    }
+    build_block_until_then_eat!(this, mc, f, it, End);
+    end_scope(this, f, false); // pop the loop variables each iteration
+    this.emit_rewind(f, for_start);
+    this.patch(f, for_start)?; // exit lands just past the rewind
+    this.force_stack_pop(f, 3); // reclaim iterator/state/control
+    end_loop(this, f)?;
+    Ok(())
+}
 
 fn return_statement<'c>(
     this: &mut Compiler,

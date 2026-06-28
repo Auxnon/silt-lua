@@ -187,7 +187,6 @@ fn while_body_local_is_scoped() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2.7/§3 — generic for + ipairs not implemented"]
 fn generic_for_ipairs() {
     valeq!(
         r#"
