@@ -1338,6 +1338,74 @@ impl<'gc> VM<'gc> {
     /// The actual crawl through the entire root function object until it completes. This does not
     /// clear state on subsequent re-runs so variables could get redefined without any checks ( if
     /// x~=nil then x=1 end for instance )
+    /// Call `func` with `args` in protected mode (for `pcall`): run it to completion
+    /// on a nested interpreter loop that begins at the current stack top, so the
+    /// caller's stack and frames are left intact. Returns the function's first result
+    /// on success, or the error it raised — the error never propagates past here.
+    ///
+    /// Results round-trip through `ExVal`, so a returned *table* is copied (reference
+    /// identity is not preserved); adequate for pcall's error-handling and scalar
+    /// return cases, which is the overwhelming majority of usage.
+    pub(crate) fn call_protected(
+        &mut self,
+        mc: &Mutation<'gc>,
+        func: Value<'gc>,
+        args: &[Value<'gc>],
+    ) -> Result<Value<'gc>, SiltError> {
+        match func {
+            Value::Closure(c) => {
+                // The nested run starts exactly where the outer `ep` points (the
+                // ep.ip == stack[stack_count] invariant), so it cannot disturb the
+                // caller's live values below this point.
+                let snapshot = self.stack_count;
+                let base = unsafe { self.stack.as_mut_ptr().add(snapshot) };
+                let mut ep = Ephemeral::new(mc, base);
+                // Lay down [closure, args...] exactly as a normal CALL leaves the stack
+                // (verified: function value at local_stack[0], args above).
+                Self::push_raw(&mut ep, Value::Closure(c));
+                self.stack_count += 1;
+                for a in args {
+                    Self::push_raw(&mut ep, a.clone());
+                    self.stack_count += 1;
+                }
+                let mut frame = CallFrame::new(c, snapshot, args.len() as u8, 1);
+                frame.local_stack = base;
+                // Every function body begins with a placeholder POP that the main loop
+                // skips via its trailing `iterate()` right after a CALL (it never runs).
+                // A freshly-entered nested loop would otherwise execute it and eat the
+                // top argument, so advance past it here exactly as a normal call does.
+                frame.iterate();
+                // DEFINE_GLOBAL/SET_GLOBAL read constants from `self.body`; point it at
+                // the running function for the duration, then restore.
+                let saved_body = self.body;
+                self.body = c.function;
+                let result = self.process(&mut ep, vec![frame]);
+                self.body = saved_body;
+                // Reclaim everything the protected run left above the entry point and
+                // close any upvalues it opened, on both success and failure.
+                self.close_upvalues_by_return(mc, base);
+                self.stack_count = snapshot;
+                match result {
+                    Ok(ex) => ex.into_value(self, mc),
+                    Err(mut eo) => Err(eo
+                        .errors
+                        .pop()
+                        .map(|t| t.code)
+                        .unwrap_or(SiltError::VmRuntimeError)),
+                }
+            }
+            // A native callee can be invoked directly; it still reports errors, which
+            // pcall turns into `(false, msg)`.
+            Value::NativeFunction(nf) => match nf.f.call(self, mc, args)? {
+                NativeReturn::Single(v) => Ok(v),
+                NativeReturn::Multi(mut vs) => {
+                    Ok(if vs.is_empty() { Value::Nil } else { vs.remove(0) })
+                }
+            },
+            other => Err(SiltError::NotCallable(format!("{}", other))),
+        }
+    }
+
     fn process(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
@@ -2971,6 +3039,7 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "tonumber", crate::standard::tonumber);
         self.register_native_function(mc, "assert", crate::standard::assert);
         self.register_native_function(mc, "error", crate::standard::error);
+        self.register_native_multi_function(mc, "pcall", crate::standard::lua_pcall);
         self.register_native_multi_function(mc, "next", crate::standard::lua_next);
         self.register_native_multi_function(mc, "pairs", crate::standard::lua_pairs);
         self.register_native_multi_function(mc, "ipairs", crate::standard::lua_ipairs);

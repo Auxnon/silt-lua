@@ -130,6 +130,28 @@ pub fn getmetatable<'lua>(
     })
 }
 
+/// `pcall(f, ...)` — call `f` with the given args in protected mode. Returns
+/// `true, results...` on success, or `false, errmessage` if `f` (or anything it
+/// calls) raises an error. Never propagates the error itself.
+pub fn lua_pcall<'lua>(
+    vm: &mut VM<'lua>,
+    mc: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let func = match args.first() {
+        Some(f) => f.clone(),
+        None => {
+            return Err(SiltError::Custom(
+                "bad argument #1 to 'pcall' (value expected)".into(),
+            ))
+        }
+    };
+    match vm.call_protected(mc, func, &args[1..]) {
+        Ok(v) => Ok(vec![Value::Bool(true), v]),
+        Err(e) => Ok(vec![Value::Bool(false), Value::String(format!("{}", e))]),
+    }
+}
+
 pub fn select<'lua>(_: &mut VM, _: &Mutation<'lua>, _args: Vec<Value<'lua>>) -> InnerResult<'lua> {
     // Value::Nil
     todo!()

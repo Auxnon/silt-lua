@@ -35,10 +35,21 @@ fn base_assert() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — `pcall`/`error` not implemented"]
 fn base_pcall() {
+    // success → true, and the protected function's return value
     valeq!("local ok = pcall(function() return 1 end) return ok", ExVal::Bool(true));
+    valeq!("local ok,v = pcall(function() return 42 end) return v", ExVal::Integer(42));
+    // explicit error() → false + the message
     valeq!("local ok = pcall(function() error('boom') end) return ok", ExVal::Bool(false));
+    valeq!("local ok,e = pcall(function() error('boom') end) return e", ExVal::String("boom".to_string()));
+    // runtime errors are caught too
+    valeq!("local ok = pcall(function() return nil + 1 end) return ok", ExVal::Bool(false));
+    // arguments are forwarded; params/locals address correctly
+    valeq!("local ok,v = pcall(function(a,b) return a+b end, 3, 4) return v", ExVal::Integer(7));
+    // errors deep in nested calls unwind to the pcall boundary
+    valeq!("local function deep() error('x') end local ok = pcall(function() deep() end) return ok", ExVal::Bool(false));
+    // the VM survives a caught error and keeps executing
+    valeq!("pcall(function() error('e') end) return 99", ExVal::Integer(99));
 }
 
 #[test]
