@@ -42,13 +42,19 @@ impl<'frame> CallFrame<'frame> {
         call_arity: u8,
         multi_return: u8,
     ) -> Self {
-        // Resolve the effective prototype: follow the hot-swap redirect if present
-        // (stage 2). All live closures share one prototype, so a redirect set on it
-        // reaches every instance while each keeps its own captured upvalues.
+        // Resolve the effective prototype. With `hot-swap`, follow the redirect cell
+        // if a hot-swap set one (stage 2); all live closures share one prototype, so a
+        // redirect set on it reaches every instance while each keeps its own upvalues.
+        // Without the feature there is no redirect — `proto` is just the closure's
+        // prototype, costing nothing beyond a pointer copy (and it lets `get_chunk`
+        // skip one indirection on every constant access).
+        #[cfg(feature = "hot-swap")]
         let proto = match *function.function.swap.borrow() {
             Some(redirect) => redirect,
             None => function.function,
         };
+        #[cfg(not(feature = "hot-swap"))]
+        let proto = function.function;
         let ip = proto.chunk.code.as_ptr();
         Self {
             function,
@@ -224,6 +230,10 @@ pub struct FunctionObject<'chnk> {
     /// call while each keeps its own captured upvalues (instance state). The
     /// redirect target itself always has `swap == None`, so resolution is a single
     /// hop from the original prototype.
+    ///
+    /// Gated behind `hot-swap`: builds without the feature carry neither this field
+    /// nor the per-call redirect check, so the normal execution path is unchanged.
+    #[cfg(feature = "hot-swap")]
     pub swap: RefLock<Option<Gc<'chnk, FunctionObject<'chnk>>>>,
 }
 
@@ -240,6 +250,7 @@ impl<'chnk> FunctionObject<'chnk> {
             varidic_index: 0,
             start_line: 0,
             end_line: 0,
+            #[cfg(feature = "hot-swap")]
             swap: RefLock::new(None),
         }
     }
