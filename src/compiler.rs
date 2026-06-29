@@ -3914,11 +3914,27 @@ fn call<'c>(
     devout!("{} {}", "ARG COUNT".on_cyan(), arg_count);
     // If the final argument was `...`, the call spreads the enclosing function's
     // variadic overflow, so the real argument count is resolved at runtime.
-    let trailing = this.is_trailing_vararg();
-    this.emit(f, OpCode::CALL(arg_count, 0, trailing), start);
-    if trailing {
+    let trailing_vararg = this.is_trailing_vararg();
+    if trailing_vararg {
         this.set_trailing_vararg(false);
     }
+    // If the final argument was itself a function call, it spreads ALL its return
+    // values (Lua's open multiret). Mark that inner call multiret and flag this
+    // call variadic so its true argument count is resolved from the stack at runtime.
+    let trailing_multiret =
+        !trailing_vararg && matches!(f.chunk.read_last_code(), OpCode::CALL(..));
+    if trailing_multiret {
+        // Copy the inner call's fields out (ending the borrow) before patching.
+        let patched = match f.chunk.read_last_code() {
+            OpCode::CALL(a, _, v) => Some(OpCode::CALL(*a, crate::code::MULTIRET, *v)),
+            _ => None,
+        };
+        if let Some(op) = patched {
+            f.chunk.patch_last(op);
+        }
+    }
+    let variadic = trailing_vararg || trailing_multiret;
+    this.emit(f, OpCode::CALL(arg_count, 0, variadic), start);
     Ok(())
 }
 

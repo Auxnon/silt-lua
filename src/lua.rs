@@ -1416,6 +1416,10 @@ impl<'gc> VM<'gc> {
         // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
         let mut frame = frames.last_mut().unwrap();
         let mut frame_count = 1;
+        // When the previous instruction was a trailing multiret call (Lua's `f(g())`),
+        // this records the stack index where that call's return values begin, so the
+        // immediately-following outer CALL can spread them. Consumed (taken) by that CALL.
+        let mut pending_multiret: Option<usize> = None;
         // monkey patch for variadic as an argument since CALL op tries to count varibles used
         // body.chunk.print_chunk(None);
         #[cfg(feature = "dev-out")]
@@ -1453,7 +1457,20 @@ impl<'gc> VM<'gc> {
                     );
                     let multi_return = frame.multi_return;
                     // if  || frame.need>1 {
-                    if multi_return > 1 && count > 1 {
+                    if multi_return == crate::code::MULTIRET {
+                        // Trailing multiret call (`outer(inner())`): leave ALL `count`
+                        // return values on the stack and record where they start so the
+                        // immediately-following outer CALL can spread them as arguments.
+                        let vres = &self.popn(ep, count);
+                        let snapshot = frame.stack_snapshot;
+                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
+                        self.close_upvalues_by_return(ep.mc, ep.ip);
+                        self.stack_count = snapshot;
+                        frames.pop();
+                        frame = frames.last_mut().unwrap();
+                        pending_multiret = Some(snapshot);
+                        self.pushn(ep, vres, count as usize, false);
+                    } else if multi_return > 1 && count > 1 {
                         // TODO seriously stupid to make a Vec and then slice it
                         let vres = &self.popn(ep, count);
 
@@ -2170,7 +2187,13 @@ impl<'gc> VM<'gc> {
                     // the trailing arg expands to the caller's variadic overflow, so
                     // the compile-time count (which counts `...` as a single arg) is
                     // adjusted by the caller's own overflow.
-                    let ar = if *variadic {
+                    let ar = if let Some(base) = pending_multiret.take() {
+                        // The trailing argument was a multiret call that left its values
+                        // from `base` upward. The real arg count is the fixed args
+                        // (arity - 1, the trailing call counted as one) plus however many
+                        // values it produced (stack_count - base).
+                        (((self.stack_count - base) as u8).wrapping_add(*arity)).wrapping_sub(1)
+                    } else if *variadic {
                         (*arity - 1) + (frame.call_arity - frame.proto.varidic_index)
                     } else {
                         *arity
@@ -2249,24 +2272,38 @@ impl<'gc> VM<'gc> {
 
                             if let Value::NativeFunction(f) = args.remove(0) {
                                 let res = bubble!(f.f.call(self, ep.mc, &args));
+                                // A native in trailing multiret position leaves ALL its
+                                // values and records where they start (like a Lua multiret
+                                // call), so the enclosing CALL can spread them.
+                                let multiret = *multi == crate::code::MULTIRET;
+                                let base = self.stack_count;
                                 match res {
-                                    NativeReturn::Single(v) => self.push(ep, v),
+                                    NativeReturn::Single(v) => {
+                                        self.push(ep, v);
+                                        if multiret {
+                                            pending_multiret = Some(base);
+                                        }
+                                    }
                                     NativeReturn::Multi(vals) => {
-                                        // spread the values, then adjust to the
-                                        // caller's wanted count (`multi`): >1 keeps
-                                        // that many (nil-padded), else just one.
                                         let n = vals.len();
                                         for v in vals {
                                             self.push(ep, v);
                                         }
-                                        let want = if *multi > 1 { *multi as usize } else { 1 };
-                                        if n < want {
-                                            for _ in 0..(want - n) {
-                                                self.push(ep, Value::Nil);
-                                            }
+                                        if multiret {
+                                            pending_multiret = Some(base);
                                         } else {
-                                            for _ in 0..(n - want) {
-                                                self.pop(ep);
+                                            // adjust to the caller's wanted count
+                                            // (`multi`): >1 keeps that many (nil-padded),
+                                            // else just one.
+                                            let want = if *multi > 1 { *multi as usize } else { 1 };
+                                            if n < want {
+                                                for _ in 0..(want - n) {
+                                                    self.push(ep, Value::Nil);
+                                                }
+                                            } else {
+                                                for _ in 0..(n - want) {
+                                                    self.pop(ep);
+                                                }
                                             }
                                         }
                                     }

@@ -1,6 +1,12 @@
 use gc_arena::Collect;
 use std::fmt::{self, Display, Formatter};
 
+/// Sentinel `want` value on `CALL` meaning "this call produces ALL its return
+/// values" (Lua's open multiret), used when a call is the trailing argument of
+/// another call so the outer call can spread them. Distinct from any real target
+/// count (the compiler caps argument/assignment counts well below 255).
+pub const MULTIRET: u8 = u8::MAX;
+
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Clone, Collect)]
 #[collect(no_drop)]

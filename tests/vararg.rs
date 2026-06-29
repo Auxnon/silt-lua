@@ -45,7 +45,6 @@ fn vararg_count() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2 — forwarding varargs into another call (multi-value tail position)"]
 fn vararg_forward() {
     valeq!(
         r#"
@@ -55,4 +54,16 @@ fn vararg_forward() {
         "#,
         ExVal::Integer(6)
     );
+}
+
+#[test]
+fn call_returns_spread_in_call_position() {
+    // A trailing function-call argument spreads ALL its return values (open multiret).
+    valeq!("local function g() return 3,4 end local function add(a,b) return a+b end return add(g())", ExVal::Integer(7));
+    // table.unpack spreads the same way.
+    valeq!("local function add(a,b) return a+b end return add(table.unpack({3,4}))", ExVal::Integer(7));
+    // Fixed args before a trailing multiret call are preserved.
+    valeq!("local function g() return 2,3 end local function s(a,b,c) return a+b+c end return s(1, g())", ExVal::Integer(6));
+    // A call that is NOT the last argument is truncated to a single value (Lua rule).
+    valeq!("local function g() return 2,3 end local function add(a,b) return a+b end return add(g(), 100)", ExVal::Integer(102));
 }
