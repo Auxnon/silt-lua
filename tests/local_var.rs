@@ -148,7 +148,6 @@ fn local_no_values() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2.11 — `local a,b,c = 5` (1 value, 3 vars) leaves b non-nil in a function"]
 fn local_partial_nil() {
     valeq!(
         r#"

@@ -77,7 +77,6 @@ test_string!(
 );
 
 #[test]
-#[ignore = "PLAN.md §2.11 — under-supplied `local a,b,c = 5` doesn't nil extras inside a function"]
 fn partial_local_nil_in_function() {
     valeq!(
         r#"

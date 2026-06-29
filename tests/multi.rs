@@ -40,7 +40,6 @@ fn multiple_returns_partial() {
 }
 
 #[test]
-#[ignore = "PLAN.md §2.13 — `local a,b,c = f()` with one return value OVERFLOWS THE STACK (SIGABRT)"]
 fn multiple_returns_extra() {
     let source_in = r#"
         function get_value()

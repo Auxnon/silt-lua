@@ -1411,10 +1411,12 @@ impl<'gc> VM<'gc> {
 
                         self.pushn(ep, vres, multi_return as usize, false);
                     } else {
-                        let res = if count > 1 {
-                            self.pop_offset(ep, count as usize)
-                        } else {
-                            self.pop(ep)
+                        // The function returned 0 or 1 value (count <= 1). Capture it
+                        // before truncating the stack; a bare `return` (count 0) yields nil.
+                        let res = match count {
+                            0 => Value::Nil,
+                            1 => self.pop(ep),
+                            _ => self.pop_offset(ep, count as usize),
                         };
 
                         // Truncate to the original function slot (== local_stack for
@@ -1431,6 +1433,12 @@ impl<'gc> VM<'gc> {
                         devout!("next instruction {}", frame.current_instruction());
                         // println!("yeah push {}", res);
                         self.push(ep, res);
+                        // The caller wanted `multi_return` values (e.g. `local a,b,c = f()`)
+                        // but only one was produced — pad the remaining targets with nil so
+                        // they aren't left holding stale stack slots.
+                        if (multi_return as usize) > 1 {
+                            self.push_nils(ep, multi_return as usize - 1);
+                        }
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
 
