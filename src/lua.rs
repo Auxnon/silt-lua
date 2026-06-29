@@ -453,6 +453,31 @@ impl<'gc> Lua {
         Self { arena }
     }
 
+    /// Run one increment of incremental garbage collection using gc-arena's default
+    /// debt-based pacing. This is cheap when little has been allocated and advances /
+    /// finishes the current collection cycle as allocation debt accrues. It is invoked
+    /// automatically at the end of each code-executing VM cycle ([`run`](Self::run),
+    /// [`cycle`](Self::cycle), [`call`](Self::call)); call it manually if you drive the
+    /// VM through [`enter`](Self::enter) instead.
+    pub fn collect(&mut self) {
+        self.arena.collect_debt();
+    }
+
+    /// Force a full garbage-collection cycle to completion. More expensive than
+    /// [`collect`](Self::collect) but reclaims *all* currently-unreachable objects.
+    /// Run automatically after a [`hotswap`](Self::hotswap): a surgical swap orphans
+    /// whole prototype/closure subtrees, and we can spare the cycles to reclaim them
+    /// promptly rather than waiting for debt-paced collection to catch up.
+    pub fn collect_full(&mut self) {
+        self.arena.collect_all();
+    }
+
+    /// Total bytes currently tracked as live by the garbage collector. Useful for
+    /// asserting that collection actually reclaims memory.
+    pub fn allocated_bytes(&self) -> usize {
+        self.arena.metrics().total_allocation()
+    }
+
     pub fn run(&mut self, name: Option<&str>, code: &str, compiler: &mut Compiler) -> LuaResult {
         let out = self.arena.mutate_root(|mc, root| {
             match compiler.try_compile(mc, name, code) {
@@ -465,6 +490,8 @@ impl<'gc> Lua {
                 Err(er) => Err(er),
             }
         });
+        // End-of-cycle incremental collection (see `collect`).
+        self.arena.collect_debt();
         out
     }
 
@@ -485,7 +512,9 @@ impl<'gc> Lua {
     }
 
     pub fn cycle(&mut self) -> LuaResult {
-        self.arena.mutate_root(|mc, vm| vm.borrow_mut().cycle(mc))
+        let out = self.arena.mutate_root(|mc, vm| vm.borrow_mut().cycle(mc));
+        self.arena.collect_debt();
+        out
     }
 
     /// Hotswap Lua source code, detecting what changed between `old_source` and `new_source`
@@ -509,10 +538,15 @@ impl<'gc> Lua {
         new_source: &str,
         compiler: &mut Compiler,
     ) -> Result<HotswapResult, ErrorOut> {
-        self.arena.mutate_root(|mc, vm| {
+        let out = self.arena.mutate_root(|mc, vm| {
             vm.borrow_mut()
                 .hotswap(mc, name, old_source, new_source, compiler)
-        })
+        });
+        // A hotswap orphans whole prototype/closure subtrees (the replaced code).
+        // Do a full collection so they're reclaimed now — the new code stays live via
+        // the root and the redirect cells, both of which the collector traces.
+        self.arena.collect_all();
+        out
     }
 
     /// enter into the VM state to modify the VM directly
@@ -553,8 +587,11 @@ impl<'gc> Lua {
     where
         T: for<'e> ToLuaMulti<'e>,
     {
-        self.arena
-            .mutate_root(|mc, vm| vm.call_fn(mc, name, index, params))
+        let out = self
+            .arena
+            .mutate_root(|mc, vm| vm.call_fn(mc, name, index, params));
+        self.arena.collect_debt();
+        out
         // rr
         // Ok(ExVal::Nil)
     }

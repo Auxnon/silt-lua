@@ -429,6 +429,72 @@ fn hotswap_nested_change_reports_inner_not_wrapper() {
     assert_eq!(run(&mut lua, "return outer()"), silt_lua::ExVal::Integer(99));
 }
 
+// ── Stage 2 + GC: replaced prototypes are reclaimed, new code survives ────────
+
+#[test]
+fn hotswap_repeated_nested_swaps_stay_bounded_and_correct() {
+    // Hot-swapping a nested method many times must (a) keep working — each new body
+    // survives the full collection hotswap triggers — and (b) not leak: every
+    // replaced prototype subtree becomes unreachable and is reclaimed, so memory
+    // stays bounded across many swaps. This exercises both halves of the concern:
+    // the new node is NOT collected before it's live, and the old nodes ARE.
+    let mut lua = Lua::new_with_standard();
+    let mut compiler = Compiler::new();
+    let src = |inc: i64| {
+        format!(
+            "function make()\n    local v = 0\n    local c = {{}}\n    function c.bump()\n        v = v + {}\n        return v\n    end\n    return c\nend\no = make()",
+            inc
+        )
+    };
+
+    let mut cur = src(1);
+    lua.run(None, &cur, &mut compiler).map_err(|e| e.to_string()).unwrap();
+    assert_eq!(run(&mut lua, "return o.bump()"), silt_lua::ExVal::Integer(1));
+
+    // Two full cycles: gc-arena is incremental, so one `collect_full` only finishes
+    // the in-flight cycle; a second guarantees a clean mark-and-sweep so `baseline`
+    // reflects only genuinely-live memory.
+    lua.collect_full();
+    lua.collect_full();
+    let baseline = lua.allocated_bytes();
+
+    // 99 hot-swaps, each changing the increment and orphaning the prior prototype tree.
+    const SWAPS: i64 = 100;
+    for inc in 2..=SWAPS {
+        let next = src(inc);
+        let result = hotswap(&mut lua, &mut compiler, &cur, &next);
+        assert!(
+            matches!(result, HotswapResult::FunctionChanged(_)),
+            "swap {} expected FunctionChanged, got {:?}",
+            inc,
+            result
+        );
+        cur = next;
+        // The live instance still runs (its new body survived the collection that
+        // hotswap performs) and keeps its captured state.
+        assert!(
+            matches!(run(&mut lua, "return o.bump()"), silt_lua::ExVal::Integer(_)),
+            "instance method dead after swap {}",
+            inc
+        );
+    }
+
+    lua.collect_full();
+    lua.collect_full();
+    let after = lua.allocated_bytes();
+    // Measured growth across ~100 swaps is a few hundred bytes flat. If replaced
+    // prototype trees leaked, ~99 of them (≥1 KB each) would accumulate into tens of
+    // KB+; this bound (well under that, far above the observed ~480 B) fails on a leak
+    // but tolerates allocator noise.
+    assert!(
+        after < baseline + 20_000,
+        "hotswap leaked replaced prototypes: baseline {} bytes -> {} bytes after {} swaps",
+        baseline,
+        after,
+        SWAPS - 1
+    );
+}
+
 // ── Shared-line / unformatted source (root code co-located with a function) ──
 
 #[test]
