@@ -16,6 +16,11 @@ use crate::{
 ///
 pub struct CallFrame<'gc> {
     pub function: Gc<'gc, Closure<'gc>>, // pointer
+    /// Effective code prototype for this frame: the closure's prototype, or its
+    /// hot-swap redirect target if one is set. All code/constant/arity reads go
+    /// through this (see `VM::get_chunk`) so a hot-swapped body executes while the
+    /// closure keeps its own upvalues.
+    pub proto: Gc<'gc, FunctionObject<'gc>>,
     // ip: *const OpCode
     // pub base: usize,
     // pointer points into VM values stack
@@ -37,9 +42,17 @@ impl<'frame> CallFrame<'frame> {
         call_arity: u8,
         multi_return: u8,
     ) -> Self {
-        let ip = function.function.chunk.code.as_ptr();
+        // Resolve the effective prototype: follow the hot-swap redirect if present
+        // (stage 2). All live closures share one prototype, so a redirect set on it
+        // reaches every instance while each keeps its own captured upvalues.
+        let proto = match *function.function.swap.borrow() {
+            Some(redirect) => redirect,
+            None => function.function,
+        };
+        let ip = proto.chunk.code.as_ptr();
         Self {
             function,
+            proto,
             ip,
             local_stack: std::ptr::null_mut(),
             stack_snapshot,
@@ -204,6 +217,14 @@ pub struct FunctionObject<'chnk> {
     /// lexer token during `block()` compilation, giving the exact closing line of
     /// the function body for hotswap range detection.  Defaults to 0.
     pub end_line: usize,
+    /// Hot-swap redirect cell (stage 2). `None` normally. When a function body is
+    /// hot-swapped, this *shared* prototype's cell is set to the newly-compiled
+    /// prototype; because every live closure of a definition points at the same
+    /// prototype, setting this redirects them all to the new code on their next
+    /// call while each keeps its own captured upvalues (instance state). The
+    /// redirect target itself always has `swap == None`, so resolution is a single
+    /// hop from the original prototype.
+    pub swap: RefLock<Option<Gc<'chnk, FunctionObject<'chnk>>>>,
 }
 
 impl<'chnk> FunctionObject<'chnk> {
@@ -219,6 +240,7 @@ impl<'chnk> FunctionObject<'chnk> {
             varidic_index: 0,
             start_line: 0,
             end_line: 0,
+            swap: RefLock::new(None),
         }
     }
 

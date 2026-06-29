@@ -263,15 +263,20 @@ fn hotswap_nested_function_change() {
         .unwrap();
 
     let result = hotswap(&mut lua, &mut compiler, old, new);
-    // The diff is inside `outer` → FunctionChanged containing "outer".
+    // Stage 2: the diff is confined to the nested `inner`, so the enclosing `outer`
+    // is left untouched and only the nested function is reported.
     assert!(
-        fn_changed_has(&result, "outer"),
-        "expected FunctionChanged containing \"outer\", got {:?}",
+        matches!(result, HotswapResult::FunctionChanged(_)),
+        "expected FunctionChanged, got {:?}",
+        result
+    );
+    assert!(
+        !fn_changed_has(&result, "outer"),
+        "outer should not be reported when only its nested function changed, got {:?}",
         result
     );
 
-    lua.cycle().map_err(|e| e.to_string()).unwrap();
-
+    // The nested change is live: outer() now returns 99 (via the redirected inner).
     assert_eq!(run(&mut lua, "return outer()"), silt_lua::ExVal::Integer(99));
 }
 
@@ -369,6 +374,59 @@ fn hotswap_two_functions_swap_independently_live() {
 
     assert_eq!(run(&mut lua, "return foo()"), silt_lua::ExVal::Integer(100));
     assert_eq!(run(&mut lua, "return bar()"), silt_lua::ExVal::Integer(2));
+}
+
+// ── Stage 2: nested / instance method live swap (preserves instance state) ────
+
+#[test]
+fn hotswap_nested_method_swaps_live_preserving_instance_state() {
+    // Scenario B: a "class" constructor whose nested method captures per-instance
+    // state. Editing ONLY the nested method must hot-swap its code into the live
+    // instance while preserving that instance's captured state.
+    let (mut lua, mut compiler) = make_vm();
+    let old = "function makeCounter()\n    local v = 0\n    local c = {}\n    function c.bump()\n        v = v + 1\n        return v\n    end\n    return c\nend\no = makeCounter()";
+    let new = "function makeCounter()\n    local v = 0\n    local c = {}\n    function c.bump()\n        v = v + 10\n        return v\n    end\n    return c\nend\no = makeCounter()";
+
+    lua.run(None, old, &mut compiler).map_err(|e| e.to_string()).unwrap();
+    // Drive the instance's captured state away from its initial value.
+    assert_eq!(run(&mut lua, "return o.bump()"), silt_lua::ExVal::Integer(1));
+    assert_eq!(run(&mut lua, "return o.bump()"), silt_lua::ExVal::Integer(2));
+
+    let result = hotswap(&mut lua, &mut compiler, old, new);
+    // Must be a function-scope change, NOT a root reset (which would rebuild `o`).
+    assert!(
+        matches!(result, HotswapResult::FunctionChanged(_)),
+        "expected FunctionChanged, got {:?}",
+        result
+    );
+    // Granularity: the unchanged wrapper must NOT be reported as changed.
+    assert!(
+        !fn_changed_has(&result, "makeCounter"),
+        "wrapper makeCounter must not be reported, got {:?}",
+        result
+    );
+
+    // The live instance keeps its captured v (=2) AND runs the new body (+10) → 12.
+    assert_eq!(run(&mut lua, "return o.bump()"), silt_lua::ExVal::Integer(12));
+}
+
+#[test]
+fn hotswap_nested_change_reports_inner_not_wrapper() {
+    // Editing only a nested `local function` reports the nested function, leaving
+    // the enclosing function untouched (stage-2 granularity).
+    let (mut lua, mut compiler) = make_vm();
+    let old = "function outer()\n    local function inner()\n        return 1\n    end\n    return inner()\nend\no = outer";
+    let new = "function outer()\n    local function inner()\n        return 99\n    end\n    return inner()\nend\no = outer";
+
+    lua.run(None, old, &mut compiler).map_err(|e| e.to_string()).unwrap();
+    let result = hotswap(&mut lua, &mut compiler, old, new);
+    assert!(
+        matches!(result, HotswapResult::FunctionChanged(_)),
+        "expected FunctionChanged, got {:?}",
+        result
+    );
+    // New behavior takes effect: calling outer() now returns 99.
+    assert_eq!(run(&mut lua, "return outer()"), silt_lua::ExVal::Integer(99));
 }
 
 // ── Shared-line / unformatted source (root code co-located with a function) ──

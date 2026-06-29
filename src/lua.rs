@@ -288,14 +288,18 @@ pub enum HotswapResult {
     NoChange,
     /// Root-level code changed; the entire source was recompiled and re-executed.
     RootChanged,
-    /// One or more function bodies changed.  The compiled function objects have been
-    /// replaced in the root function tree without re-executing root-level code, and every
-    /// changed function that is bound as a top-level global closure has additionally been
-    /// swapped *live* — the new body takes effect on the next call with all global/runtime
-    /// state preserved (no `cycle()` required). Changed functions that aren't live global
-    /// closures (locals, nested/instance methods) update in the root tree only and take
-    /// effect on the next `cycle()` / re-instantiation.  The inner `Vec<String>` contains the
-    /// names of every changed function (or `"anonymous"` for unnamed functions).
+    /// One or more function bodies changed, applied *live* with no `cycle()` and all
+    /// global/runtime state preserved:
+    /// * **Top-level global functions** (stage 1): the live global closure is rebound to
+    ///   the new code, reusing its upvalue cells — the new body runs on the next call.
+    /// * **Nested / instance methods** (stage 2): the changed nested prototype's shared
+    ///   `swap` cell is redirected to the new code, so every existing instance picks up the
+    ///   new body on its next call while keeping its own captured state. The enclosing
+    ///   (unchanged) function is left untouched.
+    ///
+    /// The inner `Vec<String>` contains the names of every changed function — the most
+    /// specific ones (e.g. the nested method, not its wrapper) — or `"anonymous"` for
+    /// unnamed functions.
     FunctionChanged(Vec<String>),
 }
 
@@ -312,6 +316,103 @@ fn find_changed_lines(old: &str, new: &str) -> Vec<usize> {
         })
         .map(|i| i + 1)
         .collect()
+}
+
+/// (start_line, end_line) span of a compiled function prototype, falling back to
+/// the last instruction's line when the `end` keyword line wasn't recorded.
+#[cfg(feature = "hot-swap")]
+fn fn_span(p: Gc<FunctionObject>) -> (usize, usize) {
+    let end = if p.end_line > 0 {
+        p.end_line
+    } else {
+        p.chunk.last_line()
+    };
+    (p.start_line, end)
+}
+
+/// The directly-nested function prototypes of `p`, in definition (CLOSURE) order.
+/// Old and new compilations of the same source list them in the same order, which
+/// lets [`plan_swaps`] pair them positionally.
+#[cfg(feature = "hot-swap")]
+fn child_fns<'gc>(p: Gc<'gc, FunctionObject<'gc>>) -> Vec<Gc<'gc, FunctionObject<'gc>>> {
+    let mut v = vec![];
+    for op in p.chunk.code.iter() {
+        if let crate::code::OpCode::CLOSURE { constant } = op {
+            if let Value::Function(g) = p.chunk.get_constant(*constant) {
+                v.push(*g);
+            }
+        }
+    }
+    v
+}
+
+/// Outcome of planning a hot-swap for one function subtree.
+#[cfg(feature = "hot-swap")]
+enum SwapPlan<'gc> {
+    /// This function's *own* code changed — the caller must treat the function
+    /// itself as changed (swap its global / re-instantiate), not redirect into it.
+    SelfChanged,
+    /// Only nested functions changed. Each entry redirects an old (live) prototype
+    /// to its newly-compiled replacement: `(old_proto, new_proto, name)`.
+    Nested(Vec<(Gc<'gc, FunctionObject<'gc>>, Gc<'gc, FunctionObject<'gc>>, String)>),
+}
+
+/// Recursively determine, for a function whose source span overlaps the diff,
+/// whether its *own* body changed or only nested functions inside it did.
+///
+/// `old` is the live prototype (whose shared `swap` cell we will set), `new` is the
+/// freshly-compiled prototype. `changed` is the set of changed lines that fall
+/// within this function's span. Returns the minimal set of nested redirects, or
+/// `SelfChanged` when the change touches this function's own code, the structure
+/// changed (a nested function was added/removed), or a nested capture layout
+/// changed (so reusing live upvalues would be unsafe).
+#[cfg(feature = "hot-swap")]
+fn plan_swaps<'gc>(
+    old: Gc<'gc, FunctionObject<'gc>>,
+    new: Gc<'gc, FunctionObject<'gc>>,
+    changed: &[usize],
+) -> SwapPlan<'gc> {
+    let new_children = child_fns(new);
+    let old_children = child_fns(old);
+    let (s, e) = fn_span(new);
+
+    // "Own code" changed when a diff line is in this span but inside none of the
+    // direct children's spans.
+    let own_changed = changed.iter().any(|&l| {
+        s <= l
+            && l <= e
+            && !new_children.iter().any(|&c| {
+                let (cs, ce) = fn_span(c);
+                cs <= l && l <= ce
+            })
+    });
+    // A structural change (added/removed nested fn) breaks positional pairing, so
+    // fall back to treating the whole function as changed.
+    if own_changed || new_children.len() != old_children.len() {
+        return SwapPlan::SelfChanged;
+    }
+
+    let mut redirects = vec![];
+    for i in 0..new_children.len() {
+        let new_c = new_children[i];
+        let old_c = old_children[i];
+        let (cs, ce) = fn_span(new_c);
+        let sub: Vec<usize> = changed.iter().copied().filter(|&l| cs <= l && l <= ce).collect();
+        if sub.is_empty() {
+            continue;
+        }
+        // Reusing a live closure's upvalues requires an unchanged capture layout.
+        if new_c.upvalue_count != old_c.upvalue_count {
+            return SwapPlan::SelfChanged;
+        }
+        let name = || new_c.name.clone().unwrap_or_else(|| "anonymous".to_string());
+        match plan_swaps(old_c, new_c, &sub) {
+            SwapPlan::SelfChanged => redirects.push((old_c, new_c, name())),
+            SwapPlan::Nested(sub_r) if sub_r.is_empty() => redirects.push((old_c, new_c, name())),
+            SwapPlan::Nested(sub_r) => redirects.extend(sub_r),
+        }
+    }
+    SwapPlan::Nested(redirects)
 }
 
 pub struct UDVec(pub Vec<WeakWrapper>);
@@ -709,39 +810,75 @@ impl<'gc> VM<'gc> {
         // the stage-1 live swap below to update the matching global closure in place without
         // re-running root-level code. Anonymous functions are skipped (no global to bind).
         let mut changed_globals: Vec<(String, Gc<'gc, FunctionObject<'gc>>)> = vec![];
+        // STAGE 2 — (old_proto, new_proto) redirects for nested functions whose body
+        // changed while their enclosing top-level function did not. Applied after the
+        // root is installed; see step 7b.
+        let mut nested_redirects: Vec<(Gc<'gc, FunctionObject<'gc>>, Gc<'gc, FunctionObject<'gc>>)> =
+            vec![];
+        let old_constants_len = self.root.chunk.constants_len();
 
         for opcode in new_root.chunk.code.iter() {
             if let crate::code::OpCode::CLOSURE { constant } = opcode {
                 let k = *constant as usize;
                 if let crate::value::Value::Function(fn_gc) = new_root.chunk.get_constant(*constant)
                 {
-                    let fn_start_line = fn_gc.start_line;
-                    // Prefer the compiler-recorded `end` keyword line for precise detection.
-                    // Fall back to the last instruction's line if end_line wasn't set.
-                    let fn_end_line = if fn_gc.end_line > 0 {
-                        fn_gc.end_line
-                    } else {
-                        fn_gc.chunk.last_line()
-                    };
+                    let new_top = *fn_gc;
+                    let (fn_start_line, fn_end_line) = fn_span(new_top);
 
                     // A function overlaps the diff when any changed line falls in its span.
-                    let overlaps = changed_lines
+                    let within: Vec<usize> = changed_lines
                         .iter()
-                        .any(|&line| fn_start_line <= line && line <= fn_end_line);
+                        .copied()
+                        .filter(|&line| fn_start_line <= line && line <= fn_end_line)
+                        .collect();
 
-                    if overlaps {
-                        let fn_name = fn_gc
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| "anonymous".to_string());
-                        changed_fn_names.push(fn_name.clone());
-                        covered_ranges.push((fn_start_line, fn_end_line));
-                        // Only named functions can be bound as a global and swapped live.
-                        if fn_gc.name.is_some() {
-                            changed_globals.push((fn_name, *fn_gc));
-                        }
-                    } else {
+                    if within.is_empty() {
                         unchanged_indices.push(k);
+                        continue;
+                    }
+                    covered_ranges.push((fn_start_line, fn_end_line));
+
+                    // Decide whether THIS top-level function's own code changed, or only
+                    // nested functions inside it. The redirect anchor is the LIVE prototype
+                    // reachable through the function's global closure — the exact prototype
+                    // every instance's nested closures were spun off from (and thus share),
+                    // not a fresh recompile. (self.root isn't a reliable handle: `run` does
+                    // not install the program as root.)
+                    let live_top = new_top.name.as_ref().and_then(|n| {
+                        match self.globals.borrow().get(n.as_str()) {
+                            Some(Value::Closure(c)) => Some(c.function),
+                            _ => None,
+                        }
+                    });
+                    let plan = match live_top {
+                        Some(old_top) => plan_swaps(old_top, new_top, &within),
+                        // No live global closure to anchor on → treat the wrapper as changed.
+                        None => SwapPlan::SelfChanged,
+                    };
+
+                    match plan {
+                        SwapPlan::Nested(redirects) if !redirects.is_empty() => {
+                            // Only nested functions changed: keep the wrapper as-is
+                            // (restore its old constant, preserving its identity and live
+                            // global) and redirect each changed nested prototype.
+                            unchanged_indices.push(k);
+                            for (old_c, new_c, name) in redirects {
+                                changed_fn_names.push(name);
+                                nested_redirects.push((old_c, new_c));
+                            }
+                        }
+                        // Wrapper's own code changed (or no plan): stage-1 territory.
+                        _ => {
+                            let fn_name = fn_gc
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| "anonymous".to_string());
+                            changed_fn_names.push(fn_name.clone());
+                            // Only named functions can be bound as a global and swapped live.
+                            if fn_gc.name.is_some() {
+                                changed_globals.push((fn_name, new_top));
+                            }
+                        }
                     }
                 }
             }
@@ -799,7 +936,6 @@ impl<'gc> VM<'gc> {
         //    actually-changed functions differ; this preserves GC object identity and avoids
         //    unnecessarily replacing live function references.  The constant indices align
         //    because we compiled the full source (same function order = same constant order).
-        let old_constants_len = self.root.chunk.constants_len();
         for k in unchanged_indices {
             if k < old_constants_len {
                 let orig = self.root.chunk.copy_constant(k as u8);
@@ -845,6 +981,20 @@ impl<'gc> VM<'gc> {
             self.globals
                 .borrow_mut(mc)
                 .set(Value::String(fn_name), Value::Closure(new_closure));
+        }
+
+        // 7b. STAGE 2 — live-apply nested function swaps. Each changed nested function
+        //     redirects its OLD (live, shared) prototype to the freshly-compiled one by
+        //     setting the prototype's `swap` cell. Every live closure of that definition
+        //     — across all instances created by the unchanged wrapper — points at the
+        //     same prototype, so on its next call it resolves to the new code while
+        //     keeping its own captured upvalues (instance state preserved). New code is
+        //     kept alive by the `swap` cell, which the GC traces.
+        for (old_proto, new_proto) in nested_redirects {
+            // Mutate the `swap` cell through the write barrier (it lives inside an
+            // already-allocated Gc, so a new Gc pointer stored here needs the barrier).
+            let cell = gc_arena::barrier::unlock!(Gc::write(mc, old_proto), FunctionObject, swap);
+            cell.replace(Some(new_proto));
         }
 
         Ok(HotswapResult::FunctionChanged(changed_fn_names))
@@ -1358,7 +1508,7 @@ impl<'gc> VM<'gc> {
                 OpCode::VARARG { is_arg, count } => {
                     // `nextra` = how many variadic overflow values this call actually
                     // received (call arity minus the number of fixed params).
-                    let numfixed = frame.function.get_variadic();
+                    let numfixed = frame.proto.varidic_index;
                     let nextra = frame.call_arity.saturating_sub(numfixed);
 
                     // When spread as a call/return argument we forward every overflow
@@ -1844,7 +1994,7 @@ impl<'gc> VM<'gc> {
                     // the compile-time count (which counts `...` as a single arg) is
                     // adjusted by the caller's own overflow.
                     let ar = if *variadic {
-                        (*arity - 1) + (frame.call_arity - frame.function.get_variadic())
+                        (*arity - 1) + (frame.call_arity - frame.proto.varidic_index)
                     } else {
                         *arity
                     };
@@ -2136,7 +2286,10 @@ impl<'gc> VM<'gc> {
     // TODO is having a default empty chunk cheaper?
     /** We're operating on the assumption a chunk is always present when using this */
     fn get_chunk<'a>(frame: &'a CallFrame<'gc>) -> &'a crate::chunk::Chunk<'gc> {
-        &frame.function.function.chunk
+        // Route through the effective prototype so a hot-swapped body's code and
+        // constants are used (stage 2). `proto` equals the closure's prototype
+        // unless a redirect is set.
+        &frame.proto.chunk
     }
 
     // pub fn reset_stack(&mut self) {
