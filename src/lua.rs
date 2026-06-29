@@ -3047,6 +3047,8 @@ impl<'gc> VM<'gc> {
         let mut table = self.raw_table();
         self.register_native_function_to(mc, &mut table, "insert", crate::standard::table_insert);
         self.register_native_function_to(mc, &mut table, "remove", crate::standard::table_remove);
+        self.register_native_multi_function_to(mc, &mut table, "concat", crate::standard::table_concat);
+        self.register_native_multi_function_to(mc, &mut table, "unpack", crate::standard::table_unpack);
         let t = self.wrap_table(mc, table);
         self.globals.borrow_mut(mc).set("table", t);
 
@@ -3143,6 +3145,23 @@ impl<'gc> VM<'gc> {
         let f = WrappedFn { f: Rc::new(raw) };
         let v = Value::NativeFunction(Gc::new(mc, f));
         self.globals.borrow_mut(mc).set(name, v);
+    }
+
+    /// Like [`register_native_multi_function`] but binds the multi-return native into
+    /// the given table (e.g. `table.unpack`) rather than the global scope.
+    pub fn register_native_multi_function_to<F>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        table: &mut Table<'gc>,
+        name: &str,
+        function: F,
+    ) where
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> Result<Vec<Value<'gc>>, SiltError>
+            + 'gc,
+    {
+        let raw = NativeFunctionRaw::new_multi(function);
+        let f = WrappedFn { f: Rc::new(raw) };
+        table.set(name, Value::NativeFunction(Gc::new(mc, f)));
     }
     //
     pub fn register_native_function_to<A, F, R>(

@@ -80,7 +80,15 @@ fn string_library() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — `table.concat`/`table.unpack` not implemented"]
 fn table_library() {
+    // concat: separator, default (no sep), numeric elements, and a range [i,j]
     valeq!("return table.concat({'a', 'b', 'c'}, ',')", ExVal::String("a,b,c".to_string()));
+    valeq!("return table.concat({1, 2, 3})", ExVal::String("123".to_string()));
+    valeq!("return table.concat({'w','x','y','z'}, '-', 2, 3)", ExVal::String("x-y".to_string()));
+    valeq!("return table.concat({}, ',')", ExVal::String("".to_string()));
+    // unpack: spreads the sequence as multiple values in a multi-assignment.
+    // (Spreading into a call's trailing argument — `f(unpack(t))` — depends on the
+    // separate call-position multi-return forwarding that isn't wired yet.)
+    valeq!("local a,b,c = table.unpack({10,20,30}) return a + b + c", ExVal::Integer(60));
+    valeq!("local x,y = table.unpack({7, 8}) return x * 10 + y", ExVal::Integer(78));
 }

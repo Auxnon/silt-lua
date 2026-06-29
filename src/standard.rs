@@ -152,6 +152,94 @@ pub fn lua_pcall<'lua>(
     }
 }
 
+/// `table.concat(list [, sep [, i [, j]]])` — join the sequence `list[i..j]` into a
+/// string separated by `sep` (default ""). Only string/number elements are allowed.
+pub fn table_concat<'lua>(
+    _: &mut VM<'lua>,
+    _: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let t = match args.first() {
+        Some(Value::Table(t)) => *t,
+        _ => {
+            return Err(SiltError::Custom(
+                "bad argument #1 to 'concat' (table expected)".into(),
+            ))
+        }
+    };
+    let sep = match args.get(1) {
+        Some(Value::Nil) | None => String::new(),
+        Some(v @ (Value::String(_) | Value::Integer(_) | Value::Number(_))) => v.coerce_string(),
+        Some(_) => {
+            return Err(SiltError::Custom(
+                "bad argument #2 to 'concat' (string expected)".into(),
+            ))
+        }
+    };
+    let tb = t.borrow();
+    let i = match args.get(2) {
+        Some(Value::Integer(i)) => *i,
+        _ => 1,
+    };
+    let j = match args.get(3) {
+        Some(Value::Integer(j)) => *j,
+        _ => tb.len() as i64,
+    };
+    let mut out = String::new();
+    let mut k = i;
+    while k <= j {
+        match tb.getn(k as usize) {
+            Some(v @ (Value::String(_) | Value::Integer(_) | Value::Number(_))) => {
+                out.push_str(&v.coerce_string())
+            }
+            _ => {
+                return Err(SiltError::Custom(format!(
+                    "invalid value (at index {}) in table for 'concat'",
+                    k
+                )))
+            }
+        }
+        if k < j {
+            out.push_str(&sep);
+        }
+        k += 1;
+    }
+    Ok(vec![Value::String(out)])
+}
+
+/// `table.unpack(list [, i [, j]])` — return the sequence elements `list[i..j]` as
+/// multiple values (defaults: i = 1, j = #list).
+pub fn table_unpack<'lua>(
+    _: &mut VM<'lua>,
+    _: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let t = match args.first() {
+        Some(Value::Table(t)) => *t,
+        _ => {
+            return Err(SiltError::Custom(
+                "bad argument #1 to 'unpack' (table expected)".into(),
+            ))
+        }
+    };
+    let tb = t.borrow();
+    let i = match args.get(1) {
+        Some(Value::Integer(i)) => *i,
+        _ => 1,
+    };
+    let j = match args.get(2) {
+        Some(Value::Integer(j)) => *j,
+        _ => tb.len() as i64,
+    };
+    let mut out = vec![];
+    let mut k = i;
+    while k <= j {
+        out.push(tb.getn(k as usize).cloned().unwrap_or(Value::Nil));
+        k += 1;
+    }
+    Ok(out)
+}
+
 pub fn select<'lua>(_: &mut VM, _: &Mutation<'lua>, _args: Vec<Value<'lua>>) -> InnerResult<'lua> {
     // Value::Nil
     todo!()
