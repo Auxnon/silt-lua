@@ -2215,7 +2215,7 @@ impl<'gc> VM<'gc> {
                     let key = Self::get_chunk(&frame).get_constant(*constant);
                     let receiver = self.peek(ep).clone();
                     let method = match &receiver {
-                        Value::Table(t) => (*t).borrow().get_value(&key),
+                        Value::Table(t) => Self::meta_index_get(*t, &key),
                         // Strings dispatch methods through the `string` library
                         // (Lua's string metatable: `("x"):upper()` == string.upper("x")).
                         Value::String(_) => match self.globals.borrow().get("string") {
@@ -2279,10 +2279,7 @@ impl<'gc> VM<'gc> {
                     let key = Self::get_chunk(&frame).get_constant(*constant);
                     let table = self.peek_mut(ep);
                     if let Value::Table(t) = table {
-                        // let tt= t.borrow();
-
-                        let v: Value = (*t).borrow().get_value(&key);
-                        // let v:Value = t.borrow().get_value(&key);
+                        let v: Value = Self::meta_index_get(*t, &key);
                         self.push(ep, v);
                     } else {
                         break Err(SiltError::VmNonTableOperations(table.to_error()));
@@ -2680,6 +2677,31 @@ impl<'gc> VM<'gc> {
      * Compares indexes on stack by depth amount, if set value not passed we act as a getter and push value at index on to stack
      * Unintentional pun
      */
+    /// Resolve `table[key]` with Lua `__index` semantics: return the raw value if the
+    /// key is present, otherwise follow a table-valued `__index` metafield (chaining
+    /// through nested metatables, the basis of class inheritance). A function-valued
+    /// `__index` would require invoking a closure mid-lookup and is not yet handled
+    /// here — such a key resolves to `Nil` for now.
+    fn meta_index_get(
+        mut current: Gc<'gc, RefLock<Table<'gc>>>,
+        key: &Value<'gc>,
+    ) -> Value<'gc> {
+        // Bound the metatable chain to avoid spinning on a cyclic `__index`.
+        for _ in 0..100 {
+            let raw = current.borrow().get_value(key);
+            if !matches!(raw, Value::Nil) {
+                return raw;
+            }
+            // Bind before matching so the table borrow releases before we reassign.
+            let next = current.borrow().meta_index();
+            match next {
+                Some(Value::Table(idx)) => current = idx,
+                _ => return Value::Nil,
+            }
+        }
+        Value::Nil
+    }
+
     fn operate_table(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
@@ -2717,7 +2739,7 @@ impl<'gc> VM<'gc> {
                             unsafe { table_point.replace(Value::Nil) };
                         }
                         None => {
-                            let out = current.borrow().get_value(&key);
+                            let out = Self::meta_index_get(current, &key);
                             unsafe { table_point.replace(out) };
                         }
                     }

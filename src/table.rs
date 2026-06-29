@@ -330,6 +330,22 @@ impl<'v> Table<'v> {
         self.meta.clone().unwrap_or(Value::Nil)
     }
 
+    /// The raw `__index` metafield (a table or a function), if this table has a
+    /// metatable that defines one. Unlike [`by_meta_method`], this does not require
+    /// the value to be callable — `__index` is most often a table (the OOP class
+    /// pattern). Returns `None` when there is no metatable or no `__index`.
+    pub fn meta_index(&self) -> Option<Value<'v>> {
+        if let Some(Value::Table(mt)) = &self.meta {
+            let v = mt
+                .borrow()
+                .get_value(&Value::String("__index".to_string()));
+            if !matches!(v, Value::Nil) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
     pub fn by_meta_method(&self, method: MetaMethod) -> Result<Value<'v>, SiltError> {
         // println!("meta: {}", self.meta.clone().unwrap_or(Value::Nil));
         if let Some(Value::Table(t)) = &self.meta {

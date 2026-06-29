@@ -113,7 +113,9 @@ pub fn setmetatable<'lua>(
             println!("cant set metatable on this non table"); // TODO
         }
     }
-    Ok(Value::Nil)
+    // Lua's `setmetatable` returns its first argument so `local t = setmetatable({}, mt)`
+    // works as the idiomatic constructor pattern.
+    Ok(args[0].clone())
 }
 
 pub fn getmetatable<'lua>(
