@@ -81,13 +81,25 @@ fn setmetatable_returns_the_table() {
 }
 
 #[test]
-#[ignore = "metamethod: __eq/__lt/__le comparison dispatch not wired"]
 fn comparison_metamethods() {
     valeq!("local m={__lt=function(a,b) return a.v<b.v end} local x=setmetatable({v=3},m) local y=setmetatable({v=4},m) return x<y", ExVal::Bool(true));
+    valeq!("local m={__le=function(a,b) return a.v<=b.v end} local x=setmetatable({v=4},m) local y=setmetatable({v=4},m) return x<=y", ExVal::Bool(true));
+    valeq!("local m={__eq=function(a,b) return a.v==b.v end} local x=setmetatable({v=3},m) local y=setmetatable({v=3},m) return x==y", ExVal::Bool(true));
+    valeq!("local m={__eq=function(a,b) return a.v==b.v end} local x=setmetatable({v=3},m) local y=setmetatable({v=9},m) return x==y", ExVal::Bool(false));
+    // `>` / `>=` evaluate as swapped `<` / `<=`, so __lt/__le drive them too.
+    valeq!("local m={__lt=function(a,b) return a.v<b.v end} local x=setmetatable({v=5},m) local y=setmetatable({v=3},m) return x>y", ExVal::Bool(true));
+    valeq!("local m={__le=function(a,b) return a.v<=b.v end} local x=setmetatable({v=5},m) local y=setmetatable({v=5},m) return x>=y", ExVal::Bool(true));
 }
 
 #[test]
-#[ignore = "metamethod: __concat not wired"]
+fn reference_equality() {
+    // Same table/closure compares equal by identity; distinct tables do not.
+    valeq!("local a={} return a==a", ExVal::Bool(true));
+    valeq!("local a={} local b={} return a==b", ExVal::Bool(false));
+    valeq!("local function f() end local g=f return f==g", ExVal::Bool(true));
+}
+
+#[test]
 fn concat_metamethod() {
     valeq!(r#"local m={__concat=function(a,b) return "z" end} local x=setmetatable({},m) return x.."!""#, ExVal::String("z".to_string()));
 }

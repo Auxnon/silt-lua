@@ -1806,7 +1806,29 @@ impl<'gc> VM<'gc> {
                 OpCode::EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(Self::is_equal(&l, &r)));
+                    // Lua only consults `__eq` when both operands are tables that are
+                    // not the same object; a missing `__eq` falls back to raw (reference)
+                    // equality rather than erroring.
+                    let meta_eq = match (&l, &r) {
+                        (Value::Table(a), Value::Table(b)) if !Gc::ptr_eq(*a, *b) => {
+                            let t = *a;
+                            if t.borrow().by_meta_method(MetaMethod::Eq).is_ok() {
+                                Some(t)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    match meta_eq {
+                        Some(table) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, r, Eq
+                            );
+                            self.push(ep, v);
+                        }
+                        None => self.push(ep, Value::Bool(Self::is_equal(&l, &r))),
+                    }
                 }
                 OpCode::NOT_EQUAL => {
                     let r = self.pop(ep);
@@ -1816,22 +1838,57 @@ impl<'gc> VM<'gc> {
                 OpCode::LESS => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(bubble!(Self::is_less(&l, &r))));
+                    match (l, r) {
+                        (Value::Table(table), rr) => {
+                            let v =
+                                table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Lt);
+                            self.push(ep, v);
+                        }
+                        (l, r) => self.push(ep, Value::Bool(bubble!(Self::is_less(&l, &r)))),
+                    }
                 }
                 OpCode::LESS_EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(!bubble!(Self::is_greater(&l, &r))));
+                    match (l, r) {
+                        (Value::Table(table), rr) => {
+                            let v =
+                                table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Le);
+                            self.push(ep, v);
+                        }
+                        (l, r) => {
+                            self.push(ep, Value::Bool(!bubble!(Self::is_greater(&l, &r))))
+                        }
+                    }
                 }
                 OpCode::GREATER => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(bubble!(Self::is_greater(&l, &r))));
+                    // `l > r` is evaluated as `r < l`, so a table dispatches `__lt`
+                    // with operands swapped (matching Lua's comparison rewrite).
+                    match (r, l) {
+                        (Value::Table(table), ll) => {
+                            let v =
+                                table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Lt);
+                            self.push(ep, v);
+                        }
+                        (rr, ll) => self.push(ep, Value::Bool(bubble!(Self::is_less(&rr, &ll)))),
+                    }
                 }
                 OpCode::GREATER_EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(!bubble!(Self::is_less(&l, &r))));
+                    // `l >= r` is evaluated as `r <= l` → `__le` with swapped operands.
+                    match (r, l) {
+                        (Value::Table(table), ll) => {
+                            let v =
+                                table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Le);
+                            self.push(ep, v);
+                        }
+                        (rr, ll) => {
+                            self.push(ep, Value::Bool(!bubble!(Self::is_greater(&rr, &ll))))
+                        }
+                    }
                 }
                 OpCode::CONCAT => {
                     let r = self.pop(ep);
@@ -1842,6 +1899,13 @@ impl<'gc> VM<'gc> {
                         }
                         (Value::String(left), v2) => {
                             self.push(ep, Value::String(left + &v2.to_string()))
+                        }
+                        // A table operand dispatches to its `__concat` metamethod.
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, rr, Concat
+                            );
+                            self.push(ep, v);
                         }
                         (v1, Value::String(right)) => {
                             self.push(ep, Value::String(v1.to_string() + &right))
@@ -2341,7 +2405,7 @@ impl<'gc> VM<'gc> {
         }
     }
 
-    fn is_equal(l: &Value, r: &Value) -> bool {
+    fn is_equal(l: &Value<'gc>, r: &Value<'gc>) -> bool {
         match (l, r) {
             (Value::Number(left), Value::Number(right)) => left == right,
             (Value::Integer(left), Value::Integer(right)) => left == right,
@@ -2351,6 +2415,11 @@ impl<'gc> VM<'gc> {
             (Value::Bool(left), Value::Bool(right)) => left == right,
             (Value::Nil, Value::Nil) => true,
             (Value::Infinity(left), Value::Infinity(right)) => left == right,
+            // Reference types compare by identity (same allocation).
+            (Value::Table(a), Value::Table(b)) => Gc::ptr_eq(*a, *b),
+            (Value::Closure(a), Value::Closure(b)) => Gc::ptr_eq(*a, *b),
+            (Value::Function(a), Value::Function(b)) => Gc::ptr_eq(*a, *b),
+            (Value::UserData(a), Value::UserData(b)) => Gc::ptr_eq(*a, *b),
             (_, _) => false,
         }
     }
