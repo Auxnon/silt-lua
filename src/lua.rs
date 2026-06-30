@@ -1303,11 +1303,6 @@ impl<'gc> VM<'gc> {
         unsafe { ep.ip.sub(1).read() }
     }
 
-    /** Safer but clones! */
-    fn duplicate(&self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
-        unsafe { (*ep.ip.sub(1)).clone() }
-    }
-
     /** Look and get immutable reference to top of stack */
     #[inline]
     fn peek(&self, ep: &mut Ephemeral<'_, 'gc>) -> &Value<'gc> {
@@ -1580,17 +1575,9 @@ impl<'gc> VM<'gc> {
                     // devout!("ident: {}", value);
                     if let Value::String(s) = value {
                         devout!("\"{}\"", s);
-                        let v = self.duplicate(ep);
-                        // TODO we could take, expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
-                        // alternatively we can peek the value, that might be better to prevent side effects
-                        // do we want expressions to evaluate to a value? probably? is this is ideal for implicit returns?
-
-                        // if let Some(_) = self.globals.get(&**s) {
-                        //     self.globals.insert(s.to_string(), v);
-                        // } else {
-                        //     self.globals.insert(s.to_string(), v);
-                        // }
-                        // devout!("set original: {}", value);
+                        // Assignment consumes its value (no trailing POP from the
+                        // compiler), so pop rather than clone-and-leave.
+                        let v = self.pop(ep);
                         self.globals.borrow_mut(ep.mc).set(s, v);
                     } else {
                         // devout!("0SET_GLOBAL: {}", value);
@@ -1616,8 +1603,9 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::SET_LOCAL { index } => {
-                    let value = self.duplicate(ep);
-                    // frame.stack[*index as usize] = value;
+                    // Assignment consumes its value (the compiler no longer emits a
+                    // trailing POP), so pop rather than clone-and-leave.
+                    let value = self.pop(ep);
                     frame.set_val(*index, value)
                 }
                 OpCode::GET_LOCAL { index } => {
@@ -2205,12 +2193,11 @@ impl<'gc> VM<'gc> {
                     self.push(ep, value);
                 }
                 OpCode::SET_UPVALUE { index } => {
-                    let value = self.peek(ep); // TODO pop and set would be faster, less cloning
-                    let ff = &frame.function.upvalues;
-                    ff[*index as usize]
+                    // Assignment consumes its value (no trailing POP from the compiler).
+                    let value = self.pop(ep);
+                    frame.function.upvalues[*index as usize]
                         .borrow_mut(ep.mc)
-                        .set_value(value.clone());
-                    // unsafe { *upvalue.value = value };
+                        .set_value(value);
                 }
 
                 OpCode::CALL(arity, multi,variadic) => {

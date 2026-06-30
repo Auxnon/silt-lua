@@ -682,11 +682,9 @@ impl Compiler {
         let it = vv.peekable();
         for v in it {
             if let Some(s) = v {
-                // println!("we writting code here {} {}", v.0, local);
+                // The setter opcode now consumes its value, so no trailing POP is
+                // needed — multiple targets just pop successive values off the stack.
                 f.chunk.write_code(s.0, self.current_location);
-                // if !local {
-                f.chunk.write_code(OpCode::POP, self.current_location);
-                // }
             }
         }
     }
@@ -3012,9 +3010,8 @@ fn compound_assign_var<'c>(
     expression_single(this, mc, f, it, false)?; // right-hand side
     this.set_can_multivar_set(true);
     this.emit_at(f, op); // current <op> rhs
-    this.emit_at(f, setter); // store result (leaves a copy on the stack)
-    this.emit_at(f, OpCode::POP); // drop that copy
-    this.override_pop(); // statement pop already accounted for
+    this.emit_at(f, setter); // store result (the setter consumes the value)
+    this.override_pop(); // assignment is a statement; suppress the expression-statement pop
     Ok(())
 }
 
