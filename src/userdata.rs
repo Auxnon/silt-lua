@@ -181,7 +181,9 @@ pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
     methods: HashMap<String, UserDataMethodClosure<'gc>>,
     // methods2: HashMap<String, dyn MethodHandler<'gc,T,_,_>>,
     // method_cache: Vec<NativeFunctionRc<'gc>>,
-    meta_methods: Vec<UserDataMethodClosure<'gc>>,
+    // Keyed by `MetaMethod::as_ind()`; a Vec was indexed sparsely (e.g. index 25)
+    // which panicked on insert into an empty Vec.
+    meta_methods: HashMap<usize, UserDataMethodClosure<'gc>>,
     getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
     setters: HashMap<String, Box<UserDataSetterFn<'gc, T>>>,
     // type_id: std::any::TypeId,
@@ -193,7 +195,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
         Self {
             methods: HashMap::new(),
             // method_cache: Vec::new(),
-            meta_methods: Vec::new(),
+            meta_methods: HashMap::new(),
             getters: HashMap::new(),
             setters: HashMap::new(),
             // type_id: std::any::TypeId::of::<T>(),

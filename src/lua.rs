@@ -2417,6 +2417,24 @@ impl<'gc> VM<'gc> {
                             Some(Value::Table(t)) => t.borrow().get_value(&key),
                             _ => Value::Nil,
                         },
+                        // `ud:method(...)` — resolve the method off the userdata's
+                        // registry (same lookup as `ud.method`), leaving [method,
+                        // receiver] so the userdata is passed as the implicit `self`.
+                        Value::UserData(ud) => {
+                            let name = key.pure_string();
+                            let mut mu = (*ud).borrow_mut(ep.mc);
+                            let rud = mu.deref_mut();
+                            match crate::userdata::vm_integration::get_field(
+                                self,
+                                &self.userdata_registry,
+                                ep.mc,
+                                rud,
+                                &name,
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => break Err(e),
+                            }
+                        }
                         _ => break Err(SiltError::VmNonTableOperations(receiver.to_error())),
                     };
                     *self.peek_mut(ep) = method;

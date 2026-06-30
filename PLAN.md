@@ -34,6 +34,21 @@ These take the interpreter down hard (Rust `panic!`, index-out-of-bounds, or an 
 loop). They must be fixed before the suite can be trusted, because they can abort a whole
 test binary.
 
+### 1.0 Compiler is far too lenient — silently accepts malformed source 🔴 CRITICAL (next)
+- **Repro (all compile + "succeed" with NO error):** `local x = )`, `local = 5`, `x = = 5`,
+  `return )`, `)`, `end`, `1 2 3`. The single-pass compiler emits whatever bytecode it can
+  and moves on instead of reporting a syntax error.
+- **Why it matters now:** the new LSP (`src/lsp.rs`, feature `lsp`/`lsp-server`) surfaces
+  this directly — diagnostics can only report what the compiler actually flags, so editors
+  see a near-empty error set on obviously-broken code. It also masks real user mistakes at
+  runtime (garbage executes instead of erroring).
+- **What works today:** only a handful of cases are caught — unterminated blocks
+  (`if x then` → "Unterminated block"), missing tokens (`function` → "Expected token (").
+- **Direction:** tighten the parser/`expression`/`statement` paths to *expect* a valid
+  token and push a `SiltError` (then `synchronize`) on anything unexpected, rather than
+  silently accepting. Add a `tests/errors.rs` matrix of must-error inputs. This is the
+  highest-leverage correctness + tooling investment after the current feature work.
+
 ### 1.1 Closure / upvalue capture panics — `index out of bounds` ✅ FIXED
 - **Repro:**
   ```lua
