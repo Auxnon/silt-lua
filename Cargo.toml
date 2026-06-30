@@ -79,6 +79,12 @@ typing = []
 # function bodies in a running VM (top-level globals swap live, preserving state).
 # Off by default — only needed for live-reload / dev tooling, not normal embedding.
 hot-swap = []
+# Pure-Rust language-analysis API (diagnostics + formatting) returning native Rust
+# types — no JSON, no serde. For in-process editor/tooling integration.
+lsp = []
+# JSON-RPC-over-stdio language server (for Neovim etc.) built on `lsp`. Adds serde_json
+# only for the wire transport; `silt lsp` launches it. Off by default.
+lsp-server = ["lsp", "dep:serde_json"]
 vectors = []
 dev-out = []
 
@@ -87,6 +93,7 @@ byteyarn = "0.5.1"
 wasm-bindgen = {version= "0.2.103", optional=true }
 serde = { version = "1.0.219", features = ["derive"], optional=true }
 serde-wasm-bindgen = {version="0.6.5", optional=true}
+serde_json = { version = "1.0.150", optional = true }
 gc-arena = {version= "0.5.3", features=["allocator-api2"] }
 string-interner = "0.18.0"
 colored = "3.0.0"

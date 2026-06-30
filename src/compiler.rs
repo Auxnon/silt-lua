@@ -1234,7 +1234,7 @@ fn set_trailing_vararg(&mut self,bool: bool){
                     if !matches!(token, Token::EOF) {
                         // println!("start len {} {}", start, length);
                         let token_str = &source[start..start + length];
-                        println!("~{}~", token_str);
+                        devout!("~{}~", token_str);
                         if !token_str.trim().is_empty() {
                             let i: usize = if offset < 0 {
                                 start.checked_sub(offset.wrapping_abs() as usize)

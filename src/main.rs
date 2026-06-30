@@ -251,6 +251,23 @@ fn main() {
             print_help();
             return;
         }
+        Some("lsp") | Some("--lsp") => {
+            // Run the JSON-RPC-over-stdio language server (for Neovim etc.).
+            // Only stdout-as-protocol; gated behind the `lsp-server` feature.
+            #[cfg(feature = "lsp-server")]
+            {
+                silt_lua::lsp::run_server();
+                return;
+            }
+            #[cfg(not(feature = "lsp-server"))]
+            {
+                eprintln!(
+                    "silt was built without the 'lsp-server' feature; rebuild with \
+                     `cargo build --release --features lsp-server`"
+                );
+                return;
+            }
+        }
         Some("--run") | Some("-r") => {
             // Everything after the flag is the program. Joining args[2..] lets an
             // unquoted snippet still work, while a single quoted arg is unchanged.

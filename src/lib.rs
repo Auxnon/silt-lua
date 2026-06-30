@@ -4,7 +4,8 @@ mod compiler;
 pub mod error;
 mod function;
 mod lexer;
-mod lsp;
+#[cfg(feature = "lsp")]
+pub mod lsp;
 pub mod lua;
 pub mod prelude;
 pub mod standard;

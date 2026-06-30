@@ -56,6 +56,39 @@ Keep in mind these may be polarizing and an LSP will flag them as an error
 - `"compound-assignment"` Luau-style compound assignment operators: `+=` `-=` `*=` `/=` `//=` `%=` `^=` `..=`. `x op= e` is shorthand for `x = x op e` and evaluates the target once. Works on locals, upvalues, globals, and table fields/indexes (`t.x += 1`, `t[k] *= 2`, `self.count += 1`).
 - `"typing"` (off by default) Luau-style optional static type annotations — Phase 1 parses and tracks `local x: number`, function params, and arrow params, with no checking yet. See `TYPING_PLAN.md`.
 - `"hot-swap"` (off by default) Live code hot-swapping for dev/live-reload tooling. `Lua::hotswap(old, new)` diffs the two sources: a root-level change is a full VM reset; a function-body-only change is applied *live* with no re-run and all state preserved. Changed **top-level global** functions are rebound in place, and changed **nested / instance methods** are redirected via a shared prototype cell so every existing instance picks up the new body on its next call while keeping its own captured state (the unchanged enclosing function is left alone). Not needed for normal embedding, so it's gated off.
+- `"lsp"` (off by default) Pure-Rust language-analysis API for editor/tooling integration, returning **native Rust types** (no JSON): `silt_lua::lsp::diagnostics(src) -> Vec<Diagnostic>` (compile errors, without running the code) and `silt_lua::lsp::format(src) -> String` (Lua-style re-indentation of blocks, if/elseif/else, for/while/do, repeat/until, and `{ }` tables). Call these directly in-process.
+- `"lsp-server"` (off by default, implies `lsp`) A JSON-RPC-over-stdio language server for editors like Neovim, built on the `lsp` core (adds `serde_json` only for the wire format). See **Editor integration** below.
+
+## Editor integration (LSP)
+
+silt can act as a language server so editors get live diagnostics and formatting for silt/Lua source — including silt's custom syntax (arrow functions, compound assignment, `!`, etc.) that a stock Lua LSP wouldn't understand.
+
+Build with the server feature and launch over stdio:
+
+```sh
+cargo build --release --features lsp-server   # add to defaults: --features "silt lsp-server"
+silt lsp                                       # speaks LSP/JSON-RPC on stdio
+```
+
+`silt lsp` writes **only** framed JSON-RPC to stdout (logs go to stderr). It currently provides **diagnostics** (`textDocument/publishDiagnostics` on open/change) and **formatting** (`textDocument/formatting`, honoring the editor's `tabSize`/`insertSpaces`).
+
+### Neovim
+
+No plugin required (Neovim 0.8+). Point the built-in client at the `silt` binary:
+
+```lua
+-- ~/.config/nvim/after/ftplugin/lua.lua  (or inside a FileType autocmd)
+vim.lsp.start({
+  name = "silt",
+  cmd = { "silt", "lsp" },          -- or an absolute path to the built binary
+  root_dir = vim.fs.dirname(vim.fs.find({ ".git" }, { upward = true })[1])
+             or vim.fn.getcwd(),
+})
+```
+
+Diagnostics then appear automatically via `vim.diagnostic`; format the buffer with `vim.lsp.buf.format()`.
+
+> Note: diagnostics only flag what silt's single-pass compiler detects (unterminated blocks, missing tokens, …); it is permissive about some malformed input. Columns are Unicode-char based — exact for ASCII/BMP source.
 
 ## Examples
 
