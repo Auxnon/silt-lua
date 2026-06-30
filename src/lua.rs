@@ -2078,6 +2078,32 @@ impl<'gc> VM<'gc> {
                         self.push(ep, it);
                     }
                 }
+                OpCode::FORLOOP(rewind) => {
+                    // Loop tail: the loop variable has already been popped, so the
+                    // stack top is [iterator, limit, step] again. Increment the
+                    // iterator by the step, re-test the bound, and either push the
+                    // new loop variable and jump back to the body, or fall through.
+                    let step = unsafe { &*ep.ip.sub(1) }.clone();
+                    let descending = match step {
+                        Value::Integer(i) => i < 0,
+                        Value::Number(n) => n < 0.0,
+                        _ => false,
+                    };
+                    let iter_slot = unsafe { &mut *ep.ip.sub(3) };
+                    bubble!(iter_slot.increment(&step));
+                    let iterator = unsafe { &*ep.ip.sub(3) };
+                    let compare = unsafe { &*ep.ip.sub(2) };
+                    let done = if descending {
+                        bubble!(Self::is_less(iterator, compare))
+                    } else {
+                        bubble!(Self::is_greater(iterator, compare))
+                    };
+                    if !done {
+                        let it = iterator.clone();
+                        self.push(ep, it);
+                        frame.rewind(*rewind);
+                    }
+                }
                 OpCode::INCREMENT { index } => {
                     let value = frame.get_val_mut(*index);
                     let step = self.peek(ep);

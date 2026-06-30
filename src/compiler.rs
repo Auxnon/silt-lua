@@ -862,6 +862,16 @@ impl Compiler {
         self.write_code(f, OpCode::REWIND(jump as u16), self.current_location);
     }
 
+    /// Emit the fused numeric-for tail. `start` is the body-top index it rewinds to
+    /// when the loop continues (same backward-offset convention as `emit_rewind`).
+    fn emit_forloop(&mut self, f: FnRef, start: usize) {
+        let jump = (self.get_chunk_size(f) + 1) - start;
+        if jump > u16::MAX as usize {
+            self.error_at(SiltError::TooManyOperations);
+        }
+        self.write_code(f, OpCode::FORLOOP(jump as u16), self.current_location);
+    }
+
     #[allow(dead_code)]
     fn set_label(&mut self, f: FnRef, label: String) {
         self.labels.insert(label, self.get_chunk_size(f));
@@ -2345,7 +2355,7 @@ fn for_statement<'c>(
         // let offset = this.local_functional_offset[this.functional_depth - 1];
         // capture base BEFORE the hidden control slots so `break` unwinds them too
         begin_loop(this);
-        let iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
+        let _iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
         expect_token!(this it Assign);
         add_local_placeholder(this)?; // reserve end value with placeholder
         add_local_placeholder(this)?; // reserve step value with placeholder
@@ -2376,8 +2386,10 @@ fn for_statement<'c>(
         build_block_until_then_eat!(this, mc, f, it, End);
         end_scope(this, f, false);
 
-        this.emit_at(f, OpCode::INCREMENT { index: iterator });
-        this.emit_rewind(f, for_start);
+        // Fused loop tail: increment + bound-check + (push loop var & rewind) in one op.
+        // It rewinds to the body start (just past FOR_NUMERIC), so the top check runs
+        // only once on entry; FORLOOP drives every subsequent iteration.
+        this.emit_forloop(f, for_start + 1);
         this.patch(f, for_start)?;
         this.force_stack_pop(f, 3);
         // break jumps land here, after the hidden control slots are reclaimed

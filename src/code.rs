@@ -49,6 +49,11 @@ pub enum OpCode {
     POP_AND_GOTO_IF_FALSE(u16),
     /** Compares 2nd(end) and 3rd(iter) value on stack, if greater then forward by X, otherwise push 3rd(iter) on to new stack  */
     FOR_NUMERIC(u16),
+    /** Numeric-for loop tail: increment the iterator (3rd-from-top) by the step (top),
+     *  re-test against the limit, and either push the new loop variable and REWIND by X
+     *  to the loop body, or fall through to exit. Fuses INCREMENT + bound-check + REWIND
+     *  into one op so the steady-state loop runs `body + POP + FORLOOP` per iteration. */
+    FORLOOP(u16),
     FORWARD(u16),
     REWIND(u16),
     RETURN(u8),
@@ -187,6 +192,7 @@ impl Display for OpCode {
             }
             Self::FORWARD(offset) => write!(f, "OP_FORWARD {}", offset),
             Self::REWIND(offset) => write!(f, "OP_REWIND {}", offset),
+            Self::FORLOOP(offset) => write!(f, "OP_FORLOOP {}", offset),
             Self::FOR_NUMERIC(offset) => {
                 write!(f, "OP_FOR_NUMERIC {}", offset)
             }
