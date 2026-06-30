@@ -373,6 +373,7 @@ impl<'v> Value<'v> {
         *self = Value::Number(n);
     }
 
+    #[inline]
     pub fn increment(&mut self, value: &Value) -> Result<(), SiltError> {
         binary_self_op!(self, +=,+, value, Add)
         // match match (&mut *self, value) {

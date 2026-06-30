@@ -67,12 +67,14 @@ impl<'frame> CallFrame<'frame> {
         }
     }
 
+    #[inline]
     pub fn current_instruction(&self) -> &crate::code::OpCode {
         // &self.function.chunk.code[self.ip]
         unsafe { &*self.ip }
     }
 
     /** shift ip by 1 instruction */
+    #[inline]
     pub fn iterate(&mut self) {
         // self.ip += 1;
         self.ip = unsafe { self.ip.add(1) };
@@ -91,11 +93,13 @@ impl<'frame> CallFrame<'frame> {
         self.ip = unsafe { self.ip.add(n) };
     }
 
+    #[inline]
     pub fn set_val(&mut self, index: u8, value: Value<'frame>) {
         // self.stack[index as usize] = value;
         unsafe { *self.local_stack.add(index as usize) = value };
     }
 
+    #[inline]
     pub fn get_val(&self, index: u8) -> &Value<'frame> {
         // &self.stack[index as usize]
         // println!("get_val: {}", index);
@@ -126,6 +130,7 @@ impl<'frame> CallFrame<'frame> {
 
     // get_vararg
 
+    #[inline]
     pub fn get_val_mut(&mut self, index: u8) -> &mut Value<'frame> {
         unsafe { &mut *self.local_stack.add(index as usize) }
     }
@@ -188,11 +193,13 @@ impl<'frame> CallFrame<'frame> {
     }
 
     // TODO validate safety of this, compiler has to be solid af!
+    #[inline]
     pub fn forward(&mut self, offset: u16) {
         // self.ip += offset as usize;
         self.ip = unsafe { self.ip.add(offset as usize) };
     }
 
+    #[inline]
     pub fn rewind(&mut self, offset: u16) {
         // self.ip -= offset as usize;
         self.ip = unsafe { self.ip.sub(offset as usize) };

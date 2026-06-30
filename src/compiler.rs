@@ -595,8 +595,23 @@ impl Compiler {
     /** Force stack to pop N values without usual niceties, this both emits opcode and drops off the emulated stack locals */
     fn force_stack_pop(&mut self, f: FnRef, n: usize) {
         self.locals.truncate(self.locals.len() - n);
-
-        self.emit_at(f, OpCode::POPS(n as u8));
+        if n == 0 {
+            return; // nothing to pop; avoid emitting a no-op POPS(0)
+        }
+        // Peephole: when this scope/loop cleanup immediately follows another stack
+        // pop (e.g. an assignment statement's discarded value, or a prior scope's
+        // POPS), fold them into a single POPS instead of emitting POP;POPS — one
+        // fewer instruction per loop iteration. Safe because the cleanup site is
+        // never itself a jump target (jumps land at loop start or past the loop).
+        let merged = match f.chunk.code.last() {
+            Some(OpCode::POP) => Some(n as u8 + 1),
+            Some(OpCode::POPS(m)) => Some(*m + n as u8),
+            _ => None,
+        };
+        match merged {
+            Some(total) => f.chunk.patch_last(OpCode::POPS(total)),
+            None => self.emit_at(f, OpCode::POPS(n as u8)),
+        }
     }
 
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */

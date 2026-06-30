@@ -27,7 +27,8 @@ bench = false
 
 [profile.release]
 strip = true    # Automatically strip symbols from the binary.
-opt-level = "z" # Optimize for size.
+opt-level = 3
+codegen-units = 1
 lto = true
 panic = "abort"
 
@@ -35,8 +36,8 @@ panic = "abort"
 [profile.wasm]
 inherits = "release"
 
-# Benchmarks want speed, not size (the release profile optimizes for size with `opt-level = "z"`).
-# `cargo bench` uses this profile; normal `cargo test`/`cargo build` are unaffected.
+# `cargo bench` uses this profile; mirror release (speed-optimized) so bench numbers
+# reflect real release performance. Normal `cargo test`/`cargo build` are unaffected.
 [profile.bench]
 opt-level = 3
 lto = true

@@ -1098,12 +1098,14 @@ impl<'gc> VM<'gc> {
     }
 
     /// push value to stack
+    #[inline]
     pub(crate) fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
         VM::push_raw(ep, value);
         self.stack_count += 1;
     }
 
     /// push value to stack without stack adjustment (convenience for mutable reference hiccups)
+    #[inline]
     fn push_raw<'e>(ep: &mut Ephemeral<'e, 'gc>, value: Value<'gc>) {
         devout!(" | push: {}", value);
         unsafe { ep.ip.write(value) };
@@ -1238,6 +1240,7 @@ impl<'gc> VM<'gc> {
     }
 
     /** pop and return top of stack */
+    #[inline]
     fn pop(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
         self.stack_count -= 1;
         unsafe { ep.ip = ep.ip.sub(1) };
@@ -1306,12 +1309,14 @@ impl<'gc> VM<'gc> {
     }
 
     /** Look and get immutable reference to top of stack */
+    #[inline]
     fn peek(&self, ep: &mut Ephemeral<'_, 'gc>) -> &Value<'gc> {
         // self.stack.last()
         unsafe { &*ep.ip.sub(1) }
     }
 
     /** Look and get mutable reference to top of stack */
+    #[inline]
     fn peek_mut(&self, ep: &mut Ephemeral<'_, 'gc>) -> &mut Value<'gc> {
         unsafe { &mut *ep.ip.sub(1) }
     }
@@ -2496,6 +2501,7 @@ impl<'gc> VM<'gc> {
 
     // TODO is having a default empty chunk cheaper?
     /** We're operating on the assumption a chunk is always present when using this */
+    #[inline]
     fn get_chunk<'a>(frame: &'a CallFrame<'gc>) -> &'a crate::chunk::Chunk<'gc> {
         // Route through the effective prototype so a hot-swapped body's code and
         // constants are used (stage 2). `proto` equals the closure's prototype
@@ -2510,6 +2516,7 @@ impl<'gc> VM<'gc> {
     //     ep.ip = unsafe { self.stack.as_mut_ptr() };
     // }
 
+    #[inline]
     fn is_truthy(v: &Value) -> bool {
         match v {
             Value::Bool(b) => *b,
@@ -2537,6 +2544,7 @@ impl<'gc> VM<'gc> {
         }
     }
 
+    #[inline]
     fn is_less(l: &Value, r: &Value) -> Result<bool, SiltError> {
         Ok(match (l, r) {
             (Value::Number(left), Value::Number(right)) => left < right,
@@ -2554,6 +2562,7 @@ impl<'gc> VM<'gc> {
         })
     }
 
+    #[inline]
     fn is_greater(l: &Value, r: &Value) -> Result<bool, SiltError> {
         Ok(match (l, r) {
             (Value::Number(left), Value::Number(right)) => left > right,
