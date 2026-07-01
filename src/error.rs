@@ -369,6 +369,57 @@ impl ErrorOut {
             None => SiltError::Unknown,
         }
     }
+
+    /// Render every error as a message + source snippet, given the original source
+    /// string. `ErrorOut.source` holds the chunk *name*, not the code, so the caller
+    /// must supply the source — which is the point: the VM may have run elsewhere.
+    pub fn snippet(&self, source: &str) -> String {
+        self.errors
+            .iter()
+            .map(|e| e.snippet(source))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+}
+
+impl ErrorTuple {
+    /// This error's message plus a source snippet with a caret under its location.
+    pub fn snippet(&self, source: &str) -> String {
+        format!(
+            "error: {} (line {}, col {})\n{}",
+            self.code, self.location.0, self.location.1,
+            error_snippet(source, self.location)
+        )
+    }
+}
+
+/// Render a one-line source snippet pointing at `location` (1-indexed line, col): the
+/// offending line with a caret beneath the column.
+///
+/// This is a standalone helper so a caller that still holds the source can produce a
+/// snippet for an error raised elsewhere — e.g. a VM running on another thread that no
+/// longer has the source. It degrades gracefully when the location is out of range.
+///
+/// ```text
+///  3 | local c = )
+///    |           ^
+/// ```
+pub fn error_snippet(source: &str, location: TokenCell) -> String {
+    let (line, col) = location;
+    let text = match line.checked_sub(1).and_then(|i| source.lines().nth(i)) {
+        Some(t) => t,
+        None => return format!("  (line {} not in source)", line),
+    };
+    let gutter = line.to_string();
+    let pad = " ".repeat(gutter.len());
+    // Echo the line's leading characters as the caret indent (tabs stay tabs) so the
+    // caret aligns under tab- or space-indented code.
+    let indent: String = text
+        .chars()
+        .take(col.saturating_sub(1))
+        .map(|c| if c == '\t' { '\t' } else { ' ' })
+        .collect();
+    format!("{} | {}\n{} | {}^", gutter, text, pad, indent)
 }
 
 impl From<Vec<ErrorTuple>> for SiltError {

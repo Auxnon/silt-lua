@@ -19,7 +19,7 @@ pub extern crate gc_arena;
 
 
 pub use self::{
-    compiler::Compiler, error::SiltError as LuaError, lua::Lua, lua::VM,
+    compiler::Compiler, error::error_snippet, error::SiltError as LuaError, lua::Lua, lua::VM,
     value::ExVal, value::Value,
 };
 
