@@ -230,6 +230,11 @@ pub struct FunctionObject<'chnk> {
     /// lexer token during `block()` compilation, giving the exact closing line of
     /// the function body for hotswap range detection.  Defaults to 0.
     pub end_line: usize,
+    /// Index of the source this function object was compiled from, assigned by the
+    /// compiler and shared by the root chunk and every nested function compiled in
+    /// the same pass. A runtime error stamps this onto the `ErrorOut` so the caller
+    /// can look up the originating source. `usize::MAX` = untracked.
+    pub source_index: usize,
     /// Hot-swap redirect cell (stage 2). `None` normally. When a function body is
     /// hot-swapped, this *shared* prototype's cell is set to the newly-compiled
     /// prototype; because every live closure of a definition points at the same
@@ -257,6 +262,7 @@ impl<'chnk> FunctionObject<'chnk> {
             varidic_index: 0,
             start_line: 0,
             end_line: 0,
+            source_index: crate::error::SOURCE_INDEX_UNKNOWN,
             #[cfg(feature = "hot-swap")]
             swap: RefLock::new(None),
         }

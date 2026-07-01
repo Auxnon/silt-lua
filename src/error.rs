@@ -337,7 +337,18 @@ impl Default for &ErrorTuple {
 pub struct ErrorOut {
     pub errors: Vec<ErrorTuple>,
     pub source: Option<String>,
+    /// Index of the compiled source this error came from, as assigned by the
+    /// compiler at compile time and carried on every `FunctionObject`. Lets a
+    /// caller that stored sources by index look up the exact source to snippet
+    /// against — even for a runtime error raised long after compilation, in a
+    /// nested function from a different source than the one currently running.
+    /// `usize::MAX` means "unknown / not tracked".
+    pub source_index: usize,
 }
+
+/// Sentinel `source_index` meaning the source was not tracked (e.g. errors raised
+/// before any chunk context exists).
+pub const SOURCE_INDEX_UNKNOWN: usize = usize::MAX;
 
 impl ToString for ErrorOut {
     fn to_string(&self) -> String {

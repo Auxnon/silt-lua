@@ -2514,6 +2514,10 @@ impl<'gc> VM<'gc> {
                     code: e,
                     location: frame.get_loc_by_count(self.stack_count),
                 };
+                // The frame that faulted carries the source index of the code it was
+                // compiled from (a nested closure keeps its defining source's index,
+                // not the caller's). Copy it out before `frames` is borrowed again.
+                let faulted_source_index = frame.proto.source_index;
                 let stack = frames
                     .iter()
                     .map(|f| f.function.function.name.as_deref().unwrap_or("~"))
@@ -2525,6 +2529,7 @@ impl<'gc> VM<'gc> {
                 Err(ErrorOut {
                     errors: vec![t],
                     source: Some(stack),
+                    source_index: faulted_source_index,
                 })
             }
         }
@@ -2659,6 +2664,7 @@ impl<'gc> VM<'gc> {
                         location: (0, 0),
                     }],
                     source,
+                    source_index: crate::error::SOURCE_INDEX_UNKNOWN,
                 })
             }
         };
@@ -2679,6 +2685,7 @@ impl<'gc> VM<'gc> {
                     location: (0, 0),
                 }],
                 source,
+                source_index: crate::error::SOURCE_INDEX_UNKNOWN,
             }),
         }
         // Ok(ExVal::Nil)

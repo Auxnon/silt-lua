@@ -430,6 +430,14 @@ pub struct Compiler {
     /// Used by `build_function` to record the precise closing line of a function
     /// body for hotswap range detection.
     last_end_line: usize,
+    /// Monotonic counter handing out a fresh source index to each top-level
+    /// `compile()` call. Persists across compiles (the same `Compiler` is reused),
+    /// so every distinct source the host feeds in gets a unique, stable index.
+    source_counter: usize,
+    /// The source index assigned to the compile currently in flight. Every
+    /// `FunctionObject` produced in this pass (root and nested closures) is stamped
+    /// with it, so a runtime error in any of them reports the right source.
+    current_source_index: usize,
 }
 
 impl Compiler {
@@ -473,6 +481,8 @@ impl Compiler {
             expected_multi: 0,
             can_multivar_set: true,
             last_end_line: 0,
+            source_counter: 0,
+            current_source_index: crate::error::SOURCE_INDEX_UNKNOWN,
         }
     }
 
@@ -1082,8 +1092,15 @@ fn set_trailing_vararg(&mut self,bool: bool){
                 Err(e) => println!("err {}", e),
             });
         }
+        // Hand this compile a fresh source index and record it as the "current"
+        // one so every nested FunctionObject::new below stamps the same value.
+        let source_index = self.source_counter;
+        self.source_counter += 1;
+        self.current_source_index = source_index;
+
         let lexer = Lexer::new(source);
         let mut body = FunctionObject::new(to_op_string(name), true);
+        body.source_index = source_index;
         let mut iter = lexer.peekable();
 
         while iter.peek().is_some() {
@@ -1127,6 +1144,8 @@ fn set_trailing_vararg(&mut self,bool: bool){
             Err(ErrorOut {
                 errors: self.pop_errors(),
                 source: to_op_string(name),
+                // `compile()` just assigned this to the failed source.
+                source_index: self.current_source_index,
             })
         }
     }
@@ -1888,6 +1907,9 @@ fn build_function<'c>(
     devnote!(this it "build_function");
     let mut f2 = FunctionObject::new(Some(ident), is_script);
     f2.start_line = start_line;
+    // Nested functions share the enclosing compile's source index so a runtime
+    // error inside them resolves back to the source they were written in.
+    f2.source_index = this.current_source_index;
     let fr2 = &mut f2;
     // this.swap_function(&mut sidelined_func);
     // swap(f, &mut sidelined_func);
@@ -2745,6 +2767,7 @@ fn build_arrow_function<'c>(
     expect_token!(this it ArrowFunction); // '->'
     let mut f2 = FunctionObject::new(Some("".to_owned()), false);
     f2.start_line = start_line;
+    f2.source_index = this.current_source_index;
     let fr2 = &mut f2;
     begin_scope(this);
     begin_functional_scope(this);
