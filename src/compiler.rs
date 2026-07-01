@@ -3985,6 +3985,20 @@ fn call<'c>(
     Ok(())
 }
 
+/// Emit the getter for the callee identifier that is the current token. Shared by
+/// the string/table call-sugar paths, which (unlike the `(...)` path via
+/// `named_variable`) must push the callee themselves before the single argument.
+fn emit_sugar_callee(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    let start = this.current_location;
+    let get = match this.copy_store()? {
+        Token::Identifier(ident) => resolve_etters(this, f, it, ident).1,
+        // `variable` only routes identifiers here.
+        _ => unreachable!(),
+    };
+    this.emit(f, get, start);
+    Ok(())
+}
+
 fn call_table<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -3992,17 +4006,20 @@ fn call_table<'c>(
     it: &mut Peekable<Lexer>,
     can_assign: bool,
 ) -> Catch {
+    // Current token is the callee identifier; push it, then advance onto `{` and
+    // build the table literal as the single argument.
+    emit_sugar_callee(this, f, it)?;
     let start = this.current_location;
+    this.store(it); // current = `{`
 
     this.set_arg_mode(true);
     this.set_can_multivar_set(false);
 
-    this.eat(it);
     tabulate(this, mc, f, it, can_assign)?;
 
     this.set_arg_mode(false);
     this.set_can_multivar_set(true);
-    this.emit(f, OpCode::CALL(1, 0,false), start);
+    this.emit(f, OpCode::CALL(1, 0, false), start);
     Ok(())
 }
 
@@ -4013,16 +4030,20 @@ fn call_string<'c>(
     it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
+    // Current token is the callee identifier; push it, then advance onto the string
+    // literal and emit it as the single argument.
+    emit_sugar_callee(this, f, it)?;
     let start = this.current_location;
+    this.store(it); // current = the string literal
 
     this.set_arg_mode(true);
     this.set_can_multivar_set(false);
 
-    expression_single(this, mc, f, it, false)?;
+    string(this, mc, f, it, false)?;
 
     this.set_arg_mode(false);
     this.set_can_multivar_set(true);
-    this.emit(f, OpCode::CALL(1, 0,false), start);
+    this.emit(f, OpCode::CALL(1, 0, false), start);
     Ok(())
 }
 
