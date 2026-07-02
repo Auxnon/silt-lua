@@ -3577,9 +3577,7 @@ fn tabulate<'c>(
                     false
                 }
             } {
-                println!("{}", "START TABLE FN".on_bright_cyan());
                 expression_single(this, mc, f, it, false)?;
-                println!("{}", "END TABLE FN".on_bright_cyan());
                 this.emit_at(f, OpCode::TABLE_INSERT { offset: count });
             } else {
                 count += 1;
