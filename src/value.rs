@@ -724,7 +724,9 @@ impl From<f32> for Value<'_> {
 impl From<Value<'_>> for f32 {
     fn from(value: Value<'_>) -> Self {
         match value {
-            Value::Number(f) => f.max(f32::MAX as f64).min(f32::MIN as f64) as f32,
+            // clamp into f32's finite range: max(MIN) then min(MAX). The bounds
+            // were previously swapped, collapsing every Number to f32::MIN.
+            Value::Number(f) => f.max(f32::MIN as f64).min(f32::MAX as f64) as f32,
             Value::Integer(i) => i as f32,
             // TODO Value::String()
             _ => 0.,
@@ -735,7 +737,7 @@ impl From<Value<'_>> for f32 {
 impl From<&Value<'_>> for f32 {
     fn from(value: &Value<'_>) -> Self {
         match value {
-            Value::Number(f) => (*f).max(f32::MAX as f64).min(f32::MIN as f64) as f32,
+            Value::Number(f) => (*f).max(f32::MIN as f64).min(f32::MAX as f64) as f32,
             Value::Integer(i) => *i as f32,
             // TODO Value::String()
             _ => 0.,
