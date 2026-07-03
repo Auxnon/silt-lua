@@ -860,12 +860,15 @@ impl From<String> for Value<'_> {
 }
 impl From<Value<'_>> for String {
     fn from(val: Value) -> Self {
-        val.to_string()
+        // NOT to_string(): Value's Display quotes strings (`"foo"`), which would
+        // leak the delimiters into host-side String values (native fn params,
+        // texture/asset names, etc). coerce_string() yields the raw content.
+        val.coerce_string()
     }
 }
 impl From<&Value<'_>> for String {
     fn from(val: &Value) -> Self {
-        val.to_string()
+        val.coerce_string()
     }
 }
 impl From<ExVal> for String {
