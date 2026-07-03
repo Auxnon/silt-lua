@@ -354,11 +354,15 @@ test binary.
   work that is WIP on this branch (§1.1 neighbourhood). High severity — it is a hard crash on
   very common code.
 
-### 2.9 `u64 → Value → u64` conversion overflow
-- **Repro:** `tests/value_macro_test.rs::test_macro_conversions` — `999999u64` round-trips to
-  `18446744073709551615` (`u64::MAX`).
-- **Root cause:** the `From<u64>`/`Into<u64>` path in `src/value.rs` mishandles the unsigned →
-  `i64` storage round-trip. Low severity (Rust-embedding API only), but it is a real bug.
+### 2.9 `u64 → Value → u64` conversion overflow ✅ FIXED
+- **Was:** `999999u64` round-tripped to `u64::MAX`.
+- **Root cause (both directions, `src/value.rs`):** forward `From<u64>`/`From<usize>` used
+  `value.max(i64::MAX)` (forced small values *up*) — should be `.min`; and the reverse
+  `from_val!` integer branch clamped with `Self::MAX as i64`, which wraps to `-1` for
+  `u64`/`usize`, collapsing every value to `-1` → `u64::MAX`.
+- **Fix:** forward `.max` → `.min`; reverse clamp widened to `i128` so `Self::MAX` can't wrap.
+  `test_macro_conversions` un-ignored + extended with `usize` and above-`i64::MAX` saturation
+  cases. Low severity (Rust-embedding API only, not a hot path).
 
 ---
 

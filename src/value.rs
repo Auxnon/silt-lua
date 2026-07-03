@@ -566,7 +566,13 @@ macro_rules! from_val {
                         f.max(Self::MIN as f64).min(Self::MAX as f64).round() as Self
                     }
 
-                    Value::Integer(i) => i.max(Self::MIN as i64).min(Self::MAX as i64) as Self,
+                    Value::Integer(i) => {
+                        // Clamp in i128 so a wide unsigned MAX can't wrap: `Self::MAX
+                        // as i64` overflows to -1 for u64/usize, which collapsed every
+                        // value to -1 → u64::MAX.
+                        let hi = (Self::MAX as i128).min(i64::MAX as i128);
+                        (i as i128).max(Self::MIN as i128).min(hi) as Self
+                    }
                     Value::Bool(b) => {
                         if b {
                             Self::MAX
@@ -585,7 +591,11 @@ macro_rules! from_val {
                     Value::Number(f) => {
                         (*f).max(Self::MIN as f64).min(Self::MAX as f64).round() as Self
                     }
-                    Value::Integer(i) => (*i).max(Self::MIN as i64).min(Self::MAX as i64) as Self,
+                    Value::Integer(i) => {
+                        // See the by-value arm: clamp in i128 to avoid Self::MAX wrap.
+                        let hi = (Self::MAX as i128).min(i64::MAX as i128);
+                        (*i as i128).max(Self::MIN as i128).min(hi) as Self
+                    }
                     Value::Bool(b) => {
                         if *b {
                             Self::MAX
@@ -689,7 +699,9 @@ from_val!(u32);
 
 impl From<u64> for Value<'_> {
     fn from(value: u64) -> Self {
-        Value::Integer(value.max(i64::MAX as u64) as i64)
+        // Clamp values that EXCEED i64::MAX down (was `.max`, which forced small
+        // values UP to i64::MAX).
+        Value::Integer(value.min(i64::MAX as u64) as i64)
     }
 }
 
@@ -699,7 +711,8 @@ from_val!(u64);
 
 impl From<usize> for Value<'_> {
     fn from(value: usize) -> Self {
-        Value::Integer(value.max(i64::MAX as usize) as i64)
+        // Clamp values that EXCEED i64::MAX down (was `.max`).
+        Value::Integer(value.min(i64::MAX as usize) as i64)
     }
 }
 
