@@ -2675,25 +2675,45 @@ impl<'gc> VM<'gc> {
             }
         };
 
-        let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr());
-        self.stack_count += res.len();
-        match self.external_functions.get(u) {
-            Some(f) => {
-                for param in res {
-                    VM::push_raw(&mut ep, param);
-                }
-
-                self.run(mc, *f)
+        let obj = match self.external_functions.get(u) {
+            Some(f) => *f,
+            None => {
+                return Err(ErrorOut {
+                    errors: vec![ErrorTuple {
+                        code: SiltError::Unknown,
+                        location: (0, 0),
+                    }],
+                    source,
+                    source_index: crate::error::SOURCE_INDEX_UNKNOWN,
+                })
             }
-            None => Err(ErrorOut {
-                errors: vec![ErrorTuple {
-                    code: SiltError::Unknown,
-                    location: (0, 0),
-                }],
-                source,
-                source_index: crate::error::SOURCE_INDEX_UNKNOWN,
-            }),
+        };
+
+        // A loaded chunk is a vararg function, so runtime args arrive as `...`. Lay
+        // them out like a variadic call: the args occupy the vararg region BELOW the
+        // frame base, and the function value sits at the frame base (local_stack[0]).
+        // `frame.call_arity = n` (with the chunk's varidic_index 0) is what makes
+        // `VARARG`/`get_varargs` surface them. We build the frame and run `process`
+        // directly rather than going through `execute`, which re-seats the stack at
+        // the base and hardcodes call_arity = 0 (dropping the args).
+        let n = res.len();
+        let base = self.stack.as_mut_ptr();
+        let mut ep = Ephemeral::new(mc, base);
+        for param in res {
+            VM::push_raw(&mut ep, param);
         }
+        let frame_top = ep.ip; // base + n — the args are the vararg overflow below this
+        VM::push_raw(&mut ep, Value::Function(obj)); // frame base / self slot
+        self.stack_count = n + 1;
+        self.body = obj;
+        let closure = Gc::new(mc, Closure::new(obj, vec![]));
+        let mut frame = CallFrame::new(closure, 0, n.min(u8::MAX as usize) as u8, 0);
+        frame.ip = obj.chunk.code.as_ptr();
+        frame.local_stack = frame_top;
+        let out = self.process(&mut ep, vec![frame]);
+        // Top-level entry: leave the stack empty for the next call regardless of outcome.
+        self.stack_count = 0;
+        out
         // Ok(ExVal::Nil)
 
         // if !params.is_empty() {

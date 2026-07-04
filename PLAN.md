@@ -364,20 +364,20 @@ test binary.
   `test_macro_conversions` un-ignored + extended with `usize` and above-`i64::MAX` saturation
   cases. Low severity (Rust-embedding API only, not a hot path).
 
-### 2.14 `call_fn` / `call_with_params` drops runtime arguments 🔴
-- **Repro (embedding API):** load a function taking params (e.g. `draw(w, h)`) via `load_fn`,
-  then `lua.call_with_params(None, idx, (w, h))`. The callee does not receive `w, h`.
-- **Root cause (`src/lua.rs`):** `call_fn` opens an `Ephemeral` at the stack base, does
-  `self.stack_count += res.len()`, and pushes the params at `base[0..]`. It then calls
-  `run → execute`, which opens a *fresh* `Ephemeral` at the base, sets `frame.local_stack =
-  base`, and `push(Value::Function(object))` — overwriting `base[0]` (the first arg) and
-  leaving the frame's param slots misaligned with what `call_fn` laid down. 0-arg callbacks
-  (loop/main/drop) are unaffected (nothing to lose), which is why it hasn't surfaced.
-- **Not yet fixed / untested:** no test or example exercises `call_fn` with args. A real fix
-  means `execute` should honor a pre-populated arg region (or `call_fn` should set up the
-  frame the way the `CALL` opcode does: function value on top, args below, `local_stack`/
-  `stack_snapshot` consistent) rather than re-seating the base. Needed before host code can
-  pass runtime args to Lua callbacks (e.g. resize → `draw(w,h)`).
+### 2.14 `call_fn` / `call_with_params` drops runtime arguments ✅ FIXED
+- **Was:** args passed to a loaded chunk were lost — `call_fn` pushed them at `base[0..]`, but
+  `run → execute` re-seated a fresh `Ephemeral` at the base and `push(Value::Function)`
+  overwrote `base[0]`, with `execute` also hardcoding `call_arity = 0`.
+- **Fix (`src/lua.rs::call_fn`):** a loaded chunk is a vararg function, so args now arrive as
+  `...`. `call_fn` builds the frame itself (instead of via `execute`): args go in the vararg
+  region *below* the frame base, the function value sits at the frame base, and
+  `frame.call_arity = n` — which is what `VARARG`/`get_varargs` read. Then it runs `process`
+  directly and resets `stack_count` after (no drift across repeated calls). 0-arg callbacks
+  (loop/main/drop) are unchanged. Tests: `tests/call_fn_args.rs` (varargs delivery, missing→nil,
+  ignored args, repeated game-loop calls).
+- **Still open (separate, pre-existing):** `return ...` at chunk top level returns the function
+  value instead of forwarding the varargs — a return-position multi-value gap, not the arg-loss
+  bug. Reading args via `local w, h = ...` (the normal callback pattern) works.
 
 ---
 
