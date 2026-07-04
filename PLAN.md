@@ -364,6 +364,21 @@ test binary.
   `test_macro_conversions` un-ignored + extended with `usize` and above-`i64::MAX` saturation
   cases. Low severity (Rust-embedding API only, not a hot path).
 
+### 2.14 `call_fn` / `call_with_params` drops runtime arguments 🔴
+- **Repro (embedding API):** load a function taking params (e.g. `draw(w, h)`) via `load_fn`,
+  then `lua.call_with_params(None, idx, (w, h))`. The callee does not receive `w, h`.
+- **Root cause (`src/lua.rs`):** `call_fn` opens an `Ephemeral` at the stack base, does
+  `self.stack_count += res.len()`, and pushes the params at `base[0..]`. It then calls
+  `run → execute`, which opens a *fresh* `Ephemeral` at the base, sets `frame.local_stack =
+  base`, and `push(Value::Function(object))` — overwriting `base[0]` (the first arg) and
+  leaving the frame's param slots misaligned with what `call_fn` laid down. 0-arg callbacks
+  (loop/main/drop) are unaffected (nothing to lose), which is why it hasn't surfaced.
+- **Not yet fixed / untested:** no test or example exercises `call_fn` with args. A real fix
+  means `execute` should honor a pre-populated arg region (or `call_fn` should set up the
+  frame the way the `CALL` opcode does: function value on top, args below, `local_stack`/
+  `stack_snapshot` consistent) rather than re-seating the base. Needed before host code can
+  pass runtime args to Lua callbacks (e.g. resize → `draw(w,h)`).
+
 ---
 
 ## 3. Missing standard library
