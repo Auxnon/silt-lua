@@ -32,35 +32,26 @@ pub mod vec;
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 
-#[cfg(target_arch = "wasm32")]
+// Standalone JS entry points for using silt directly from the browser (e.g. a
+// web playground / LSP). These are gated on the `wasm` feature — NOT on
+// target_arch — so that embedding crates (e.g. Petrichor) can build silt for
+// wasm32 without dragging in wasm-bindgen. The `lsp` JS export lives in
+// compiler.rs; here we expose `run` and the `jprintln` console bridge.
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 extern "C" {
     pub fn jprintln(s: &str);
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn run(source: &str) -> String {
     let mut compiler = Compiler::new();
     let mut lua = Lua::new_with_standard();
-    match lua.run(source, &mut compiler) {
+    match lua.run(None, source, &mut compiler) {
         Ok(v) => v.to_string(),
-        Err(e) => e[0].to_string(),
+        Err(e) => e.errors[0].to_string(),
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-pub fn lsp(source: &str, format: Option<bool>) -> Result<JsValue, JsError> {
-    let mut compiler = Compiler::new();
-    let obj = compiler.lsp(source, format.unwrap_or(false));
-    Ok(serde_wasm_bindgen::to_value(&obj)?)
-    // let mut lua = Lua::new_with_standard();
-    // match lua.run(source, &mut compiler) {
-    //     Ok(v) => Ok(v.to_string().into()),
-    //     Err(e) => Err(JsError::new(&e[0].to_string())),
-    // }
-    // Err(JsError::new("failed to run LSP"))
 }
 
 #[allow(unused_macros)]

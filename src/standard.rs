@@ -36,8 +36,11 @@ pub fn print<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> In
         .join("\t");
     println!("> {}", s);
 
-    #[cfg(target_arch = "wasm32")]
-    crate::jprintln(s.as_str());
+    // Route to the JS console when built as a standalone wasm module.
+    #[cfg(feature = "wasm")]
+    unsafe {
+        crate::jprintln(s.as_str());
+    }
 
     Ok(Value::Nil)
 }

@@ -1050,6 +1050,12 @@ impl<'gc> VM<'gc> {
         // let rstack = self.stack.as_ptr();
         #[cfg(feature = "dev-out")]
         object.chunk.print_chunk(&None);
+        // Each top-level execute is a fresh invocation on an empty stack (ep starts
+        // at the base, the root frame's snapshot is 0). stack_count must match, or
+        // it creeps up ~1 per call (the pushed function slot is never reclaimed)
+        // and after ~255 calls the position math runs off the [Value; 256] array,
+        // corrupting state and hanging the VM.
+        self.stack_count = 0;
         let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr() as *mut Value);
         self.body = object;
         // *root = new_body(mc, object.clone());
