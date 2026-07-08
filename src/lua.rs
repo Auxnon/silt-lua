@@ -670,6 +670,10 @@ pub struct VM<'gc> {
     userdata_stack: Option<UDVec>,
     /// Used to quickly run in-VM functions externally
     external_functions: Vec<Gc<'gc, FunctionObject<'gc>>>,
+    /// Reused buffer for marshalling a native call's `fn + args` off the stack, so each
+    /// native call doesn't heap-allocate a fresh Vec (see the CALL handler). Taken out
+    /// via `mem::take` during the call to avoid aliasing `&mut VM`, then restored.
+    arg_scratch: Vec<Value<'gc>>,
 }
 
 pub(crate) struct Ephemeral<'a, 'g> {
@@ -752,6 +756,7 @@ impl<'gc> VM<'gc> {
             userdata_registry: UserDataRegistry::new(),
             userdata_stack: Some(UDVec(vec![])),
             external_functions: vec![],
+            arg_scratch: Vec::with_capacity(8),
         }
     }
 
@@ -2287,15 +2292,32 @@ impl<'gc> VM<'gc> {
                             // self.push(Value::Function(f.clone())); // TODO this needs to store the function object itself somehow, RC?
                         }
                         Value::NativeFunction(_) => {
-                            // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
-                            // TODO get a reference instead of the a-pop-olypse
-                            // Use the resolved arity (`ar`) so spread `...` arguments
-                            // pop the actual count, not the compile-time placeholder.
-                            let mut args = self.popn(ep, ar + 1);
-                            // todo!("Hi there! we need to set arity of userdata functions to include self! At least this is hirting our abstraction, we could force it but that's dangerous! Let's perhas make userdata methods Option<Self>");
+                            // Move `fn + args` off the stack into a REUSED scratch buffer
+                            // (resolved arity `ar` so spread `...` pops the real count).
+                            // `mem::take` lifts it out of `self` so the native call can
+                            // hold `&mut VM` without aliasing it; moving (not cloning)
+                            // avoids String/Gc clones. No per-call heap allocation.
+                            let n = (ar + 1) as usize;
+                            let mut scratch = std::mem::take(&mut self.arg_scratch);
+                            scratch.clear();
+                            for _ in 0..n {
+                                self.stack_count -= 1;
+                                unsafe { ep.ip = ep.ip.sub(1) };
+                                scratch.push(unsafe { ep.ip.replace(Value::Nil) });
+                            }
+                            scratch.reverse();
 
-                            if let Value::NativeFunction(f) = args.remove(0) {
-                                let res = bubble!(f.f.call(self, ep.mc, &args));
+                            // scratch[0] is the function, scratch[1..] the args. Copy the
+                            // Gc (Copy) out so no borrow of `scratch` is held across the
+                            // call, letting us restore the buffer afterward.
+                            let f_gc = match &scratch[0] {
+                                Value::NativeFunction(f) => *f,
+                                _ => unreachable!(),
+                            };
+                            {
+                                let res = f_gc.f.call(self, ep.mc, &scratch[1..]);
+                                self.arg_scratch = scratch; // restore buffer for reuse
+                                let res = bubble!(res);
                                 // A native in trailing multiret position leaves ALL its
                                 // values and records where they start (like a Lua multiret
                                 // call), so the enclosing CALL can spread them.
@@ -2332,8 +2354,6 @@ impl<'gc> VM<'gc> {
                                         }
                                     }
                                 }
-                            } else {
-                                unreachable!();
                             }
                         }
                         _ => {

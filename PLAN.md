@@ -630,15 +630,21 @@ and multiple-returns/varargs are still WIP. The pragmatic path:
 a real win. Do not start the rewrite until both exist.
 
 ### 6.1 Robustness/efficiency wins for the current stack VM (do these regardless)
-- **PUC-Lua-style native-call ABI (deferred optimization).** Native functions currently take a
-  `Vec<Value>` of args (allocated by `popn` every call) and return `NativeReturn::{Single,Multi}`
-  (the `Multi` path heap-allocates a small `Vec` per call — e.g. once per `next` in a `pairs`
-  loop). The zero-allocation design, matching Lua's C API, is: pass args as a **slice of the VM
-  stack** (no copy in) and have the function **push results directly onto the stack, returning a
-  count** (no copy/alloc out). Requires threading the stack handle (`Ephemeral`/`ip`) into the
-  native ABI so functions can push. The current enum is byte-for-byte the size of a bare `Value`
-  and free on the single-value path, so this is **benchmark-gated** — adopt it when the bench
-  harness shows native-call/iteration-heavy code as hot, not before.
+- **Native-call arg marshalling — args-side DONE (2026-07).** `popn` used to heap-allocate a
+  fresh `Vec` for `fn + args` on **every** native call. Now the CALL handler moves them into a
+  **reused `arg_scratch` buffer** on the VM (`mem::take`-d out during the call to avoid aliasing
+  `&mut VM`, moved not cloned so no String/Gc clone, restored after). Measured on
+  `benches/interpreter.rs`: `native_call_1e6` **68 ms → 56 ms (~18%)**, `native_multi_1e6`
+  **84.5 ms → 78.5 ms (~7%)**. The single-return path is now allocation-free end to end (args
+  reused + `NativeReturn::Single` from Increment 1).
+- **Results-side push (optional remaining).** Multi-return native calls still allocate the
+  `NativeReturn::Multi(Vec)`. Eliminating it means the function **pushes results straight onto
+  the operand stack, returning a count** (Lua C API style) — the `to_native_return` seam is
+  already in place for this. It needs threading the stack handle (`Ephemeral`/`ip`) into the
+  native ABI and reconciling `ip` with `stack_count` after the push, so it's riskier for a
+  smaller, rarer gain. **Benchmark-gated:** adopt when multi-return native calls show up hot in a
+  real workload. Doing it behind an abstracted `push`/`take_arg` accessor also yields the
+  `safe`-feature (bounds-checked, no-`unsafe`) VM backend as a drop-in.
 - **Fixed-size, overflow-checked stack** instead of an unbounded `Vec` push/pop (SPEC asks for
   this) — predictable latency, no realloc spikes mid-frame.
 - **Stop pushing `Nil` on pop** (`src/lua.rs` has many "pushing nil is stupid" TODOs around
