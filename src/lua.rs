@@ -1903,6 +1903,18 @@ impl<'gc> VM<'gc> {
                 OpCode::EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
+                    // Userdata: consult `__eq` when both are userdata of distinct identity;
+                    // same object is always equal, and a missing `__eq` means not equal.
+                    if let (Value::UserData(a), Value::UserData(b)) = (&l, &r) {
+                        let eq = if Gc::ptr_eq(*a, *b) {
+                            true
+                        } else {
+                            let ud = *a;
+                            bubble!(self.ud_meta_bool(ep.mc, ud, MetaMethod::Eq, &[l.clone(), r.clone()]))
+                                .unwrap_or(false)
+                        };
+                        self.push(ep, Value::Bool(eq));
+                    } else {
                     // Lua only consults `__eq` when both operands are tables that are
                     // not the same object; a missing `__eq` falls back to raw (reference)
                     // equality rather than erroring.
@@ -1926,6 +1938,7 @@ impl<'gc> VM<'gc> {
                         }
                         None => self.push(ep, Value::Bool(Self::is_equal(&l, &r))),
                     }
+                    }
                 }
                 OpCode::NOT_EQUAL => {
                     let r = self.pop(ep);
@@ -1941,6 +1954,17 @@ impl<'gc> VM<'gc> {
                                 table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Lt);
                             self.push(ep, v);
                         }
+                        (Value::UserData(ud), rr) => {
+                            match bubble!(self.ud_meta_bool(
+                                ep.mc, ud, MetaMethod::Lt, &[Value::UserData(ud), rr.clone()]
+                            )) {
+                                Some(res) => self.push(ep, Value::Bool(res)),
+                                None => self.push(
+                                    ep,
+                                    Value::Bool(bubble!(Self::is_less(&Value::UserData(ud), &rr))),
+                                ),
+                            }
+                        }
                         (l, r) => self.push(ep, Value::Bool(bubble!(Self::is_less(&l, &r)))),
                     }
                 }
@@ -1952,6 +1976,17 @@ impl<'gc> VM<'gc> {
                             let v =
                                 table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Le);
                             self.push(ep, v);
+                        }
+                        (Value::UserData(ud), rr) => {
+                            match bubble!(self.ud_meta_bool(
+                                ep.mc, ud, MetaMethod::Le, &[Value::UserData(ud), rr.clone()]
+                            )) {
+                                Some(res) => self.push(ep, Value::Bool(res)),
+                                None => self.push(
+                                    ep,
+                                    Value::Bool(!bubble!(Self::is_greater(&Value::UserData(ud), &rr))),
+                                ),
+                            }
                         }
                         (l, r) => {
                             self.push(ep, Value::Bool(!bubble!(Self::is_greater(&l, &r))))
@@ -1969,6 +2004,17 @@ impl<'gc> VM<'gc> {
                                 table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Lt);
                             self.push(ep, v);
                         }
+                        (Value::UserData(ud), ll) => {
+                            match bubble!(self.ud_meta_bool(
+                                ep.mc, ud, MetaMethod::Lt, &[Value::UserData(ud), ll.clone()]
+                            )) {
+                                Some(res) => self.push(ep, Value::Bool(res)),
+                                None => self.push(
+                                    ep,
+                                    Value::Bool(bubble!(Self::is_less(&Value::UserData(ud), &ll))),
+                                ),
+                            }
+                        }
                         (rr, ll) => self.push(ep, Value::Bool(bubble!(Self::is_less(&rr, &ll)))),
                     }
                 }
@@ -1981,6 +2027,17 @@ impl<'gc> VM<'gc> {
                             let v =
                                 table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Le);
                             self.push(ep, v);
+                        }
+                        (Value::UserData(ud), ll) => {
+                            match bubble!(self.ud_meta_bool(
+                                ep.mc, ud, MetaMethod::Le, &[Value::UserData(ud), ll.clone()]
+                            )) {
+                                Some(res) => self.push(ep, Value::Bool(res)),
+                                None => self.push(
+                                    ep,
+                                    Value::Bool(!bubble!(Self::is_greater(&Value::UserData(ud), &ll))),
+                                ),
+                            }
                         }
                         (rr, ll) => {
                             self.push(ep, Value::Bool(!bubble!(Self::is_greater(&rr, &ll))))
@@ -3082,6 +3139,23 @@ impl<'gc> VM<'gc> {
     }
 
     /// Handle binary operations with UserData
+    /// Dispatch a comparison metamethod (`__eq`/`__lt`/`__le`) on a userdata, returning
+    /// `Some(bool)` (its result coerced to truthiness) if the metamethod exists, or
+    /// `None` if absent so the caller can fall back to raw/identity semantics.
+    pub(crate) fn ud_meta_bool(
+        &mut self,
+        mc: &Mutation<'gc>,
+        userdata: InnerUserData<'gc>,
+        op: MetaMethod,
+        args: &[Value<'gc>],
+    ) -> Result<Option<bool>, SiltError> {
+        match crate::userdata::vm_integration::call_meta_method(self, mc, userdata, op, args) {
+            Ok(v) => Ok(Some(Self::is_truthy(&v))),
+            Err(SiltError::MetaMethodMissing(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub(crate) fn handle_userdata_binary_op(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,

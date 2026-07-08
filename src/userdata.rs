@@ -973,6 +973,12 @@ impl UserData for TestEnt {
             Ok(Value::String(format!("[entity {}]", id)))
         });
 
+        // Comparison metamethods (trivial impls — ignore the other operand — that just
+        // prove `__eq`/`__lt`/`__le` dispatch through the comparison opcodes).
+        methods.add_meta_method(MetaMethod::Eq, |_vm, _mc, _this, _: ()| Ok(Value::Bool(true)));
+        methods.add_meta_method(MetaMethod::Lt, |_vm, _mc, _this, _: ()| Ok(Value::Bool(false)));
+        methods.add_meta_method(MetaMethod::Le, |_vm, _mc, _this, _: ()| Ok(Value::Bool(true)));
+
         // `__pairs(ent)` returns a stateless iterator over the entity's x/y/z fields.
         // The iterator closure captures the field values and, given the previous key
         // (the generic-for "control"), yields the next `(key, value)` or nil. This is

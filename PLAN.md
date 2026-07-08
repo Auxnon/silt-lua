@@ -333,10 +333,16 @@ test binary.
     now does clone-then-call; `lua_pairs` routes a userdata through `__pairs` (which returns the
     iterator fn; `pairs` supplies `(iter, ud, nil)`), erroring `MetaMethodMissing` if absent.
     `TestEnt` gained a `__pairs` over its x/y/z fields. Tests: `tests/userdata_pairs.rs`.
-    **Still stubbed (separate):** the `..`/`tostring`/binary-op call sites don't yet route to
-    `call_meta_method` (so `__concat`/`__tostring`/`__add` on userdata don't fire), and regular
-    userdata *methods* (`self.methods`) still aren't dispatched — the Rc seam makes both a
-    straightforward follow-up.
+  - **Metamethod coverage after the un-stub (2026-07):** on the working `call_meta_method`,
+    these userdata metamethods now dispatch — **arithmetic** (`__add`/`__sub`/… via the
+    `binary_op!` macro; was already routed, now functional), **`__concat`** (CONCAT opcode,
+    either operand), **`__tostring`** (`tostring()` + `print()`), **comparisons** `__eq`/`__lt`/
+    `__le` (EQUAL/LESS/LESS_EQUAL/GREATER/GREATER_EQUAL, with `>`/`>=` as swapped `<`/`<=`), plus
+    **`__pairs`**. Regular methods (`ud:m()`) and field get/set already worked. Tests:
+    `tests/userdata_metamethods.rs`. **Still TODO (documented tail, same Rc pattern):** `__call`
+    (calling a userdata), `__len` (`#ud`), `__unm` (unary `-`), `__index`/`__newindex` *metamethod*
+    fallback for keys not in the registered fields, and `__ipairs`. `NOT_EQUAL` (`~=`) does not
+    consult `__eq` for userdata *or* tables (pre-existing; `==` does) — wire alongside a table fix.
 
 ### 2.8 `goto` / labels buggy
 - **Repro:** `do goto skip ::skip:: end return 1` → `Expected identifier only inbetween label tokens '::'`.

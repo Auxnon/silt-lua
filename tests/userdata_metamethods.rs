@@ -33,6 +33,23 @@ fn concat_metamethod_userdata_right() {
 }
 
 #[test]
+fn comparison_metamethods() {
+    // TestEnt defines __eq (always true), __lt (always false), __le (always true).
+    // Distinct objects, so these exercise the metamethods (not identity).
+    assert_eq!(simple("local a=test_ent() local b=test_ent() return a == b"), ExVal::Bool(true));
+    assert_eq!(simple("local a=test_ent() local b=test_ent() return a < b"), ExVal::Bool(false));
+    assert_eq!(simple("local a=test_ent() local b=test_ent() return a <= b"), ExVal::Bool(true));
+    // `a > b` is evaluated as `b < a` → __lt → false.
+    assert_eq!(simple("local a=test_ent() local b=test_ent() return a > b"), ExVal::Bool(false));
+}
+
+#[test]
+fn equality_same_object_is_identity() {
+    // Same object short-circuits to true without consulting __eq.
+    assert_eq!(simple("local a=test_ent() return a == a"), ExVal::Bool(true));
+}
+
+#[test]
 fn arithmetic_metamethod_absent_errors() {
     // TestEnt defines no __add; the binary-op path reports a clean error rather than
     // silently coercing (confirms userdata arithmetic routes to the metamethod path).
