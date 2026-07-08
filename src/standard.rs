@@ -368,15 +368,32 @@ pub fn lua_next<'lua>(
 
 /// `pairs(t)` → `(next, t, nil)` — the generic-for iteration triple.
 pub fn lua_pairs<'lua>(
-    _: &mut VM<'lua>,
+    vm: &mut VM<'lua>,
     mc: &Mutation<'lua>,
     args: &[Value<'lua>],
 ) -> Result<Vec<Value<'lua>>, SiltError> {
-    let t = match args.first() {
-        Some(t @ Value::Table(_)) => t.clone(),
-        _ => return Err(SiltError::Custom("bad argument #1 to 'pairs' (table expected)".into())),
-    };
-    Ok(vec![make_native_multi(mc, lua_next), t, Value::Nil])
+    match args.first() {
+        Some(t @ Value::Table(_)) => Ok(vec![make_native_multi(mc, lua_next), t.clone(), Value::Nil]),
+        Some(Value::UserData(ud)) => {
+            // A userdata is iterable iff it defines `__pairs`. Lua 5.2/5.3 semantics:
+            // `pairs(ud)` calls `__pairs(ud)`. Our metamethods are single-return, so
+            // `__pairs` yields the iterator FUNCTION and `pairs` supplies the state/
+            // control itself: `(iter, ud, nil)`. `call_meta_method` errors if absent.
+            let ud_gc = *ud;
+            let ud_val = Value::UserData(ud_gc);
+            let iter = crate::userdata::vm_integration::call_meta_method(
+                vm,
+                mc,
+                ud_gc,
+                crate::userdata::MetaMethod::Pairs,
+                &[ud_val.clone()],
+            )?;
+            Ok(vec![iter, ud_val, Value::Nil])
+        }
+        _ => Err(SiltError::Custom(
+            "bad argument #1 to 'pairs' (table or userdata with __pairs expected)".into(),
+        )),
+    }
 }
 
 /// The iterator returned by `ipairs`: `iter(t, i)` → `(i+1, t[i+1])` or `nil`.

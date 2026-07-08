@@ -38,9 +38,12 @@ pub trait UserData: Sized + Send + 'static {
     fn get_id(&self) -> usize;
 }
 
-// Simplified method signature that avoids complex lifetime issues
-type UserDataMethodClosure<'gc> =
-    Box<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> InnerResult<'gc> + 'gc>;
+// Simplified method signature that avoids complex lifetime issues.
+// `Rc` (not `Box`) so a stored closure can be cloned out of the registry, releasing
+// the `&VM` borrow, and then invoked with `&mut VM` — the closure needs `&mut VM`
+// but lives inside `VM.userdata_registry`, so a direct call would be a self-borrow.
+pub type UserDataMethodClosure<'gc> =
+    Rc<dyn Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> InnerResult<'gc> + 'gc>;
 
 pub trait MethodHandler<'gc, T, A, R> {
     fn call_method<'a>(
@@ -159,6 +162,9 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
         index: usize,
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc>;
+    /// Clone out the metamethod closure at `index` (a cheap `Rc` clone) so the caller
+    /// can drop its borrow on the registry before invoking it with `&mut VM`.
+    fn get_meta_method(&self, index: usize) -> Option<UserDataMethodClosure<'gc>>;
     fn get_field(
         &self,
         vm: &VM<'gc>,
@@ -343,6 +349,10 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         Err(SiltError::UDNoMethodRef)
     }
 
+    fn get_meta_method(&self, index: usize) -> Option<UserDataMethodClosure<'gc>> {
+        self.meta_methods.get(&index).cloned()
+    }
+
     fn get_field(
         &self,
         vm: &VM<'gc>,
@@ -415,6 +425,12 @@ impl<'gc> UserDataMap<'gc> {
         args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
         self.data.call_meta_method(vm, mc, ud, index, args)
+    }
+
+    /// Clone out the metamethod closure at `index` (cheap `Rc` clone). See the trait
+    /// method — lets the VM release its registry borrow before calling with `&mut VM`.
+    pub fn get_meta_method(&self, index: usize) -> Option<UserDataMethodClosure<'gc>> {
+        self.data.get_meta_method(index)
     }
 
     pub fn get_field(
@@ -495,7 +511,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         let metamethod: MetaMethod = name.into();
         self.meta_methods.insert(
             metamethod.as_ind(),
-            Box::new(move |vm, mc, args| {
+            Rc::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
                     match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
@@ -529,7 +545,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
     {
         self.methods.insert(
             name.to_string(),
-            Box::new(move |vm, mc, args| {
+            Rc::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
                     match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
@@ -578,7 +594,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
     {
         self.methods.insert(
             name.to_string(),
-            Box::new(move |vm, mc, args| {
+            Rc::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
                     match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
@@ -955,6 +971,28 @@ impl UserData for TestEnt {
         methods.add_meta_method("__concat", |_vm, _mc, this, _: ()| {
             let id = if let Some(ud) = this { ud.get_id() } else { 0 };
             Ok(Value::String(format!("[entity {}]", id)))
+        });
+
+        // `__pairs(ent)` returns a stateless iterator over the entity's x/y/z fields.
+        // The iterator closure captures the field values and, given the previous key
+        // (the generic-for "control"), yields the next `(key, value)` or nil. This is
+        // the end-to-end proof that `pairs(userdata)` dispatches `__pairs` (§3 / §6.1).
+        methods.add_meta_method(MetaMethod::Pairs, |_vm, mc, this, _: ()| {
+            let (x, y, z) = this.map(|e| (e.x, e.y, e.z)).unwrap_or((0.0, 0.0, 0.0));
+            let iter = move |_vm: &mut VM<'gc>, _mc: &Mutation<'gc>, args: &[Value<'gc>]| {
+                let control = args.get(1).cloned().unwrap_or(Value::Nil);
+                let (k, v) = match &control {
+                    Value::Nil => ("x", x),
+                    Value::String(s) if s.as_str() == "x" => ("y", y),
+                    Value::String(s) if s.as_str() == "y" => ("z", z),
+                    _ => return Ok(vec![Value::Nil]),
+                };
+                Ok(vec![Value::String(k.to_string()), Value::Number(v)])
+            };
+            Ok(Value::NativeFunction(Gc::new(
+                mc,
+                WrappedFn::new(Rc::new(NativeFunctionRaw::new_multi(iter))),
+            )))
         });
 
         // methods.add_method_mut::<VariadicMaker<Value<'gc>>, _, _>("pos", |_, _, this, arg: VariadicMaker<Value<'gc>>| {
@@ -1410,24 +1448,28 @@ pub mod vm_integration {
     //     Err(SiltError::UDNoMap)
     // }
 
-    /// Call a metamethod on a UserData value
+    /// Call a metamethod on a UserData value. Resolves the closure from the registry,
+    /// clones it out (cheap `Rc`) to release the borrow on `vm.userdata_registry`, then
+    /// invokes it with `&mut VM`. `args[0]` must be the userdata Value itself — the
+    /// stored closure re-borrows it internally via `apply_userdata_mut`, so we must NOT
+    /// hold a borrow across the call. Errors with `MetaMethodMissing` if absent.
     pub fn call_meta_method<'gc>(
-        vm: &VM<'gc>,
-        reg: &UserDataRegistry<'gc>,
+        vm: &mut VM<'gc>,
         mc: &Mutation<'gc>,
-        userdata: &mut UserDataWrapper,
+        ud_gc: Gc<'gc, RefLock<UserDataWrapper>>,
         meta_method: MetaMethod,
-        args: Vec<Value<'gc>>,
+        args: &[Value<'gc>],
     ) -> Result<Value<'gc>, SiltError> {
-        let type_name = userdata.type_name();
-        let meta_key = meta_method.as_ind();
-
-        // Look up the metamethod in the registry
-        if let Some(map) = reg.get_map(type_name) {
-            return map.call_meta_method(vm, mc, userdata, meta_key, args);
+        let type_name = ud_gc.borrow().type_name();
+        let key = meta_method.as_ind();
+        let closure = vm
+            .userdata_registry
+            .get_map(type_name)
+            .and_then(|m| m.get_meta_method(key));
+        match closure {
+            Some(f) => f(vm, mc, args),
+            None => Err(SiltError::MetaMethodMissing(meta_method)),
         }
-
-        Err(SiltError::UDNoMap)
     }
 
     /// Get a field from a UserData value

@@ -3046,16 +3046,15 @@ impl<'gc> VM<'gc> {
         op: MetaMethod,
         right: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
-        let u = &mut *userdata.borrow_mut(ep.mc);
-        // let rud = u.deref_mut() ;
-        // Try to call the metamethod
+        // `userdata` is a `Copy` Gc, so it can be both the receiver arg (args[0], which
+        // the closure re-borrows internally) and the lookup handle. Do NOT pre-borrow it.
+        let ud_val = Value::UserData(userdata);
         crate::userdata::vm_integration::call_meta_method(
             self,
-            &self.userdata_registry,
-            &ep.mc,
-            u,
+            ep.mc,
+            userdata,
             op,
-            vec![right],
+            &[ud_val, right],
         )
     }
 

@@ -325,6 +325,18 @@ test binary.
     nesting all work). **Limitation:** the iterator must be a native function (covers
     `pairs`/`ipairs`/`next`); custom Lua-closure iterators aren't driven yet.
   - Tests: `tests/iteration.rs` (9), plus un-ignored `iteration_with_pairs` / `generic_for_ipairs`.
+  - **`pairs(userdata)` via `__pairs` ✅ (2026-07):** userdata metamethod dispatch was a
+    commented-out stub (`UserDataTypedMap::call_meta_method` always returned `UDNoMethodRef`).
+    Un-stubbed by storing metamethod closures as `Rc` (was `Box`) so one can be cloned out of
+    `VM.userdata_registry`, releasing the borrow, then invoked with `&mut VM` (the closures need
+    `&mut VM` but live inside the VM — a direct call is a self-borrow). `vm_integration::call_meta_method`
+    now does clone-then-call; `lua_pairs` routes a userdata through `__pairs` (which returns the
+    iterator fn; `pairs` supplies `(iter, ud, nil)`), erroring `MetaMethodMissing` if absent.
+    `TestEnt` gained a `__pairs` over its x/y/z fields. Tests: `tests/userdata_pairs.rs`.
+    **Still stubbed (separate):** the `..`/`tostring`/binary-op call sites don't yet route to
+    `call_meta_method` (so `__concat`/`__tostring`/`__add` on userdata don't fire), and regular
+    userdata *methods* (`self.methods`) still aren't dispatched — the Rc seam makes both a
+    straightforward follow-up.
 
 ### 2.8 `goto` / labels buggy
 - **Repro:** `do goto skip ::skip:: end return 1` → `Expected identifier only inbetween label tokens '::'`.
