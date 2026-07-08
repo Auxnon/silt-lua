@@ -1994,6 +1994,29 @@ impl<'gc> VM<'gc> {
                         (Value::String(left), Value::String(right)) => {
                             self.push(ep, Value::String(left + &right))
                         }
+                        // A userdata operand (either side) dispatches its `__concat`
+                        // metamethod, with the operands passed in source order. Checked
+                        // before the string fallbacks so `str .. ud` also reaches it.
+                        (Value::UserData(ud), rr) => {
+                            let v = bubble!(crate::userdata::vm_integration::call_meta_method(
+                                self,
+                                ep.mc,
+                                ud,
+                                MetaMethod::Concat,
+                                &[Value::UserData(ud), rr],
+                            ));
+                            self.push(ep, v);
+                        }
+                        (ll, Value::UserData(ud)) => {
+                            let v = bubble!(crate::userdata::vm_integration::call_meta_method(
+                                self,
+                                ep.mc,
+                                ud,
+                                MetaMethod::Concat,
+                                &[ll, Value::UserData(ud)],
+                            ));
+                            self.push(ep, v);
+                        }
                         (Value::String(left), v2) => {
                             self.push(ep, Value::String(left + &v2.to_string()))
                         }

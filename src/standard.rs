@@ -28,12 +28,28 @@ pub fn clock<'lua>(_: &mut VM<'lua>, _: &Mutation<'lua>, _: ()) -> InnerResult<'
     ))
 }
 
-pub fn print<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
-    let s = args
-        .iter()
-        .map(|v| v.to_string())
-        .collect::<Vec<String>>()
-        .join("\t");
+pub fn print<'lua>(vm: &mut VM<'lua>, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
+    let mut parts = Vec::with_capacity(args.len());
+    for v in &args {
+        // A userdata with `__tostring` prints via that metamethod; everything else uses
+        // its `Display` (which shows `table: 0xADDR` etc. for other reference types).
+        let part = match v {
+            Value::UserData(ud) => match crate::userdata::vm_integration::call_meta_method(
+                vm,
+                mc,
+                *ud,
+                crate::userdata::MetaMethod::ToString,
+                &[v.clone()],
+            ) {
+                Ok(res) => res.coerce_string(),
+                Err(SiltError::MetaMethodMissing(_)) => v.to_string(),
+                Err(e) => return Err(e),
+            },
+            _ => v.to_string(),
+        };
+        parts.push(part);
+    }
+    let s = parts.join("\t");
     println!("> {}", s);
 
     // Route to the JS console when built as a standalone wasm module.
@@ -269,8 +285,22 @@ pub fn lua_type<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) ->
     Ok(Value::String(v.type_name().to_string()))
 }
 
-pub fn tostring<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
+pub fn tostring<'lua>(vm: &mut VM<'lua>, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
     let v = args.first().cloned().unwrap_or(Value::Nil);
+    // A userdata with a `__tostring` metamethod controls its own representation.
+    if let Value::UserData(ud) = &v {
+        match crate::userdata::vm_integration::call_meta_method(
+            vm,
+            mc,
+            *ud,
+            crate::userdata::MetaMethod::ToString,
+            &[v.clone()],
+        ) {
+            Ok(res) => return Ok(res),
+            Err(SiltError::MetaMethodMissing(_)) => {} // no __tostring → fall through
+            Err(e) => return Err(e),
+        }
+    }
     // Reference types get a Lua-style `type: 0xADDR` so distinct tables/functions are
     // distinguishable (bare `coerce_string` collapses every table to "table" and every
     // builtin to "native_function", so `tostring(a) == tostring(b)` for all of them).
