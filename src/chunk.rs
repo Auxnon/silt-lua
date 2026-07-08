@@ -92,6 +92,23 @@ impl<'chnk> Chunk<'chnk> {
         self.constants[index as usize].clone()
     }
 
+    /// Number of constants stored in this chunk.
+    pub fn constants_len(&self) -> usize {
+        self.constants.len()
+    }
+
+    /// Replace the constant at `index` with `value`.  A no-op if `index` is out of bounds.
+    pub fn patch_constant(&mut self, index: usize, value: Value<'chnk>) {
+        if index < self.constants.len() {
+            self.constants[index] = value;
+        }
+    }
+
+    /// Line number of the last instruction in this chunk, or 0 if the chunk is empty.
+    pub fn last_line(&self) -> usize {
+        self.locations.last().map(|&(line, _)| line).unwrap_or(0)
+    }
+
     pub fn invalidate(&mut self) {
         self.valid = false;
     }

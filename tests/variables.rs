@@ -1,36 +1,41 @@
-use silt_lua::{ExVal,simple, test_number, test_string, valeq, test_nil, test_bool};
+use silt_lua::{simple, test_bool, test_int, test_nil, test_string, valeq, ExVal};
 
-test_number!(local_variable, "local x = 42; return x", 42.0);
-test_string!(
-    local_string_var,
-    "local name = 'hello'; return name",
-    "hello"
-);
+test_int!(local_variable, "local x = 42; return x", 42);
+test_string!(local_string_var, "local name = 'hello'; return name", "hello");
 test_bool!(local_boolean_var, "local flag = true; return flag", true);
 test_nil!(local_nil_var, "local empty; return empty");
 
-test_number!(global_variable, "x = 100; return x", 100.0);
+test_int!(global_variable, "x = 100; return x", 100);
 test_string!(global_string, "message = 'world'; return message", "world");
 
-test_number!(variable_reassignment, "local x = 5; x = 10; return x", 10.0);
-test_number!(multiple_assignment, "local a, b = 1, 2; return a + b", 3.0);
+test_int!(variable_reassignment, "local x = 5; x = 10; return x", 10);
+test_int!(multiple_assignment, "local a, b = 1, 2; return a + b", 3);
+
+#[test]
+fn multiple_assignment_swap() {
+    valeq!("local a, b = 1, 2; a, b = b, a; return a", ExVal::Integer(2));
+    valeq!("local a, b = 1, 2; a, b = b, a; return b", ExVal::Integer(1));
+}
 
 #[test]
 fn variable_scope() {
-    let source = r#"
+    valeq!(
+        r#"
         local x = 1
         do
             local x = 2
             y = x
         end
         return x + y
-    "#;
-    valeq!(source, ExVal::Number(3.0));
+    "#,
+        ExVal::Integer(3)
+    );
 }
 
 #[test]
 fn nested_scope() {
-    let source = r#"
+    valeq!(
+        r#"
         local a = 1
         do
             local b = 2
@@ -40,30 +45,48 @@ fn nested_scope() {
             end
         end
         return result
-    "#;
-    valeq!(source, ExVal::Number(6.0));
+    "#,
+        ExVal::Integer(6)
+    );
 }
 
 #[test]
 fn variable_shadowing() {
-    let source = r#"
+    valeq!(
+        r#"
         local x = 'outer'
         do
             local x = 'inner'
             inner_x = x
         end
         return x
-    "#;
-    valeq!(source, ExVal::String("outer".to_string()));
+    "#,
+        ExVal::String("outer".to_string())
+    );
 }
 
-test_number!(
+test_int!(
     arithmetic_with_variables,
     "local a = 5; local b = 3; return a * b + 2",
-    17.0
+    17
 );
 test_string!(
     string_concatenation_vars,
     "local first = 'Hello'; local second = 'World'; return first .. ' ' .. second",
     "Hello World"
 );
+
+#[test]
+fn partial_local_nil_in_function() {
+    valeq!(
+        r#"
+        function t()
+            local a, b, c = 5
+            if b == nil then return 999 end
+            return 0
+        end
+        return t()
+    "#,
+        ExVal::Integer(999)
+    );
+}

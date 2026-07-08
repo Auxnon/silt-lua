@@ -229,35 +229,61 @@ impl<'c> Lexer<'c> {
         self.column_start = self.column - 1;
         self.eat();
         self.start_token = self.current;
+        // Quoted strings decode escape sequences (long-bracket strings do not).
+        // We accumulate decoded characters rather than slicing the raw source.
+        let mut out = String::new();
         while self.current < self.end {
-            match self.peek() {
-                Some(c) => match c {
-                    '\n' => {
-                        return self.error(SiltError::UnterminatedString);
-                    }
-                    '\'' => {
-                        self.eat();
-                        if apos {
-                            break;
+            let c = match self.peek() {
+                Some(c) => *c,
+                None => return self.error(SiltError::UnterminatedString),
+            };
+            match c {
+                '\n' => return self.error(SiltError::UnterminatedString),
+                '\'' if apos => {
+                    self.eat();
+                    return self.send(Token::StringLiteral(out.into_boxed_str()));
+                }
+                '"' if !apos => {
+                    self.eat();
+                    return self.send(Token::StringLiteral(out.into_boxed_str()));
+                }
+                '\\' => {
+                    self.eat(); // consume the backslash
+                    let e = match self.peek() {
+                        Some(e) => *e,
+                        None => return self.error(SiltError::UnterminatedString),
+                    };
+                    // Bare-minimum escape set (single-character escapes). The more
+                    // involved \xHH, \ddd, \u{XXXX} and \z forms are not handled yet.
+                    let decoded = match e {
+                        'n' => Some('\n'),
+                        't' => Some('\t'),
+                        'r' => Some('\r'),
+                        '\\' => Some('\\'),
+                        '"' => Some('"'),
+                        '\'' => Some('\''),
+                        '0' => Some('\0'),
+                        'a' => Some('\u{07}'), // bell
+                        'b' => Some('\u{08}'), // backspace
+                        'f' => Some('\u{0C}'), // form feed
+                        'v' => Some('\u{0B}'), // vertical tab
+                        _ => None,
+                    };
+                    match decoded {
+                        Some(ch) => {
+                            self.eat();
+                            out.push(ch);
                         }
+                        None => return self.error(SiltError::UnexpectedCharacter(e)),
                     }
-                    '"' => {
-                        self.eat();
-                        if !apos {
-                            break;
-                        }
-                    }
-                    _ => {
-                        self.eat();
-                    }
-                },
-                None => {
-                    return self.error(SiltError::UnterminatedString);
+                }
+                _ => {
+                    self.eat();
+                    out.push(c);
                 }
             }
         }
-        let cc = self.source[self.start_token..self.current - 1].to_string();
-        self.send(Token::StringLiteral(cc.into_boxed_str()))
+        self.error(SiltError::UnterminatedString)
     }
 
     fn multi_line_string(&mut self) -> TokenOption {
@@ -434,6 +460,11 @@ impl<'c> Lexer<'c> {
                             self.eat();
                             match self.peek() {
                                 Some('.') => self.eat_send(Token::VarArg),
+                                #[cfg(feature = "compound-assignment")]
+                                Some('=') => {
+                                    self.eat();
+                                    self.send(Token::ConcatAssign)
+                                }
                                 _ => self.send(Token::Op(Operator::Concat)),
                             }
                         }
@@ -454,11 +485,24 @@ impl<'c> Lexer<'c> {
                 '+' => {
                     self.eat();
                     let t = match self.peek() {
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             Token::AddAssign
                         }
                         _ => Token::Op(Operator::Add),
+                    };
+                    self.send(t)
+                }
+                '^' => {
+                    self.eat();
+                    let t = match self.peek() {
+                        #[cfg(feature = "compound-assignment")]
+                        Some('=') => {
+                            self.eat();
+                            Token::PowerAssign
+                        }
+                        _ => Token::Op(Operator::Exponent),
                     };
                     self.send(t)
                 }
@@ -486,10 +530,12 @@ impl<'c> Lexer<'c> {
                                 t
                             }
                         }
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             self.send(Token::SubAssign)
                         }
+                        #[cfg(feature = "arrow")]
                         Some('>') => {
                             self.eat();
                             self.send(Token::ArrowFunction)
@@ -500,6 +546,18 @@ impl<'c> Lexer<'c> {
                 '/' => {
                     self.eat();
                     match self.peek() {
+                        Some('/') => {
+                            self.eat();
+                            match self.peek() {
+                                #[cfg(feature = "compound-assignment")]
+                                Some('=') => {
+                                    self.eat();
+                                    self.send(Token::FloorDivideAssign)
+                                }
+                                _ => self.send(Token::Op(Operator::FloorDivide)),
+                            }
+                        }
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             self.send(Token::DivideAssign)
@@ -510,6 +568,7 @@ impl<'c> Lexer<'c> {
                 '*' => {
                     self.eat();
                     match self.peek() {
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             self.send(Token::MultiplyAssign)
@@ -520,6 +579,7 @@ impl<'c> Lexer<'c> {
                 '%' => {
                     self.eat();
                     match self.peek() {
+                        #[cfg(feature = "compound-assignment")]
                         Some('=') => {
                             self.eat();
                             self.send(Token::ModulusAssign)
@@ -552,6 +612,10 @@ impl<'c> Lexer<'c> {
                             self.eat();
                             self.send(Token::Op(Operator::LessEqual))
                         }
+                        Some('<') => {
+                            self.eat();
+                            self.send(Token::Op(Operator::ShiftLeft))
+                        }
                         _ => self.send(Token::Op(Operator::Less)),
                     }
                 }
@@ -562,8 +626,20 @@ impl<'c> Lexer<'c> {
                             self.eat();
                             self.send(Token::Op(Operator::GreaterEqual))
                         }
+                        Some('>') => {
+                            self.eat();
+                            self.send(Token::Op(Operator::ShiftRight))
+                        }
                         _ => self.send(Token::Op(Operator::Greater)),
                     }
+                }
+                '&' => {
+                    self.eat();
+                    self.send(Token::Op(Operator::BitAnd))
+                }
+                '|' => {
+                    self.eat();
+                    self.send(Token::Op(Operator::BitOr))
                 }
                 '[' => {
                     self.eat();

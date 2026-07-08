@@ -163,10 +163,15 @@ enum Precedence {
     And,        // and
     Equality,   // == ~= !=
     Comparison, // < > <= >=
+    BitOr,      // |
+    BitXor,     // ~ (binary)
+    BitAnd,     // &
+    Shift,      // << >>
     Concat,     // ..
     Term,       // + -
-    Factor,     // * /
+    Factor,     // * / // %
     Unary,      // ~ - !
+    Exponent,   // ^ (right-assoc, binds tighter than unary)
     Call,       // . ()
     Primary,
 }
@@ -176,21 +181,37 @@ type Ident = u8;
 
 type Catch = Result<(), ErrorTuple>;
 
+/// Toggles for silt's opt-in language extensions. A flag field only exists when
+/// its backing cargo feature is compiled in — e.g. `bang_operator` is present
+/// only under `feature = "bang"`, and every read of it is behind the same
+/// `#[cfg]`. This keeps a disabled feature from leaving dead config surface.
 #[derive(Clone, Copy, Debug)]
 pub struct LanguageFlags {
     pub implicit_returns: bool,
-    #[allow(dead_code)]
+    /// Arrow functions (`x -> …`). Present only with the `arrow` feature; an
+    /// embedder may still toggle it off at runtime.
+    #[cfg(feature = "arrow")]
     pub arrow_functions: bool,
+    #[cfg(feature = "bang")]
     #[allow(dead_code)]
     pub bang_operator: bool,
+    /// Luau-style compound assignment (`+= -= *= /= //= %= ^= ..=`). Present
+    /// only with the `compound-assignment` feature; an embedder may still toggle
+    /// it off at runtime.
+    #[cfg(feature = "compound-assignment")]
+    pub compound_assignment: bool,
 }
 
 impl Default for LanguageFlags {
     fn default() -> Self {
         Self {
             implicit_returns: false,
-            arrow_functions: false,
+            #[cfg(feature = "arrow")]
+            arrow_functions: true,
+            #[cfg(feature = "bang")]
             bang_operator: false,
+            #[cfg(feature = "compound-assignment")]
+            compound_assignment: true,
         }
     }
 }
@@ -203,11 +224,16 @@ impl Precedence {
             Precedence::Or => Precedence::And,
             Precedence::And => Precedence::Equality,
             Precedence::Equality => Precedence::Comparison,
-            Precedence::Comparison => Precedence::Concat,
+            Precedence::Comparison => Precedence::BitOr,
+            Precedence::BitOr => Precedence::BitXor,
+            Precedence::BitXor => Precedence::BitAnd,
+            Precedence::BitAnd => Precedence::Shift,
+            Precedence::Shift => Precedence::Concat,
             Precedence::Concat => Precedence::Term,
             Precedence::Term => Precedence::Factor,
             Precedence::Factor => Precedence::Unary,
-            Precedence::Unary => Precedence::Call,
+            Precedence::Unary => Precedence::Exponent,
+            Precedence::Exponent => Precedence::Call,
             Precedence::Call => Precedence::Primary,
             Precedence::Primary => Precedence::Primary, // TODO over?
         }
@@ -223,10 +249,15 @@ impl Display for Precedence {
             Precedence::And => write!(f, "And"),
             Precedence::Equality => write!(f, "Equality"),
             Precedence::Comparison => write!(f, "Comparison"),
+            Precedence::BitOr => write!(f, "BitOr"),
+            Precedence::BitXor => write!(f, "BitXor"),
+            Precedence::BitAnd => write!(f, "BitAnd"),
+            Precedence::Shift => write!(f, "Shift"),
             Precedence::Concat => write!(f, "Concat"),
             Precedence::Term => write!(f, "Term"),
             Precedence::Factor => write!(f, "Factor"),
             Precedence::Unary => write!(f, "Unary"),
+            Precedence::Exponent => write!(f, "Exponent"),
             Precedence::Call => write!(f, "Call"),
             Precedence::Primary => write!(f, "Primary"),
         }
@@ -294,6 +325,20 @@ struct Local {
     /** how many layers deep the local value is nested in a function, with 0 being global (should only happen once to reserve the root func on the stack) */
     functional_depth: usize,
     is_captured: bool,
+    /// Phase-1 static type annotation (compile-time only). Defaults to `Any`.
+    /// Only written in Phase 1; the checking phases will read it.
+    #[cfg(feature = "typing")]
+    #[allow(dead_code)]
+    ty: crate::types::Type,
+}
+
+/// Bookkeeping for one active loop so `break` can unwind cleanly.
+struct LoopCtx {
+    /// `local_count` captured before the loop pushed its control/body slots; a
+    /// `break` pops `local_count - base_local_count` runtime values to undo them.
+    base_local_count: usize,
+    /// chunk indices of emitted `FORWARD(0)` break jumps, patched to the loop exit.
+    break_jumps: Vec<usize>,
 }
 
 struct UpLocal {
@@ -308,6 +353,8 @@ struct UpLocal {
 struct FunctionalState {
     pub up_values: Vec<UpLocal>,
     pub vararg: u8,
+    /// we're making a function call or multi assignment and a vararg is at the end
+    pub trailing_vararg: bool,
     /// Are we walking arguments for a function call or table build? Changes vararg stack behavior
     pub argument_mode: bool,
     /// tracks the number of values on the stack from comma-separated expressions
@@ -320,6 +367,7 @@ impl FunctionalState {
         FunctionalState {
             up_values: vec![],
             vararg: 0,
+            trailing_vararg: false,
             argument_mode: false,
             expression_count: 0,
             should_override_pop: false,
@@ -357,6 +405,10 @@ pub struct Compiler {
     // previous: TokenTuple,
     // pre_previous: TokenTuple,
     pending_gotos: Vec<(String, usize, TokenCell)>,
+    /// Stack of enclosing loops (innermost last). Each entry records the
+    /// `local_count` just before the loop pushed its control/body slots and the
+    /// chunk indices of any `break` jumps awaiting a patch to the loop exit.
+    loops: Vec<LoopCtx>,
     /// flag that a self calling method was used
     self_arg: bool,
     /** language flags for optional features */
@@ -374,6 +426,18 @@ pub struct Compiler {
     // correctly. If we walk our setters all the way to find an assignment (:=)
     /// can we gather multivars for setters? multivar return or gets must skip this
     can_multivar_set: bool,
+    /// Source line of the most recently consumed `end` token (set by `block()`).
+    /// Used by `build_function` to record the precise closing line of a function
+    /// body for hotswap range detection.
+    last_end_line: usize,
+    /// Monotonic counter handing out a fresh source index to each top-level
+    /// `compile()` call. Persists across compiles (the same `Compiler` is reused),
+    /// so every distinct source the host feeds in gets a unique, stable index.
+    source_counter: usize,
+    /// The source index assigned to the compile currently in flight. Every
+    /// `FunctionObject` produced in this pass (root and nested closures) is stamped
+    /// with it, so a runtime error in any of them reports the right source.
+    current_source_index: usize,
 }
 
 impl Compiler {
@@ -396,6 +460,8 @@ impl Compiler {
                 depth: 0,
                 functional_depth: 0,
                 is_captured: false,
+                #[cfg(feature = "typing")]
+                ty: crate::types::Type::Any,
             }],
             local_functional_offset: vec![],
             local_offset: vec![],
@@ -403,6 +469,7 @@ impl Compiler {
             local_declare_mode: false,
             labels: HashMap::new(),
             pending_gotos: vec![],
+            loops: vec![],
             // location: (0, 0),
             // previous: (Token::Nil, (0, 0)),
             // pre_previous: (Token::Nil, (0, 0)),
@@ -413,10 +480,15 @@ impl Compiler {
             var_set_stack: Vec::with_capacity(4),
             expected_multi: 0,
             can_multivar_set: true,
+            last_end_line: 0,
+            source_counter: 0,
+            current_source_index: crate::error::SOURCE_INDEX_UNKNOWN,
         }
     }
 
-    /** Create a new compiler instance with language flags */
+    /** Create a new compiler instance with language flags. `bang_operator` is
+    ignored unless the `bang` feature is enabled (the field only exists then). */
+    #[allow(unused_variables)]
     pub fn new_with_flags(
         implicit_returns: bool,
         arrow_functions: bool,
@@ -425,8 +497,11 @@ impl Compiler {
         let mut compiler = Self::new();
         compiler.language_flags = LanguageFlags {
             implicit_returns,
+            #[cfg(feature = "arrow")]
             arrow_functions,
+            #[cfg(feature = "bang")]
             bang_operator,
+            ..LanguageFlags::default()
         };
         compiler
     }
@@ -462,6 +537,11 @@ impl Compiler {
 
     /** Push error and location on to error stack */
     fn push_error(&mut self, code: ErrorTuple) {
+        // An error reaching the compile loop means compilation failed; invalidate the
+        // chunk. Most errors flow through `error_syntax` (which already clears `valid`),
+        // but some are built as raw `ErrorTuple`s (e.g. `peek_triple`'s EOF branch) and
+        // would otherwise leave `valid` true — the chunk then "succeeds" and runs garbage.
+        self.valid = false;
         self.errors.push(code);
     }
 
@@ -530,8 +610,23 @@ impl Compiler {
     /** Force stack to pop N values without usual niceties, this both emits opcode and drops off the emulated stack locals */
     fn force_stack_pop(&mut self, f: FnRef, n: usize) {
         self.locals.truncate(self.locals.len() - n);
-
-        self.emit_at(f, OpCode::POPS(n as u8));
+        if n == 0 {
+            return; // nothing to pop; avoid emitting a no-op POPS(0)
+        }
+        // Peephole: when this scope/loop cleanup immediately follows another stack
+        // pop (e.g. an assignment statement's discarded value, or a prior scope's
+        // POPS), fold them into a single POPS instead of emitting POP;POPS — one
+        // fewer instruction per loop iteration. Safe because the cleanup site is
+        // never itself a jump target (jumps land at loop start or past the loop).
+        let merged = match f.chunk.code.last() {
+            Some(OpCode::POP) => Some(n as u8 + 1),
+            Some(OpCode::POPS(m)) => Some(*m + n as u8),
+            _ => None,
+        };
+        match merged {
+            Some(total) => f.chunk.patch_last(OpCode::POPS(total)),
+            None => self.emit_at(f, OpCode::POPS(n as u8)),
+        }
     }
 
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
@@ -602,11 +697,9 @@ impl Compiler {
         let it = vv.peekable();
         for v in it {
             if let Some(s) = v {
-                // println!("we writting code here {} {}", v.0, local);
+                // The setter opcode now consumes its value, so no trailing POP is
+                // needed — multiple targets just pop successive values off the stack.
                 f.chunk.write_code(s.0, self.current_location);
-                // if !local {
-                f.chunk.write_code(OpCode::POP, self.current_location);
-                // }
             }
         }
     }
@@ -619,12 +712,6 @@ impl Compiler {
                 f.chunk.write_code(s.1, self.current_location);
             }
         }
-    }
-    fn pull_getter(&mut self) -> OpCode {
-        // println!("we have {}", self.var_stack.len());
-        let o = self.var_stack.first().unwrap();
-        let oo = o.clone().unwrap();
-        oo.1
     }
 
     /** only use after peek */
@@ -768,6 +855,10 @@ impl Compiler {
             OpCode::FORWARD(_) => self.change_code(f, offset, OpCode::FORWARD(jump as u16)),
             OpCode::REWIND(_) => self.change_code(f, offset, OpCode::REWIND(jump as u16)),
             OpCode::FOR_NUMERIC(_) => self.change_code(f, offset, OpCode::FOR_NUMERIC(jump as u16)),
+            OpCode::FOR_GENERIC { count, exit: _ } => {
+                let count = *count;
+                self.change_code(f, offset, OpCode::FOR_GENERIC { count, exit: jump as u16 })
+            }
             _ => {
                 return Err(self.error_at(SiltError::ChunkCorrupt));
             }
@@ -782,6 +873,16 @@ impl Compiler {
             self.error_at(SiltError::TooManyOperations);
         }
         self.write_code(f, OpCode::REWIND(jump as u16), self.current_location);
+    }
+
+    /// Emit the fused numeric-for tail. `start` is the body-top index it rewinds to
+    /// when the loop continues (same backward-offset convention as `emit_rewind`).
+    fn emit_forloop(&mut self, f: FnRef, start: usize) {
+        let jump = (self.get_chunk_size(f) + 1) - start;
+        if jump > u16::MAX as usize {
+            self.error_at(SiltError::TooManyOperations);
+        }
+        self.write_code(f, OpCode::FORLOOP(jump as u16), self.current_location);
     }
 
     #[allow(dead_code)]
@@ -832,6 +933,20 @@ impl Compiler {
             self.functional_states[self.functional_depth - 1].argument_mode
         } else {
             self.root_state.argument_mode
+        }
+    }
+fn is_trailing_vararg(&self) -> bool {
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].trailing_vararg
+        } else {
+            self.root_state.trailing_vararg
+        }
+    }
+fn set_trailing_vararg(&mut self,bool: bool){
+        if self.functional_depth > 0 {
+            self.functional_states[self.functional_depth - 1].trailing_vararg=bool;
+        } else {
+            self.root_state.trailing_vararg=bool;
         }
     }
 
@@ -919,11 +1034,19 @@ impl Compiler {
             Token::OpenParen => rule!(grouping, call, Call),
             Token::OpenBrace => rule!(tabulate, void, None),
             Token::Assign => rule!(void, void, None),
+            // method call on a non-identifier receiver, e.g. `("hi"):upper()`.
+            // Identifier/table receivers are consumed earlier in named_variable.
+            Token::Colon => rule!(void, method_infix, Call),
             Token::Op(op) => match op {
                 Operator::Sub => rule!(unary, binary, Term),
                 Operator::Add => rule!(void, binary, Term),
                 Operator::Multiply => rule!(void, binary, Factor),
                 Operator::Divide => rule!(void, binary, Factor),
+                Operator::Modulus => rule!(void, binary, Factor),
+                Operator::FloorDivide => rule!(void, binary, Factor),
+                // `^` is right-associative and binds tighter than unary, so it
+                // uses a dedicated infix and the Exponent precedence level.
+                Operator::Exponent => rule!(void, exponent, Exponent),
                 Operator::Not => rule!(unary, void, None),
                 Operator::NotEqual => rule!(void, binary, Equality),
                 Operator::Equal => rule!(void, binary, Equality),
@@ -934,6 +1057,12 @@ impl Compiler {
                 Operator::Concat => rule!(void, concat, Concat),
                 Operator::And => rule!(void, and, And),
                 Operator::Or => rule!(void, or, Or),
+                Operator::BitOr => rule!(void, binary, BitOr),
+                // `~` is unary bitwise-not (prefix) and binary xor (infix)
+                Operator::Tilde => rule!(unary, binary, BitXor),
+                Operator::BitAnd => rule!(void, binary, BitAnd),
+                Operator::ShiftLeft => rule!(void, binary, Shift),
+                Operator::ShiftRight => rule!(void, binary, Shift),
                 Operator::Length => rule!(unary, void, None),
                 _ => rule!(void, void, None),
             },
@@ -968,8 +1097,15 @@ impl Compiler {
                 Err(e) => println!("err {}", e),
             });
         }
+        // Hand this compile a fresh source index and record it as the "current"
+        // one so every nested FunctionObject::new below stamps the same value.
+        let source_index = self.source_counter;
+        self.source_counter += 1;
+        self.current_source_index = source_index;
+
         let lexer = Lexer::new(source);
         let mut body = FunctionObject::new(to_op_string(name), true);
+        body.source_index = source_index;
         let mut iter = lexer.peekable();
 
         while iter.peek().is_some() {
@@ -977,7 +1113,7 @@ impl Compiler {
                 Ok(()) => {}
                 Err(e) => {
                     self.push_error(e);
-                    self.synchronize();
+                    self.synchronize(&mut iter);
                 }
             }
         }
@@ -1013,6 +1149,8 @@ impl Compiler {
             Err(ErrorOut {
                 errors: self.pop_errors(),
                 source: to_op_string(name),
+                // `compile()` just assigned this to the failed source.
+                source_index: self.current_source_index,
             })
         }
     }
@@ -1120,7 +1258,7 @@ impl Compiler {
                     if !matches!(token, Token::EOF) {
                         // println!("start len {} {}", start, length);
                         let token_str = &source[start..start + length];
-                        println!("~{}~", token_str);
+                        devout!("~{}~", token_str);
                         if !token_str.trim().is_empty() {
                             let i: usize = if offset < 0 {
                                 start.checked_sub(offset.wrapping_abs() as usize)
@@ -1187,16 +1325,41 @@ pub fn lsp(source: &str, format: bool) -> String {
 }
 
 impl Compiler {
-    fn synchronize(&mut self) {
-        // TODO should we unwind or just dump it all?
-        // self.eat();
-        // while !self.is_end() {
-        //     match self.get_current() {
-        //         Ok(Token::Print) => return,
-        //         _ => {}
-        //     }
-        //     self.eat();
-        // }
+    /// Error recovery. CRITICAL: this must always consume at least one token.
+    /// `compile()` loops `while iter.peek().is_some()`, so if a failed
+    /// `declaration` left the offending token in place (e.g. an unlexable char
+    /// that surfaces as a peek `Err`), the loop would re-parse it forever and
+    /// hang. After guaranteeing progress we skip ahead to a likely statement
+    /// boundary so a single bad token doesn't cascade into a flood of errors.
+    fn synchronize(&mut self, iter: &mut Peekable<Lexer>) {
+        self.eat(iter);
+        loop {
+            let at_boundary = match iter.peek() {
+                None => true,
+                Some(Ok(tt)) => matches!(
+                    &tt.0,
+                    Token::Local
+                        | Token::Global
+                        | Token::Function
+                        | Token::If
+                        | Token::While
+                        | Token::For
+                        | Token::Return
+                        | Token::Do
+                        | Token::End
+                        | Token::Print
+                        | Token::Goto
+                        | Token::ColonColon
+                        | Token::SemiColon
+                ),
+                // a run of unlexable characters: keep eating so we don't spin
+                Some(Err(_)) => false,
+            };
+            if at_boundary {
+                break;
+            }
+            self.eat(iter);
+        }
     }
 
     fn parse_precedence<'c>(
@@ -1222,30 +1385,26 @@ impl Compiler {
             precedence,
             rule.precedence,
         );
-        // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
+        // A token whose prefix rule is `void` cannot begin an expression: a stray
+        // closing `)`/`}`/`]`, a leading binary operator, a `,`, etc. The single-pass
+        // parser used to silently no-op on these (dropping the token), so malformed
+        // input like `local x = )` compiled clean. Report it instead so the CLI and
+        // LSP surface a real diagnostic (PLAN §1.0 leniency).
+        let void_prefix: for<'v> fn(
+            &mut Compiler,
+            &Mutation<'v>,
+            FnRef<'_, 'v>,
+            &mut Peekable<Lexer>,
+            bool,
+        ) -> Catch = void;
+        if rule.prefix as usize == void_prefix as usize {
+            let tok = t.clone();
+            return Err(self.error_at(SiltError::InvalidTokenPlacement(tok)));
+        }
         let can_assign = precedence <= Precedence::Assignment;
         (rule.prefix)(self, mc, f, it, can_assign)?;
 
-        loop {
-            let c = self.peek_result(it);
-            let rule = match c {
-                Ok(&Token::EOF) => break,
-                Ok(t) => Self::get_rule(t),
-                Err(e) => {
-                    return Err(e.clone());
-                }
-            };
-            devout!(
-                "loop target precedence for :  {}, current precedence for  : {}",
-                precedence,
-                rule.precedence
-            );
-            if precedence > rule.precedence {
-                break;
-            }
-            self.store(it);
-            (rule.infix)(self, mc, f, it, false)?;
-        }
+        self.infix_loop(mc, f, it, precedence)?;
 
         // TODO test this with `local b="b" sprint b`
         if can_assign
@@ -1262,6 +1421,33 @@ impl Compiler {
         // if skip_step {
         //     self.store();
         // }
+        Ok(())
+    }
+
+    /// Run the Pratt infix loop given a value already produced on the stack:
+    /// consume and emit each infix operator whose precedence is >= `precedence`.
+    /// Shared by `parse_precedence` and by callers that have emitted a value
+    /// directly (e.g. recovering a grouped method call) and need to continue.
+    fn infix_loop<'c>(
+        &mut self,
+        mc: &Mutation<'c>,
+        f: FnRef<'_, 'c>,
+        it: &mut Peekable<Lexer>,
+        precedence: Precedence,
+    ) -> Catch {
+        loop {
+            let c = self.peek_result(it);
+            let rule = match c {
+                Ok(&Token::EOF) => break,
+                Ok(t) => Self::get_rule(t),
+                Err(e) => return Err(e.clone()),
+            };
+            if precedence > rule.precedence {
+                break;
+            }
+            self.store(it);
+            (rule.infix)(self, mc, f, it, false)?;
+        }
         Ok(())
     }
 }
@@ -1342,11 +1528,11 @@ fn declaration_keyword<'a, 'c: 'a>(
                 // Statement::InvalidStatement
             }
         }
-        // _ => {
-        //     self.error(SiltError::ExpectedLocalIdentifier);
-        //     Statement::InvalidStatement
-        // }
-        _ => todo!(),
+        // `local`/`global` followed by anything that is not an identifier or
+        // `function` (e.g. `local = 5`, `local 5`, `local`+EOF) is malformed. This
+        // used to `todo!()` — a panic that would take down the LSP server — so report
+        // it as a real error pointing at the offending token (PLAN §1.0 leniency).
+        _ => return Err(this.error_syntax(SiltError::ExpectedLocalIdentifier, (location.line, location.col))),
     }
     Ok(())
 }
@@ -1412,6 +1598,7 @@ fn _add_local(
     //     0
     // };
 
+
     let i = this.local_count; //- offset;
     if i == 255 {
         return Err(this.error_at(SiltError::TooManyLocals));
@@ -1421,6 +1608,8 @@ fn _add_local(
         depth: this.scope_depth,
         functional_depth: this.functional_depth,
         is_captured: false,
+        #[cfg(feature = "typing")]
+        ty: crate::types::Type::Any,
     });
     this.local_count += 1;
     // let offset = if this.functional_depth > 0 {
@@ -1445,6 +1634,7 @@ fn resolve_local(
 ) -> Option<(u8, bool)> {
     // println!("❓resolve_local {}", ident);
     devnote!(this _it "resolve_local");
+    devout!("{} {}::{}","resolve stack".on_magenta(),ident,this.locals.iter().map(|l|l.ident.clone().unwrap_or("~".to_string())).collect::<Vec<String>>().join(","));
     for (i, l) in this.locals.iter_mut().enumerate().rev() {
         // println!(
         //     " ⭐ test {} ({}) against {}",
@@ -1502,7 +1692,8 @@ fn resolve_upvalue(
     level: usize,
     target: usize,
 ) -> u8 {
-    let state = &mut functional_states[level];
+    // `level` is a functional depth (1-based); the matching state lives at `level - 1`.
+    let state = &mut functional_states[level - 1];
     let m = &mut state.up_values;
     for (u, i) in m.iter().enumerate() {
         if i.universal_ident == ident {
@@ -1520,7 +1711,7 @@ fn resolve_upvalue(
     } else {
         // drop(m);
         let higher = resolve_upvalue(functional_states, ident, scoped_ident, level - 1, target);
-        let state = &mut functional_states[level];
+        let state = &mut functional_states[level - 1];
         let m = &mut state.up_values;
         m.push(UpLocal {
             ident: higher,
@@ -1644,6 +1835,16 @@ fn define_function<'c>(
         ("anonymous".to_string(), this.current_location)
     };
 
+    // `function t.a.b()` (field) or `function t:m()` (method). The name is not a
+    // plain variable binding — it assigns the closure into an existing table.
+    if matches!(this.peek(it)?, Token::Dot | Token::Colon) {
+        if local {
+            // `local function t:m()` / `local function t.x()` are not valid Lua.
+            return Err(this.error_at(SiltError::ExpectedToken(Token::OpenParen)));
+        }
+        return define_function_member(this, mc, f, it, ident, location);
+    }
+
     let ident_clone = ident.clone();
     let global_ident = if this.scope_depth > 0 && local {
         //local
@@ -1654,9 +1855,60 @@ fn define_function<'c>(
         Some((this.identifer_constant(f, ident), location))
     };
 
-    build_function(this, mc, f, it, ident_clone, false)?;
+    build_function(this, mc, f, it, ident_clone, false, false, location.0)?;
 
     define_variable(this, it, f, global_ident)?;
+
+    Ok(())
+}
+
+/// Compile `function base.a.b()` / `function base:m()`. We load `base`, walk any
+/// intermediate `.field`s with TABLE_GET to reach the owning table, build the
+/// closure, and TABLE_SET it into the final key. A `:` separator may only appear
+/// before the last name and makes the function a method (implicit `self`). The
+/// emitted sequence is stack-neutral: GET base + key constant + CLOSURE (+3) are
+/// all consumed by TABLE_SET, so no trailing statement pop is needed.
+fn define_function_member<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    base: String,
+    location: TokenCell,
+) -> Catch {
+    devnote!(this it "define_function_member");
+    // Push the receiver table.
+    let (_setter, getter) = resolve_etters(this, f, it, base);
+    this.emit_at(f, getter);
+
+    loop {
+        let (sep_res, _) = this.pop(it);
+        let is_method = matches!(sep_res?, Token::Colon);
+
+        let (field_res, field_loc) = this.pop(it);
+        let field = match field_res? {
+            Token::Identifier(s) => s,
+            _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
+        };
+        this.current_location = field_loc;
+
+        let more = matches!(this.peek(it)?, Token::Dot | Token::Colon);
+        if more {
+            if is_method {
+                // a `:` is only legal immediately before the final name
+                return Err(this.error_at(SiltError::ExpectedToken(Token::OpenParen)));
+            }
+            // descend into the intermediate table
+            this.emit_identifer_constant_at(f, field);
+            this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
+        } else {
+            // final component: key, closure, then assign
+            this.emit_identifer_constant_at(f, field.clone());
+            build_function(this, mc, f, it, field, false, is_method, location.0)?;
+            this.emit_at(f, OpCode::TABLE_SET { depth: 1 });
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -1668,17 +1920,30 @@ fn build_function<'c>(
     it: &mut Peekable<Lexer>,
     ident: String,
     is_script: bool,
+    is_method: bool,
+    start_line: usize,
 ) -> Catch {
     // TODO this function could be called called rercursivelly due to the recursive decent nature of the parser, we should add a check to make sure we don't overflow the stack
     devnote!(this it "build_function");
     let mut f2 = FunctionObject::new(Some(ident), is_script);
+    f2.start_line = start_line;
+    // Nested functions share the enclosing compile's source index so a runtime
+    // error inside them resolves back to the source they were written in.
+    f2.source_index = this.current_source_index;
     let fr2 = &mut f2;
     // this.swap_function(&mut sidelined_func);
     // swap(f, &mut sidelined_func);
     begin_scope(this);
     begin_functional_scope(this);
-    expect_token!(this it OpenParen);
     let mut arity = 0;
+    // Colon-method definition: the implicit `self` occupies the first param slot
+    // so the receiver passed by `t:m(...)` (pushed as arg 0 at the call site)
+    // lands in it. It is a real local, just not written in the parameter list.
+    if is_method {
+        add_local(this, "self".to_string())?;
+        arity += 1;
+    }
+    expect_token!(this it OpenParen);
     if let Token::Identifier(_) | Token::VarArg = this.peek(it)? {
         arity += 1;
         build_param(this, it)?;
@@ -1693,9 +1958,32 @@ fn build_function<'c>(
             build_param(this, it)?;
         }
     }
+    // Consume the `)` that closes the parameter list. Historically this was left
+    // for `block()` to trip over on its first statement, where the lenient parser
+    // silently dropped it (as a no-op expression statement that happened to emit
+    // the placeholder POP below); now that a stray `)` is a real error, close it here.
+    expect_token!(this it CloseParen);
+
+    // A `local function f(...)` sets `local_declare_mode = true` in the enclosing
+    // declaration; the body must not inherit it or its variable references compile
+    // as fresh local declarations instead of gets. The phantom `)` statement used to
+    // clear this (expression_statement ends with `local_declare_mode = false`); do it
+    // explicitly here so the body starts in a clean, non-declaring context.
+    this.local_declare_mode = false;
+
+    // Every function body begins with a placeholder POP that the CALL opcode skips
+    // over via its trailing `iterate()` (see lua.rs: it never actually runs). It used
+    // to be emitted as a side effect of the phantom `)` statement described above;
+    // emit it explicitly now that the `)` is consumed cleanly.
+    this.emit_at(fr2, OpCode::POP);
 
     // this.override_pop=true; // the function declare is inside our scope and it would trigger a pop
     block(this, mc, fr2, it)?;
+    // Capture the exact `end` keyword line before emitting any more opcodes.
+    // `block()` records the End token's line in `last_end_line` so we can store it
+    // in the FunctionObject for hotswap range detection.
+    fr2.end_line = this.last_end_line;
+    fr2.arity=arity;
 
     if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() { //read_last_code
     } else {
@@ -1767,6 +2055,14 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
     match res? {
         Token::Identifier(ident) => {
             add_local(this,  ident)?;
+            // typed parameter `function f(a: number)` — record on the param local
+            #[cfg(feature = "typing")]
+            if matches!(this.peek(it)?, Token::Colon) {
+                let ty = parse_type_annotation(this, it)?;
+                if let Some(local) = this.locals.last_mut() {
+                    local.ty = ty;
+                }
+            }
         }
         Token::VarArg => {
             if this.is_vararg_function() {
@@ -1775,7 +2071,11 @@ fn build_param(this: &mut Compiler, it: &mut Peekable<Lexer>) -> Catch {
             }
 
             this.set_vararg();
-            add_local(this,  "...".to_string())?;
+            // NOTE: the `...` parameter deliberately does NOT reserve a local
+            // slot. At runtime the variadic overflow lives below the frame base
+            // (see CallFrame::get_varargs), so body locals must be numbered
+            // contiguously right after the fixed params with no phantom gap.
+            // add_local(this,  "...".to_string())?;
         }
         _ => {
             return Err(this.error_at(SiltError::ExpectedLocalIdentifier));
@@ -1813,6 +2113,8 @@ fn statement<'c>(
             end_scope(this, f, false);
         }
         Token::While => while_statement(this, mc, f, it)?,
+        Token::Repeat => repeat_statement(this, mc, f, it)?,
+        Token::Break => break_statement(this, f, it)?,
         Token::For => for_statement(this, mc, f, it)?,
         Token::Return => return_statement(this, mc, f, it)?,
         // Token::OpenBrace => block(this),
@@ -1839,7 +2141,31 @@ fn block<'c>(
     it: &mut Peekable<Lexer>,
 ) -> Catch {
     devnote!(this it "block");
-    build_block_until_then_eat!(this, mc, f, it, End);
+    // Inline the block-until-end loop so we can capture the End token's line number
+    // directly from the lexer before consuming it.  This gives the hotswap engine the
+    // precise source line of the closing `end` keyword for each function body.
+    loop {
+        match it.peek() {
+            Some(Ok((Token::End, triple))) => {
+                this.last_end_line = triple.line;
+                this.eat(it);
+                break;
+            }
+            Some(Ok((Token::EOF, _))) | None => {
+                return Err(this.error_at(SiltError::UnterminatedBlock));
+            }
+            Some(Err(e)) => {
+                let err = ErrorTuple {
+                    code: e.code.clone(),
+                    location: e.location,
+                };
+                return Err(err);
+            }
+            _ => {
+                declaration(this, mc, f, it)?;
+            }
+        }
+    }
 
     Ok(())
 }
@@ -1940,14 +2266,101 @@ fn if_statement<'c>(
             expect_token!(this it End);
         }
         Token::ElseIf => {
-            this.eat(it);
-            this.patch(f, skip_if)?;
+            // Once this branch's block has run, jump over the rest of the
+            // elseif/else chain (same role as `skip_else` in the Else arm).
+            let skip_chain = this.emit_index(f, OpCode::FORWARD(0));
+            this.patch(f, skip_if)?; // false condition -> start of the elseif
+            // Do NOT eat the `elseif` token here: the recursive if_statement's
+            // own leading eat() consumes it exactly as it would an `if`. Eating
+            // it twice would swallow the first token of the elseif condition.
+            // The recursion also consumes the single closing `end` for the chain.
             if_statement(this, mc, f, it)?;
+            this.patch(f, skip_chain)?; // lands just past the whole chain
         }
         _ => {
             this.patch(f, skip_if)?;
+            // a plain `if ... then ... end` must consume its own `end`.
+            // build_block_until! stops AT the `end` without eating it; if we
+            // leave it, the enclosing block feeds `end` to expression_statement,
+            // which emits a stray POP (corrupting a live local) and closes the
+            // wrong scope. The Else arm already eats its `end` via expect_token.
+            expect_token!(this it End);
         }
     }
+    Ok(())
+}
+
+/// Record the current `local_count` as a loop's break-unwind base.
+fn begin_loop(this: &mut Compiler) {
+    this.loops.push(LoopCtx {
+        base_local_count: this.local_count,
+        break_jumps: vec![],
+    });
+}
+
+/// Patch every pending `break` to the current position (the loop exit) and pop
+/// the loop context.
+fn end_loop(this: &mut Compiler, f: FnRef) -> Catch {
+    if let Some(ctx) = this.loops.pop() {
+        for idx in ctx.break_jumps {
+            this.patch(f, idx)?;
+        }
+    }
+    Ok(())
+}
+
+/// `break`: unwind the loop's runtime slots and jump (forward) to the loop exit,
+/// recorded for patching by `end_loop`.
+fn break_statement(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    devnote!(this it "break_statement");
+    this.eat(it); // 'break'
+    let base = match this.loops.last() {
+        Some(c) => c.base_local_count,
+        None => return Err(this.error_at(SiltError::InvalidTokenPlacement(Token::Break))),
+    };
+    let unwind = this.local_count.saturating_sub(base);
+    if unwind > 0 {
+        this.emit_at(f, OpCode::POPS(unwind as u8));
+    }
+    let idx = this.emit_index(f, OpCode::FORWARD(0));
+    this.loops.last_mut().unwrap().break_jumps.push(idx);
+    Ok(())
+}
+
+/// `repeat <body> until <cond>` — run the body, then test. The body's scope stays
+/// open while `cond` is compiled so `until` can see locals declared in the body.
+fn repeat_statement<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    devnote!(this it "repeat_statement");
+    this.eat(it); // 'repeat'
+    let loop_start = this.get_chunk_size(f);
+    begin_loop(this);
+    begin_scope(this);
+    let base = this.local_count;
+    build_block_until_then_eat!(this, mc, f, it, Until);
+    // `until` condition is evaluated with the body's locals still in scope.
+    expression(this, mc, f, it, false)?;
+    let body_locals = (this.local_count - base) as u8;
+    // cond TRUE -> stop (jump to exit); cond FALSE -> repeat. GOTO_IF_TRUE peeks,
+    // so each path pops the bool (and any body locals) before continuing.
+    let exit_jump = this.emit_index(f, OpCode::GOTO_IF_TRUE(0));
+    this.emit_at(f, OpCode::POP); // drop cond (repeat path)
+    if body_locals > 0 {
+        this.emit_at(f, OpCode::POPS(body_locals));
+    }
+    this.emit_rewind(f, loop_start);
+    this.patch(f, exit_jump)?; // exit path lands here
+    this.emit_at(f, OpCode::POP); // drop cond
+    if body_locals > 0 {
+        this.emit_at(f, OpCode::POPS(body_locals));
+    }
+    // runtime pops already emitted on both paths; just reconcile compile-time state
+    end_scope(this, f, true);
+    end_loop(this, f)?;
     Ok(())
 }
 
@@ -1963,9 +2376,15 @@ fn while_statement<'c>(
     expression(this, mc, f, it, false)?;
     expect_token!(this it Do);
     let exit_jump = this.emit_index(f, OpCode::POP_AND_GOTO_IF_FALSE(0));
+    begin_loop(this);
+    // Scope the body so locals declared inside are popped each iteration (before
+    // the rewind) instead of leaking and shifting slot indices.
+    begin_scope(this);
     build_block_until_then_eat!(this, mc, f, it, End);
+    end_scope(this, f, false);
     this.emit_rewind(f, loop_start);
     this.patch(f, exit_jump)?;
+    end_loop(this, f)?;
     Ok(())
 }
 
@@ -1986,12 +2405,18 @@ fn for_statement<'c>(
     let pair = this.pop(it);
     let t = pair.0?;
     if let Token::Identifier(ident) = t {
+        // Disambiguate numeric `for i = …` from generic `for k[,v…] in …`:
+        // a numeric loop has `=` after the single name, generic has `,` or `in`.
+        if matches!(this.peek(it)?, Token::Comma | Token::In) {
+            return generic_for_statement(this, mc, f, it, ident);
+        }
         // let offset = this.local_functional_offset[this.functional_depth - 1];
-        let iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
+        // capture base BEFORE the hidden control slots so `break` unwinds them too
+        begin_loop(this);
+        let _iterator = add_local_placeholder(this)?; // reserve iterator with placeholder
         expect_token!(this it Assign);
         add_local_placeholder(this)?; // reserve end value with placeholder
         add_local_placeholder(this)?; // reserve step value with placeholder
-                                      //
         expression_single(this, mc, f, it, false)?; // expression for iterator
         expect_token!(this it Comma);
         expression_single(this, mc, f, it, false)?; // expression for end value
@@ -2019,22 +2444,84 @@ fn for_statement<'c>(
         build_block_until_then_eat!(this, mc, f, it, End);
         end_scope(this, f, false);
 
-        this.emit_at(f, OpCode::INCREMENT { index: iterator });
-        this.emit_rewind(f, for_start);
+        // Fused loop tail: increment + bound-check + (push loop var & rewind) in one op.
+        // It rewinds to the body start (just past FOR_NUMERIC), so the top check runs
+        // only once on entry; FORLOOP drives every subsequent iteration.
+        this.emit_forloop(f, for_start + 1);
         this.patch(f, for_start)?;
         this.force_stack_pop(f, 3);
+        // break jumps land here, after the hidden control slots are reclaimed
+        end_loop(this, f)?;
         Ok(())
     } else {
         Err(this.error_at(SiltError::ExpectedLocalIdentifier))
     }
 }
 
-/**
- * We run closure and if value is not nil we set that to iterator and push onto blocks scope, when we hit end we rewind and re-eval
- * If the for's iterator is nil we forward to end of do block and pop off the iterator
- */
-#[allow(dead_code)]
-fn generic_for_statement() {}
+/// Generic `for v1[,v2…] in explist do block end`. `explist` yields the
+/// iteration triple `(iterator, state, control)` (padded/truncated to 3); the
+/// `FOR_GENERIC` opcode drives it. Mirrors the numeric-for stack discipline: the
+/// 3 control values are hidden locals reclaimed after the loop, and each
+/// iteration pushes the loop variables which `end_scope` pops before the rewind.
+fn generic_for_statement<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    first: String,
+) -> Catch {
+    devnote!(this it "generic_for_statement");
+    // capture the break-unwind base before the hidden control slots
+    begin_loop(this);
+    // collect loop variable names
+    let mut names = vec![first];
+    while matches!(this.peek(it)?, Token::Comma) {
+        this.eat(it);
+        let (res, _) = this.pop(it);
+        match res? {
+            Token::Identifier(n) => names.push(n),
+            other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+        }
+    }
+    expect_token!(this it In);
+    // reserve the 3 hidden control slots: iterator, state, control
+    add_local_placeholder(this)?;
+    add_local_placeholder(this)?;
+    add_local_placeholder(this)?;
+    // evaluate the iterator expression list, forcing it to exactly 3 values
+    this.set_can_multivar_set(false);
+    this.set_expression_count(1);
+    this.expected_multi = 3;
+    expression(this, mc, f, it, false)?;
+    this.set_can_multivar_set(true);
+    let remainder = 3 - this.get_expression_count() as isize;
+    match remainder.cmp(&0) {
+        Ordering::Greater => match f.chunk.read_last_code() {
+            // a trailing call can spread to fill the missing slots
+            OpCode::CALL(u, _, v) => {
+                let (u, v) = (*u, *v);
+                f.chunk.patch_last(OpCode::CALL(u, (remainder + 1) as u8, v));
+            }
+            _ => this.emit_at(f, OpCode::NILS(remainder as u8)),
+        },
+        Ordering::Less => this.emit_at(f, OpCode::POPS((-remainder) as u8)),
+        Ordering::Equal => {}
+    }
+    expect_token!(this it Do);
+    let count = names.len() as u8;
+    let for_start = this.emit_index(f, OpCode::FOR_GENERIC { count, exit: 0 });
+    begin_scope(this);
+    for n in names {
+        add_local(this, n)?;
+    }
+    build_block_until_then_eat!(this, mc, f, it, End);
+    end_scope(this, f, false); // pop the loop variables each iteration
+    this.emit_rewind(f, for_start);
+    this.patch(f, for_start)?; // exit lands just past the rewind
+    this.force_stack_pop(f, 3); // reclaim iterator/state/control
+    end_loop(this, f)?;
+    Ok(())
+}
 
 fn return_statement<'c>(
     this: &mut Compiler,
@@ -2293,9 +2780,91 @@ fn function_expression<'c>(
     _can_assign: bool,
 ) -> Catch {
     devnote!(this it "function_expression");
-
+    // current_location was set to the `function` keyword's position by the
+    // parse_precedence store() call that dispatched us here.
+    let start_line = this.current_location.0;
     // build_function(this, mc, f, it, ident_clone, global_ident, false)?;
-    build_function(this, mc, f, it, "".to_owned(), false)
+    build_function(this, mc, f, it, "".to_owned(), false, false, start_line)
+}
+
+/// Compile an arrow function `params -> body`. `params` are the parameter names
+/// already collected by the caller; the `->` is the current peek and is consumed
+/// here. The body is either a single expression or a `do … end` block, and is
+/// ALWAYS implicitly returned (regardless of the `implicit-return` flag). Emits a
+/// `CLOSURE` (+ upvalue registrations) into the enclosing function `f`.
+#[cfg(feature = "arrow")]
+fn build_arrow_function<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    params: Vec<String>,
+    start_line: usize,
+) -> Catch {
+    devnote!(this it "build_arrow_function");
+    expect_token!(this it ArrowFunction); // '->'
+    let mut f2 = FunctionObject::new(Some("".to_owned()), false);
+    f2.start_line = start_line;
+    f2.source_index = this.current_source_index;
+    let fr2 = &mut f2;
+    begin_scope(this);
+    begin_functional_scope(this);
+    let arity = params.len() as u8;
+    for p in params {
+        add_local(this, p)?;
+    }
+    fr2.arity = arity;
+    // A normal function body opens with a POP of the (parser-absorbed) closing
+    // `)` token, which the VM's call convention relies on for frame alignment.
+    // An arrow has no `)` to absorb, so emit the equivalent leading POP here.
+    this.emit_at(fr2, OpCode::POP);
+
+    if let Token::Do = this.peek(it)? {
+        // multi-statement body: `do … end`, last expression implicitly returned
+        this.eat(it); // 'do'
+        block(this, mc, fr2, it)?; // parses statements until `end`, eats `end`
+        fr2.end_line = this.last_end_line;
+        if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() {
+            // an explicit `return` already closed the body
+        } else {
+            this.drop_last_if(fr2, &OpCode::POP);
+            // arrows always implicit-return the last expression
+            if !this.last_was_expression {
+                this.emit_at(fr2, OpCode::NIL);
+            }
+            this.emit_at(fr2, OpCode::RETURN(this.get_expression_count()));
+            this.set_expression_count(0);
+        }
+    } else {
+        // single-expression body, implicitly returned. Use expression_single so a
+        // following comma ends the arrow (e.g. in `f(x -> x*10, 5)` the `, 5` is
+        // f's next argument, not part of the arrow body). Multi-value returns need
+        // a `do … end` body.
+        this.set_expression_count(1);
+        expression_single(this, mc, fr2, it, false)?;
+        this.emit_at(fr2, OpCode::RETURN(this.get_expression_count()));
+        this.set_expression_count(0);
+    }
+
+    end_scope(this, fr2, true);
+    let state = end_functional_scope(this);
+    f2.upvalue_count = state.up_values.len() as u8;
+    f2.is_variadic = state.vararg > 0;
+    f2.varidic_index = if state.vararg > 0 { state.vararg - 1 } else { 0 };
+
+    let func_value = Value::Function(Gc::new(mc, f2));
+    let constant = f.chunk.write_constant(func_value) as u8;
+    this.emit_at(f, OpCode::CLOSURE { constant });
+    for val in state.up_values.iter() {
+        this.emit_at(
+            f,
+            OpCode::REGISTER_UPVALUE {
+                index: val.ident,
+                neighboring: val.neighboring,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn variable<'c>(
@@ -2306,6 +2875,14 @@ fn variable<'c>(
     can_assign: bool,
 ) -> Catch {
     devnote!(this it "variable");
+    // Single-param arrow `x -> body`: the receiver ident is followed by `->`.
+    #[cfg(feature = "arrow")]
+    if this.language_flags.arrow_functions && matches!(this.peek(it)?, Token::ArrowFunction) {
+        if let Token::Identifier(name) = this.copy_store()? {
+            let line = this.current_location.0;
+            return build_arrow_function(this, mc, f, it, vec![name], line);
+        }
+    }
     // let t = this.previous.clone();
     // let ident = if let Token::Identifier(ident) = t.0 {
     //     this.identifer_constant(ident)
@@ -2367,8 +2944,12 @@ fn vararg_variable(
     // let _index = if vararg > 0 { vararg - 1 } else { 0 };
     let count = this.expected_multi;
     let is_arg = this.is_arg_mode();
+    if is_arg {
+        this.set_trailing_vararg(true);
+    }
 
     this.emit_at(f, OpCode::VARARG { is_arg, count });
+    add_local_placeholder(this)?;
 
     Ok(())
 }
@@ -2423,6 +3004,78 @@ fn print_var_stack(_v: &[Option<(OpCode, OpCode)>]) {
     }
 }
 
+/// Parse a `: Type` annotation (typing Phase 1). Assumes the upcoming token is
+/// `:`; consumes it and a single type name, returning the parsed `Type`. Union,
+/// optional (`T?`), function, and table-shape syntax are deferred to later
+/// phases. Compile-time only — nothing is emitted.
+#[cfg(feature = "typing")]
+fn parse_type_annotation(
+    this: &mut Compiler,
+    it: &mut Peekable<Lexer>,
+) -> Result<crate::types::Type, ErrorTuple> {
+    devnote!(this it "parse_type_annotation");
+    this.eat(it); // ':'
+    let (res, _) = this.pop(it);
+    Ok(match res? {
+        Token::Identifier(name) => crate::types::Type::from_name(&name),
+        Token::Nil => crate::types::Type::Nil,
+        Token::Function => crate::types::Type::Function,
+        other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+    })
+}
+
+/// Map a compound-assignment token to the binary opcode it applies.
+/// `x += e` desugars to `x = x <op> e`.
+#[cfg(feature = "compound-assignment")]
+fn compound_op(token: &Token) -> Option<OpCode> {
+    Some(match token {
+        Token::AddAssign => OpCode::ADD,
+        Token::SubAssign => OpCode::SUB,
+        Token::MultiplyAssign => OpCode::MULTIPLY,
+        Token::DivideAssign => OpCode::DIVIDE,
+        Token::ModulusAssign => OpCode::MODULUS,
+        Token::PowerAssign => OpCode::POWER,
+        Token::FloorDivideAssign => OpCode::FLOOR_DIVIDE,
+        Token::ConcatAssign => OpCode::CONCAT,
+        _ => return None,
+    })
+}
+
+/// `x <op>= e` for a simple variable (local / upvalue / global). The variable's
+/// (setter, getter) pair was just gathered onto `var_stack`. We emit the getter
+/// to push the current value, evaluate the RHS, apply `op`, then store back.
+#[cfg(feature = "compound-assignment")]
+fn compound_assign_var<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    op: OpCode,
+) -> Catch {
+    devnote!(this it "compound_assign_var");
+    // Compound assignment never has multiple targets (`a, b += 1` is invalid).
+    let pair = match this.var_stack.len() {
+        1 => this.var_stack.pop().flatten(),
+        _ => None,
+    };
+    let (setter, getter) = match pair {
+        Some(p) => p,
+        None => {
+            let tok = this.peek(it)?.clone();
+            return Err(this.error_at(SiltError::InvalidAssignment(tok)));
+        }
+    };
+    this.eat(it); // the compound operator
+    this.emit_at(f, getter); // current value of the target
+    this.set_can_multivar_set(false);
+    expression_single(this, mc, f, it, false)?; // right-hand side
+    this.set_can_multivar_set(true);
+    this.emit_at(f, op); // current <op> rhs
+    this.emit_at(f, setter); // store result (the setter consumes the value)
+    this.override_pop(); // assignment is a statement; suppress the expression-statement pop
+    Ok(())
+}
+
 fn named_variable<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -2462,7 +3115,6 @@ fn named_variable<'c>(
     let ops = if let Token::Identifier(ident) = t {
         // devout!("assigning to identifier: {}", ident);
         if this.local_declare_mode {
-            // println!("💡we added ident {} here", ident);
             add_local(this, ident.clone())?;
             // this.eat(it);
         }
@@ -2470,6 +3122,16 @@ fn named_variable<'c>(
     } else {
         unreachable!()
     };
+
+    // Typed local declaration `local x: T = …` — intercept the annotation before
+    // the colon reaches the method-call path. Compile-time only.
+    #[cfg(feature = "typing")]
+    if this.local_declare_mode && matches!(this.peek(it)?, Token::Colon) {
+        let ty = parse_type_annotation(this, it)?;
+        if let Some(local) = this.locals.last_mut() {
+            local.ty = ty;
+        }
+    }
 
     // println!("and then it's {} {}", ops.0, this.can_multivar_set);
     this.var_stack.push(if !this.local_declare_mode {
@@ -2497,6 +3159,14 @@ fn named_variable<'c>(
                 } else {
                     unreachable!()
                 };
+                // typed multi-var: `local a: T, b: U = …`
+                #[cfg(feature = "typing")]
+                if this.local_declare_mode && matches!(this.peek(it)?, Token::Colon) {
+                    let ty = parse_type_annotation(this, it)?;
+                    if let Some(local) = this.locals.last_mut() {
+                        local.ty = ty;
+                    }
+                }
                 this.var_stack.push(if !this.local_declare_mode {
                     Some(ops)
                 } else {
@@ -2561,6 +3231,8 @@ fn named_variable<'c>(
     match this.peek(it)? {
         Token::Assign => {
             if can_assign {
+            // TODO is this the best fix for local passing?
+            this.local_declare_mode=false;
                 this.eat(it);
                 let assign_need = this.var_stack.len() as isize;
                 this.expected_multi = assign_need as u8;
@@ -2593,11 +3265,12 @@ fn named_variable<'c>(
                         // we have room so spread the last if possible
                         // let offset = this.current_index - 1;
                         match f.chunk.read_last_code() {
-                            OpCode::CALL(u, _) => {
+                            OpCode::CALL(u, _, v) => {
                                 // the remainder is how much MORE we would need, at least 1 is
-                                // already assumed so we add 1+remainder
+                                // already assumed so we add 1+remainder. Preserve the variadic
+                                // flag already resolved by call()/arguments().
                                 // devout!("{} {}", "modify call to ".red(), remainder + 1);
-                                f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8));
+                                f.chunk.patch_last(OpCode::CALL(*u, (remainder + 1) as u8, *v));
                             }
                             // we have exception for vararg because they set their own stack lengths and dont need nil padding
                             OpCode::VARARG {
@@ -2624,30 +3297,78 @@ fn named_variable<'c>(
                 this.drain_getters(f);
             }
         }
+        #[cfg(feature = "compound-assignment")]
+        ct @ (Token::AddAssign
+        | Token::SubAssign
+        | Token::MultiplyAssign
+        | Token::DivideAssign
+        | Token::ModulusAssign
+        | Token::PowerAssign
+        | Token::FloorDivideAssign
+        | Token::ConcatAssign) => {
+            // `x <op>= e` on a simple variable.
+            if !can_assign || !this.language_flags.compound_assignment {
+                let tok = ct.clone();
+                return Err(this.error_at(SiltError::InvalidAssignment(tok)));
+            }
+            let op = compound_op(ct).unwrap();
+            compound_assign_var(this, mc, f, it, op)?;
+        }
         Token::OpenBracket | Token::Dot => {
             // println!("drain 4");
             this.drain_getters(f); // TODO we should probably error if this is higher then 1
             let count = table_indexer(this, mc, f, it)? as u8;
-            if let Token::Assign = this.peek(it)? {
-                this.eat(it);
-                expression(this, mc, f, it, false)?;
-                this.emit_at(f, OpCode::TABLE_SET { depth: count });
-                // override statement end pop because instruction takes care of it
-                this.override_pop();
-            } else {
-                this.emit_at(f, OpCode::TABLE_GET { depth: count });
-                // add!(this);
+            match this.peek(it)? {
+                Token::Assign => {
+                    this.eat(it);
+                    expression(this, mc, f, it, false)?;
+                    this.emit_at(f, OpCode::TABLE_SET { depth: count });
+                    // override statement end pop because instruction takes care of it
+                    this.override_pop();
+                }
+                #[cfg(feature = "compound-assignment")]
+                ct @ (Token::AddAssign
+                | Token::SubAssign
+                | Token::MultiplyAssign
+                | Token::DivideAssign
+                | Token::ModulusAssign
+                | Token::PowerAssign
+                | Token::FloorDivideAssign
+                | Token::ConcatAssign) => {
+                    // `t.f <op>= e` / `t[k] <op>= e`. Duplicate the receiver+keys
+                    // (DUP_N) so the same operands feed a TABLE_GET (read current)
+                    // and a TABLE_SET (store result) — no re-evaluation of `t`/`k`.
+                    if !can_assign || !this.language_flags.compound_assignment {
+                        let tok = ct.clone();
+                        return Err(this.error_at(SiltError::InvalidAssignment(tok)));
+                    }
+                    let op = compound_op(ct).unwrap();
+                    this.eat(it);
+                    this.emit_at(f, OpCode::DUP_N(count + 1));
+                    this.emit_at(f, OpCode::TABLE_GET { depth: count });
+                    this.set_can_multivar_set(false);
+                    expression_single(this, mc, f, it, false)?;
+                    this.set_can_multivar_set(true);
+                    this.emit_at(f, op);
+                    this.emit_at(f, OpCode::TABLE_SET { depth: count });
+                    this.override_pop();
+                }
+                Token::Colon => {
+                    // method call on a chained receiver, e.g. `a.b:m()`. Resolve
+                    // the chain to leave the receiver on the stack, then METHOD_GET.
+                    this.emit_at(f, OpCode::TABLE_GET { depth: count });
+                    emit_method_get(this, f, it)?;
+                }
+                _ => {
+                    this.emit_at(f, OpCode::TABLE_GET { depth: count });
+                    // add!(this);
+                }
             }
         }
         Token::Colon => {
-            let target = this.pull_getter();
+            // method call on a bare variable receiver, e.g. `t:m()`.
             this.drain_getters(f);
-            single_table_index(this, f, it)?;
-            // we should only have one getter, table_indexer is just a faster getter opcode
-            // sequence anyway
-            this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
-            this.emit_at(f, target);
-            this.self_arg = true;
+            emit_method_get(this, f, it)?;
         }
         _ => {
             // this.return_count = this.var_stack.len() as u8;
@@ -2689,10 +3410,162 @@ fn grouping<'c>(
     _can_assign: bool,
 ) -> Catch {
     devnote!(this it "-> grouping");
+    let start = this.current_location;
+    // A `(` that opens with an identifier may be an arrow parameter list
+    // (`(a, b) -> …`, `(a) -> …`) rather than a grouped expression. Disambiguate
+    // there; everything else is an ordinary grouping.
+    #[cfg(feature = "arrow")]
+    if this.language_flags.arrow_functions {
+        match this.peek(it)? {
+            // `()` is only valid as a zero-parameter arrow `() -> body`
+            Token::CloseParen => {
+                this.eat(it); // ')'
+                return build_arrow_function(this, mc, f, it, vec![], start.0);
+            }
+            Token::Identifier(_) => return grouping_or_arrow(this, mc, f, it, start),
+            _ => {}
+        }
+    }
     expression(this, mc, f, it, false)?;
-    //TODO expect
-    // expect_token!(self, CloseParen, SiltError::UnterminatedParenthesis(0, 0));
-    // self.consume(TokenType::RightParen, "Expect ')' after expression.");
+    // Consume the closing `)`. Without this the `)` is left at the cursor; since
+    // it has no infix rule the enclosing precedence loop halts and any operator
+    // after the group (e.g. the `* 3` in `(1+2)*3`) is silently dropped.
+    expect_token!(
+        this,
+        it,
+        CloseParen,
+        this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
+    );
+    Ok(())
+}
+
+/// Entered from `grouping` when a `(` is immediately followed by an identifier.
+/// Resolves the ambiguity between an arrow parameter list and an ordinary
+/// parenthesized expression:
+///   `(a, b) -> …` / `(a) -> …`            → arrow function
+///   `(a: number, b: number) -> …`         → typed arrow params (with `typing`)
+///   `(a)`                                 → grouped variable
+///   `(a + b)` / `(x -> …)`                → ordinary grouped expression
+#[cfg(feature = "arrow")]
+fn grouping_or_arrow<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    start: TokenCell,
+) -> Catch {
+    this.store(it); // current = first ident (consumed)
+    let first = match this.copy_store()? {
+        Token::Identifier(n) => n,
+        _ => unreachable!("grouping_or_arrow entered on a non-identifier"),
+    };
+    // Decide whether this is an arrow parameter list. A `,` unambiguously means
+    // one. A `:` (typed first param, `typing` feature) needs disambiguation:
+    // `(a: T, …)` is a typed param list, but `(a:method(…))` is a parenthesized
+    // method call — decided by the token after the name (`(` ⇒ method call).
+    let mut in_param_list = false;
+    #[cfg(feature = "typing")]
+    if matches!(this.peek(it)?, Token::Colon) {
+        this.eat(it); // ':'
+        let (nres, _) = this.pop(it);
+        let name = match nres? {
+            Token::Identifier(n) => n,
+            Token::Nil => "nil".to_string(),
+            Token::Function => "function".to_string(),
+            other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+        };
+        if matches!(this.peek(it)?, Token::OpenParen) {
+            // `(a:method(…))` — a grouped method call, not a typed param list.
+            return finish_grouped_method_call(this, mc, f, it, first, name, start);
+        }
+        // `name` annotated `first`; this is a typed parameter list
+        in_param_list = true;
+    }
+    if !in_param_list {
+        in_param_list = matches!(this.peek(it)?, Token::Comma);
+    }
+    if in_param_list {
+        let mut params = vec![first];
+        while matches!(this.peek(it)?, Token::Comma) {
+            this.eat(it); // ','
+            let (res, _) = this.pop(it);
+            match res? {
+                Token::Identifier(n) => params.push(n),
+                other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
+            }
+            // optional type annotation on each subsequent param (parsed and
+            // consumed; recording it on the param local is a follow-up)
+            #[cfg(feature = "typing")]
+            if matches!(this.peek(it)?, Token::Colon) {
+                let _ = parse_type_annotation(this, it)?;
+            }
+        }
+        expect_token!(this it CloseParen);
+        return build_arrow_function(this, mc, f, it, params, start.0);
+    }
+    match this.peek(it)? {
+        Token::CloseParen => {
+            this.eat(it); // ')'
+            if matches!(this.peek(it)?, Token::ArrowFunction) {
+                // `(a) -> …` — single parenthesized parameter
+                build_arrow_function(this, mc, f, it, vec![first], start.0)
+            } else {
+                // `(a)` — ordinary parenthesized variable; emit its getter
+                let (_set, getter) = resolve_etters(this, f, it, first);
+                this.emit_at(f, getter);
+                Ok(())
+            }
+        }
+        _ => {
+            // ordinary grouped expression starting with an identifier, e.g.
+            // `(a + b)` or `(x -> x + 1)`. Resume parsing from the stored ident.
+            this.parse_precedence(mc, f, it, Precedence::Assignment, true)?;
+            expect_token!(
+                this,
+                it,
+                CloseParen,
+                this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Recover a parenthesized method call `(receiver:method(args))` that the typed
+/// arrow-param lookahead initially mistook for `(a: Type)`. The `receiver`, the
+/// `:`, and the `method` name are already consumed; the cursor is at the call's
+/// `(`. We emit the method call and close the grouping. Because we've committed
+/// to the not-an-arrow interpretation, a trailing `->` is a hard error.
+#[cfg(all(feature = "arrow", feature = "typing"))]
+fn finish_grouped_method_call<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    receiver: String,
+    method: String,
+    start: TokenCell,
+) -> Catch {
+    devnote!(this it "finish_grouped_method_call");
+    let (_set, getter) = resolve_etters(this, f, it, receiver);
+    this.emit_at(f, getter);
+    let constant = this.identifer_constant(f, method);
+    this.emit_at(f, OpCode::METHOD_GET { constant });
+    this.self_arg = true;
+    // The receiver+method are on the stack; resume the infix loop so the call's
+    // `(args)` and any trailing operators inside the parens (`(a:m() + 1)`) are
+    // parsed normally.
+    this.infix_loop(mc, f, it, Precedence::Assignment)?;
+    expect_token!(
+        this,
+        it,
+        CloseParen,
+        this.error_at(SiltError::UnterminatedParenthesis(start.0, start.1))
+    );
+    if matches!(this.peek(it)?, Token::ArrowFunction) {
+        // `(a:m()) -> …` is contradictory: we already committed to a method call
+        return Err(this.error_at(SiltError::InvalidTokenPlacement(Token::ArrowFunction)));
+    }
     Ok(())
 }
 
@@ -2742,9 +3615,7 @@ fn tabulate<'c>(
                     false
                 }
             } {
-                println!("{}", "START TABLE FN".on_bright_cyan());
                 expression_single(this, mc, f, it, false)?;
-                println!("{}", "END TABLE FN".on_bright_cyan());
                 this.emit_at(f, OpCode::TABLE_INSERT { offset: count });
             } else {
                 count += 1;
@@ -2799,6 +3670,7 @@ fn unary<'c>(
         Token::Op(Operator::Sub) => this.emit_at(f, OpCode::NEGATE),
         Token::Op(Operator::Not) => this.emit_at(f, OpCode::NOT),
         Token::Op(Operator::Length) => this.emit_at(f, OpCode::LENGTH),
+        Token::Op(Operator::Tilde) => this.emit_at(f, OpCode::BIT_NOT),
         _ => {}
     }
     //     let operator = Self::de_op(self.eat_out());
@@ -2864,6 +3736,53 @@ fn single_table_index<'c>(
     Ok(())
 }
 
+/// Consume `:method` after a receiver that is already on the stack and emit
+/// `METHOD_GET`, leaving `[method, receiver]`. Caller sets `self_arg` so the
+/// following call counts the receiver as the implicit first argument. Works for
+/// any receiver expression (`t:m()`, `a.b:m()`, `f():m()`).
+fn emit_method_get<'c>(
+    this: &mut Compiler,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    this.eat(it); // ':'
+    let (res, loc) = this.pop(it);
+    this.current_location = loc;
+    let name = match res? {
+        Token::Identifier(ident) => ident,
+        _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
+    };
+    let constant = this.identifer_constant(f, name);
+    this.emit_at(f, OpCode::METHOD_GET { constant });
+    this.self_arg = true;
+    Ok(())
+}
+
+/// Infix `:method` after any expression whose value is already on the stack —
+/// e.g. `("hi"):upper()`, `f():m()`. The Pratt loop has already consumed the
+/// `:` (via `store`), so unlike `emit_method_get` we read the method name
+/// directly. Identifier/table receivers are handled earlier in `named_variable`,
+/// so this only fires for grouped / call-result receivers.
+fn method_infix<'c>(
+    this: &mut Compiler,
+    _mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
+    devnote!(this it "method_infix");
+    let (res, loc) = this.pop(it);
+    this.current_location = loc;
+    let name = match res? {
+        Token::Identifier(ident) => ident,
+        _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
+    };
+    let constant = this.identifer_constant(f, name);
+    this.emit_at(f, OpCode::METHOD_GET { constant });
+    this.self_arg = true;
+    Ok(())
+}
+
 fn binary<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -2882,11 +3801,16 @@ fn binary<'c>(
             Operator::Sub => this.emit(f, OpCode::SUB, l),
             Operator::Multiply => this.emit(f, OpCode::MULTIPLY, l),
             Operator::Divide => this.emit(f, OpCode::DIVIDE, l),
+            Operator::Modulus => this.emit(f, OpCode::MODULUS, l),
+            Operator::FloorDivide => this.emit(f, OpCode::FLOOR_DIVIDE, l),
+            Operator::BitAnd => this.emit(f, OpCode::BIT_AND, l),
+            Operator::BitOr => this.emit(f, OpCode::BIT_OR, l),
+            Operator::Tilde => this.emit(f, OpCode::BIT_XOR, l),
+            Operator::ShiftLeft => this.emit(f, OpCode::SHIFT_LEFT, l),
+            Operator::ShiftRight => this.emit(f, OpCode::SHIFT_RIGHT, l),
 
             Operator::Concat => this.emit(f, OpCode::CONCAT, l),
 
-            // Operator::Modulus => self.emit(OpCode::MODULUS, t.1),
-            // Operator::Equal => self.emit(OpCode::EQUAL, t.1),
             Operator::Equal => this.emit(f, OpCode::EQUAL, l),
             Operator::NotEqual => this.emit(f, OpCode::NOT_EQUAL, l),
             Operator::Less => this.emit(f, OpCode::LESS, l),
@@ -2897,6 +3821,23 @@ fn binary<'c>(
             _ => todo!(),
         }
     }
+    Ok(())
+}
+
+/// Right-associative `^`. Parses the RHS at its OWN precedence (not `.next()`)
+/// so `2^2^3` groups as `2^(2^3)`. Because Exponent sits above Unary, `-2^2`
+/// already parses as `-(2^2)` via the unary operand parse.
+fn exponent<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
+    devnote!(this it "exponent");
+    let l = this.current_location;
+    this.parse_precedence(mc, f, it, Precedence::Exponent, false)?;
+    this.emit(f, OpCode::POWER, l);
     Ok(())
 }
 
@@ -3054,7 +3995,43 @@ fn call<'c>(
     // println!("{} ", "TIME TO COUNT".on_cyan());
     let arg_count = arguments(this, mc, f, it, start)?;
     devout!("{} {}", "ARG COUNT".on_cyan(), arg_count);
-    this.emit(f, OpCode::CALL(arg_count, 0), start);
+    // If the final argument was `...`, the call spreads the enclosing function's
+    // variadic overflow, so the real argument count is resolved at runtime.
+    let trailing_vararg = this.is_trailing_vararg();
+    if trailing_vararg {
+        this.set_trailing_vararg(false);
+    }
+    // If the final argument was itself a function call, it spreads ALL its return
+    // values (Lua's open multiret). Mark that inner call multiret and flag this
+    // call variadic so its true argument count is resolved from the stack at runtime.
+    let trailing_multiret =
+        !trailing_vararg && matches!(f.chunk.read_last_code(), OpCode::CALL(..));
+    if trailing_multiret {
+        // Copy the inner call's fields out (ending the borrow) before patching.
+        let patched = match f.chunk.read_last_code() {
+            OpCode::CALL(a, _, v) => Some(OpCode::CALL(*a, crate::code::MULTIRET, *v)),
+            _ => None,
+        };
+        if let Some(op) = patched {
+            f.chunk.patch_last(op);
+        }
+    }
+    let variadic = trailing_vararg || trailing_multiret;
+    this.emit(f, OpCode::CALL(arg_count, 0, variadic), start);
+    Ok(())
+}
+
+/// Emit the getter for the callee identifier that is the current token. Shared by
+/// the string/table call-sugar paths, which (unlike the `(...)` path via
+/// `named_variable`) must push the callee themselves before the single argument.
+fn emit_sugar_callee(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+    let start = this.current_location;
+    let get = match this.copy_store()? {
+        Token::Identifier(ident) => resolve_etters(this, f, it, ident).1,
+        // `variable` only routes identifiers here.
+        _ => unreachable!(),
+    };
+    this.emit(f, get, start);
     Ok(())
 }
 
@@ -3065,17 +4042,20 @@ fn call_table<'c>(
     it: &mut Peekable<Lexer>,
     can_assign: bool,
 ) -> Catch {
+    // Current token is the callee identifier; push it, then advance onto `{` and
+    // build the table literal as the single argument.
+    emit_sugar_callee(this, f, it)?;
     let start = this.current_location;
+    this.store(it); // current = `{`
 
     this.set_arg_mode(true);
     this.set_can_multivar_set(false);
 
-    this.eat(it);
     tabulate(this, mc, f, it, can_assign)?;
 
     this.set_arg_mode(false);
     this.set_can_multivar_set(true);
-    this.emit(f, OpCode::CALL(1, 0), start);
+    this.emit(f, OpCode::CALL(1, 0, false), start);
     Ok(())
 }
 
@@ -3086,16 +4066,20 @@ fn call_string<'c>(
     it: &mut Peekable<Lexer>,
     _can_assign: bool,
 ) -> Catch {
+    // Current token is the callee identifier; push it, then advance onto the string
+    // literal and emit it as the single argument.
+    emit_sugar_callee(this, f, it)?;
     let start = this.current_location;
+    this.store(it); // current = the string literal
 
     this.set_arg_mode(true);
     this.set_can_multivar_set(false);
 
-    expression_single(this, mc, f, it, false)?;
+    string(this, mc, f, it, false)?;
 
     this.set_arg_mode(false);
     this.set_can_multivar_set(true);
-    this.emit(f, OpCode::CALL(1, 0), start);
+    this.emit(f, OpCode::CALL(1, 0, false), start);
     Ok(())
 }
 
@@ -3197,10 +4181,7 @@ pub fn void<'c>(
 }
 
 pub(crate) fn to_op_string(name: Option<&str>) -> Option<String> {
-    match name {
-        Some(o) => Some(o.to_string()),
-        None => None,
-    }
+    name.map(|o| o.to_string())
 }
 
 // pub fn invalid(_: &mut Compiler) { // TODO

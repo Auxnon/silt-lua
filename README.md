@@ -10,7 +10,26 @@ There's also desire to add some custom non-lua syntax pulling syntactic sugar fr
 
 This library has been written from the ground up with observations of the lua language and documentation. Source code has not been referenced so naturally the VM will always have some noticeable differences that will hopefully be ironed out eventually. This includes the byte code, as lua now operates under wordcode to work with it's register based VM. Feel free to submit an issue for anything particularly glaring. This project is a learning exercise so there is a good deal of naive approaches I'm taking to make this a reality.
 
+## Running
+
+The `silt` binary takes either a file path or an inline program:
+
+```sh
+silt path/to/script.lua          # run a file
+silt --run "return 1 + 2"        # run a string directly (prints 3)
+silt -r 'print("hi")'            # short flag
+silt --help                      # usage (alias: -h)
+```
+
+With `--run`/`-r`, everything after the flag is treated as the Lua source (quote it so your shell passes it as one argument). The final returned value is printed after a separator line.
+
 ## Limitations
+
+> **Conformance status & roadmap:** see [`PLAN.md`](./PLAN.md) for the full audited list of
+> working features, known bugs (with reproductions and root-cause pointers), the missing
+> standard library, tail-call-optimization notes, and the stack-vs-register VM analysis. The
+> test suite under `tests/` encodes the target behavior — broken features have `#[ignore]`d
+> tests tagged with the relevant `PLAN.md` section.
 
 - Built as a stack based VM, not register based, this will change eventually.
 - Multiple returns is still WIP
@@ -33,8 +52,43 @@ Keep in mind these may be polarizing and an LSP will flag them as an error
 - `"short-declare"` Stolen right from Go you can now declare a local variable with `:=` such as `a := 2`
 - <del>`"implicit-return"` Blocks and statements will implicitly return the last value on the stack unless ending in a `;`</del>
 - <del> Top of file flags like --!local force implicit declaration to assign to the current scope instead of at the global level. You can still always declare globals anywhere via the keyword "global", python style </del>
-- <del> Anonymous arrow functions of the -> (C# style) are supported `func_name =param -> param+1` in addition to this arrow functions have implicit returns. The last value on the stack is always returned. Regular functions without a `return` keyword will return nil as before. </del>
-- <del> Incrementors like `+=` `-=` `*=` `/=` </del>
+- `"arrow"` Arrow functions: `x -> x + 1` (single param, bare), `(a, b) -> a + b` (multiple params, parenthesized). The body is a single expression, or a `do … end` block for multiple statements; either way the body is **always implicitly returned** (regardless of the `implicit-return` flag). They are first-class expressions — assign them, pass them as arguments, curry them (`x -> y -> x + y`), or call inline (`((x) -> x*x)(9)`). A comma ends an arrow body, so `f(x -> x*2, 5)` passes the arrow and `5` as two arguments.
+- `"compound-assignment"` Luau-style compound assignment operators: `+=` `-=` `*=` `/=` `//=` `%=` `^=` `..=`. `x op= e` is shorthand for `x = x op e` and evaluates the target once. Works on locals, upvalues, globals, and table fields/indexes (`t.x += 1`, `t[k] *= 2`, `self.count += 1`).
+- `"typing"` (off by default) Luau-style optional static type annotations — Phase 1 parses and tracks `local x: number`, function params, and arrow params, with no checking yet. See `TYPING_PLAN.md`.
+- `"hot-swap"` (off by default) Live code hot-swapping for dev/live-reload tooling. `Lua::hotswap(old, new)` diffs the two sources: a root-level change is a full VM reset; a function-body-only change is applied *live* with no re-run and all state preserved. Changed **top-level global** functions are rebound in place, and changed **nested / instance methods** are redirected via a shared prototype cell so every existing instance picks up the new body on its next call while keeping its own captured state (the unchanged enclosing function is left alone). Not needed for normal embedding, so it's gated off.
+- `"lsp"` (off by default) Pure-Rust language-analysis API for editor/tooling integration, returning **native Rust types** (no JSON): `silt_lua::lsp::diagnostics(src) -> Vec<Diagnostic>` (compile errors, without running the code) and `silt_lua::lsp::format(src) -> String` (Lua-style re-indentation of blocks, if/elseif/else, for/while/do, repeat/until, and `{ }` tables). Call these directly in-process.
+- `"lsp-server"` (off by default, implies `lsp`) A JSON-RPC-over-stdio language server for editors like Neovim, built on the `lsp` core (adds `serde_json` only for the wire format). See **Editor integration** below.
+
+## Editor integration (LSP)
+
+silt can act as a language server so editors get live diagnostics and formatting for silt/Lua source — including silt's custom syntax (arrow functions, compound assignment, `!`, etc.) that a stock Lua LSP wouldn't understand.
+
+Build with the server feature and launch over stdio:
+
+```sh
+cargo build --release --features lsp-server   # add to defaults: --features "silt lsp-server"
+silt lsp                                       # speaks LSP/JSON-RPC on stdio
+```
+
+`silt lsp` writes **only** framed JSON-RPC to stdout (logs go to stderr). It currently provides **diagnostics** (`textDocument/publishDiagnostics` on open/change) and **formatting** (`textDocument/formatting`, honoring the editor's `tabSize`/`insertSpaces`).
+
+### Neovim
+
+No plugin required (Neovim 0.8+). Point the built-in client at the `silt` binary:
+
+```lua
+-- ~/.config/nvim/after/ftplugin/lua.lua  (or inside a FileType autocmd)
+vim.lsp.start({
+  name = "silt",
+  cmd = { "silt", "lsp" },          -- or an absolute path to the built binary
+  root_dir = vim.fs.dirname(vim.fs.find({ ".git" }, { upward = true })[1])
+             or vim.fn.getcwd(),
+})
+```
+
+Diagnostics then appear automatically via `vim.diagnostic`; format the buffer with `vim.lsp.buf.format()`.
+
+> Note: diagnostics only flag what silt's single-pass compiler detects (unterminated blocks, missing tokens, …); it is permissive about some malformed input. Columns are Unicode-char based — exact for ASCII/BMP source.
 
 ## Examples
 

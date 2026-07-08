@@ -85,6 +85,24 @@ impl<'v> Table<'v> {
         }
     }
 
+    /// Stateless iteration step for `next`/`pairs`. Given the previous key
+    /// (`Nil` to start), return the next `(key, value)` in the hashmap's
+    /// iteration order, or `None` when exhausted. Order is unspecified (Lua
+    /// makes no guarantee) but stable for an unmodified table within one pass.
+    pub fn next_entry(&self, key: &Value<'v>) -> Option<(Value<'v>, Value<'v>)> {
+        let mut iter = self.data.iter();
+        if matches!(key, Value::Nil) {
+            return iter.next().map(|(k, v)| (k.clone(), v.clone()));
+        }
+        // advance past `key`, then yield the following entry
+        for (k, _) in iter.by_ref() {
+            if k == key {
+                break;
+            }
+        }
+        iter.next().map(|(k, v)| (k.clone(), v.clone()))
+    }
+
     pub fn try_get_type<'f, T, R>(&self, key: T, vm: &VM<'v>, mc: &Mutation<'v>) -> Option<R>
     where
         'v: 'f,
@@ -234,40 +252,57 @@ impl<'v> Table<'v> {
         // self.data.insert(key, value);
         // Ok(())
 
+        // Positional insert — Lua `table.insert(t, pos, v)`: open a slot at `pos` by
+        // shifting every element in `pos..=counter` up one index, then store `v` there.
+        // The old loop ran `counter..pos`, which is empty whenever `pos < counter`, so
+        // nothing shifted and the element already at `pos` was silently overwritten.
         let i = key.strict_int()?;
-        if i >= self.counter {
-            self.recursion(i);
-        } else {
-            // push instead
-            for it in self.counter..i {
-                let v = self.data.remove(&it.into()).unwrap_or_default();
-                // TODO we need to do this as an array instead
-                self.data.insert((it + 1).into(), v);
+        let mut k = self.counter;
+        while k >= i && k >= 1 {
+            if let Some(v) = self.data.remove(&Value::Integer(k)) {
+                self.data.insert(Value::Integer(k + 1), v);
             }
-            self.counter += 1;
+            k -= 1;
         }
-
-        Ok(self.data.insert(key, value).unwrap_or_default())
+        self.counter += 1;
+        self.data.insert(Value::Integer(i), value);
+        Ok(Value::Nil)
     }
 
     pub fn push(&mut self, value: Value<'v>) {
+        // Append at the array border. `counter` is the last used integer index (0 for a
+        // fresh table), so the new element goes at `counter + 1` — Lua tables are
+        // 1-indexed. Incrementing FIRST (matching `raw_push`) was the bug: reading
+        // `counter` before the bump appended at index 0 and clobbered the last slot.
+        self.counter += 1;
         let key = self.counter.into();
         self.data.insert(key, value);
     }
 
-    pub fn remove(&mut self, key: Value<'v>,value: Value<'v>) -> Result<Value<'v>, SiltError> {
-        let i = key.strict_int()?;
-        let ret = self.data.remove(&value).unwrap_or_default();
+    /// The current array border (last integer index in use, 0 when empty) — Lua's `#t`
+    /// for a hole-free table. Used as the default position for `table.remove`.
+    pub fn border(&self) -> i64 {
+        self.counter
+    }
 
-        if i >= self.counter {
-        } else {
-            for it in i..self.counter {
-                let v = self.data.remove(&(it + 1).into()).unwrap_or_default();
-                self.data.insert(it.into(), v);
+    /// Remove the element at `pos` (Lua `table.remove`): return it, then shift every
+    /// element in `pos+1..=counter` DOWN one index to close the gap, and shrink the
+    /// border. The old `remove` removed by *value*, shifted the wrong direction, and
+    /// decremented the border unconditionally — it never actually removed anything
+    /// (the standard-lib wrapper even called `insert` instead). See `tests/tables.rs`.
+    pub fn remove_at(&mut self, pos: i64) -> Value<'v> {
+        let removed = self.data.remove(&Value::Integer(pos)).unwrap_or_default();
+        let mut k = pos + 1;
+        while k <= self.counter {
+            if let Some(v) = self.data.remove(&Value::Integer(k)) {
+                self.data.insert(Value::Integer(k - 1), v);
             }
+            k += 1;
         }
-        self.counter -= 1;
-        Ok(ret)
+        if self.counter > 0 {
+            self.counter -= 1;
+        }
+        removed
     }
 
     pub fn pop(&mut self) -> Value<'v> {
@@ -310,6 +345,22 @@ impl<'v> Table<'v> {
 
     pub fn get_metatable(&self) -> Value<'v> {
         self.meta.clone().unwrap_or(Value::Nil)
+    }
+
+    /// The raw `__index` metafield (a table or a function), if this table has a
+    /// metatable that defines one. Unlike [`by_meta_method`], this does not require
+    /// the value to be callable — `__index` is most often a table (the OOP class
+    /// pattern). Returns `None` when there is no metatable or no `__index`.
+    pub fn meta_index(&self) -> Option<Value<'v>> {
+        if let Some(Value::Table(mt)) = &self.meta {
+            let v = mt
+                .borrow()
+                .get_value(&Value::String("__index".to_string()));
+            if !matches!(v, Value::Nil) {
+                return Some(v);
+            }
+        }
+        None
     }
 
     pub fn by_meta_method(&self, method: MetaMethod) -> Result<Value<'v>, SiltError> {

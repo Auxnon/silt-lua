@@ -73,6 +73,16 @@ impl UserData for Counter {
             }
         });
 
+        // A method that takes a parameter — exercises `userdata:add(n)`.
+        methods.add_method_mut("add", |_vm, _m, counter, n: i64| {
+            if let Some(this) = counter {
+                this.count += n;
+                Ok(Value::Integer(this.count))
+            } else {
+                Err(LuaError::UDBadCall)
+            }
+        });
+
         methods.add_meta_method("__tostring", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 Ok(Value::String(format!("Counter({})", this.get_count())))
@@ -119,7 +129,8 @@ impl UserData for Counter {
 }
 
 fn main() {
-    let mut lua = Lua::new();
+    // new_with_standard() so `print` and friends are available.
+    let mut lua = Lua::new_with_standard();
     let mut comp = Compiler::new();
     lua.enter(|vm, mc| {
         vm.register_native_function(mc, "make_counter", make_userdata);
@@ -127,12 +138,11 @@ fn main() {
     let res = lua.run(
         Some("counter userdata test"),
         r#"
-         counter=make_counter()
-         counter.increment()
-         print(counter)
-         counter.increment()
-         print(counter)
-         return 8
+         counter = make_counter()
+         counter:increment()          -- self method, no args
+         counter:add(10)              -- self method WITH a parameter
+         print(counter.count)         -- field getter -> 11
+         return counter:increment()   -- -> 12
          "#,
         &mut comp,
     );

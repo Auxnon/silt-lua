@@ -40,5 +40,23 @@ mod tests {
         let bool_val: bool = v_bool.into();
         assert_eq!(u8_val, 42);
         assert_eq!(bool_val, true);
+
+        // A mid-range usize round-trips exactly.
+        let v_usize: Value = 123456usize.into();
+        let usize_val: usize = v_usize.into();
+        assert_eq!(usize_val, 123456);
+
+        // Values above i64::MAX saturate to i64::MAX (both directions) rather than
+        // wrapping to u64::MAX / usize::MAX.
+        let clamp = i64::MAX as u64;
+        let v_big: Value = u64::MAX.into();
+        assert_eq!(v_big, Value::Integer(i64::MAX));
+        let big_back: u64 = v_big.into();
+        assert_eq!(big_back, clamp);
+
+        let v_big_usize: Value = usize::MAX.into();
+        assert_eq!(v_big_usize, Value::Integer(i64::MAX));
+        let big_usize_back: usize = v_big_usize.into();
+        assert_eq!(big_usize_back, i64::MAX as usize);
     }
 }

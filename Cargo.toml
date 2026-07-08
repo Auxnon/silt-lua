@@ -18,20 +18,35 @@ exclude = [
 name = "silt_lua"
 path = "src/lib.rs"
 crate-type = ["cdylib", "lib"]
+bench = false   # only benches/interpreter.rs is a benchmark target (avoids cargo 6313 warning)
 
 [[bin]]
 name = "silt"
 path = "src/main.rs"
+bench = false
 
 [profile.release]
 strip = true    # Automatically strip symbols from the binary.
-opt-level = "z" # Optimize for size.
+opt-level = 3
+codegen-units = 1
 lto = true
 panic = "abort"
 
 
 [profile.wasm]
 inherits = "release"
+
+# `cargo bench` uses this profile; mirror release (speed-optimized) so bench numbers
+# reflect real release performance. Normal `cargo test`/`cargo build` are unaffected.
+[profile.bench]
+opt-level = 3
+lto = true
+
+[[bench]]
+name = "interpreter"
+harness = false       # use Criterion's harness, not libtest
+# NOTE: benches are NOT compiled or run by `cargo test`; they run only via `cargo bench`,
+# which keeps them out of the normal CI path (see PLAN.md §8).
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
@@ -42,6 +57,8 @@ silt = [
     "global",
 "implicit-return",
     "short-declare",
+    "compound-assignment",
+    "arrow",
     # "vectors",
 ]
 wasm=["wasm-bindgen", "serde", "serde-wasm-bindgen"]
@@ -50,6 +67,24 @@ bang = []
 global = []
 short-declare = []
 implicit-return = []
+# Luau-style compound assignment operators: += -= *= /= //= %= ^= ..=
+compound-assignment = []
+# Arrow functions: `x -> x + 1`, `(a, b) -> a + b`, body may be a `do … end`
+# block. Always implicitly returns its last expression. On by default.
+arrow = []
+# Luau-style static type annotations (Phase 1: parse + track only, no checking yet).
+# Off by default.
+typing = []
+# Live code hot-swapping: diff old/new source and surgically replace changed
+# function bodies in a running VM (top-level globals swap live, preserving state).
+# Off by default — only needed for live-reload / dev tooling, not normal embedding.
+hot-swap = []
+# Pure-Rust language-analysis API (diagnostics + formatting) returning native Rust
+# types — no JSON, no serde. For in-process editor/tooling integration.
+lsp = []
+# JSON-RPC-over-stdio language server (for Neovim etc.) built on `lsp`. Adds serde_json
+# only for the wire transport; `silt lsp` launches it. Off by default.
+lsp-server = ["lsp", "dep:serde_json"]
 vectors = []
 dev-out = []
 
@@ -58,9 +93,15 @@ byteyarn = "0.5.1"
 wasm-bindgen = {version= "0.2.103", optional=true }
 serde = { version = "1.0.219", features = ["derive"], optional=true }
 serde-wasm-bindgen = {version="0.6.5", optional=true}
+serde_json = { version = "1.0.150", optional = true }
 gc-arena = {version= "0.5.3", features=["allocator-api2"] }
 string-interner = "0.18.0"
 colored = "3.0.0"
 lending-iterator = "0.1.7"
 # rustc-hash="1.1.0"
 # ahash="0.8.3"
+
+# Dev-dependencies are compiled only for tests/benches/examples — never for the library or a
+# release build, so Criterion adds zero overhead to normal consumers of the crate.
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

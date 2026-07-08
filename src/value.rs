@@ -285,6 +285,22 @@ impl<'v> Value<'v> {
             Value::Vec2(_) => ValueTypes::Vec2,
         }
     }
+    /// Lua `type()` name. Integers/floats/infinity are all "number"; any callable
+    /// is "function".
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Nil => "nil",
+            Value::Integer(_) | Value::Number(_) | Value::Infinity(_) => "number",
+            Value::Bool(_) => "boolean",
+            Value::String(_) => "string",
+            Value::Table(_) => "table",
+            Value::Function(_) | Value::Closure(_) | Value::NativeFunction(_) => "function",
+            Value::UserData(_) => "userdata",
+            #[cfg(feature = "vectors")]
+            Value::Vec3(_) | Value::Vec2(_) => "userdata",
+        }
+    }
+
     /** normal to_string takes some liberties for convenient display purposes. This more raw
      * approach is used for UserData hashmap lookup*/
     pub fn pure_string(&self) -> String {
@@ -357,6 +373,7 @@ impl<'v> Value<'v> {
         *self = Value::Number(n);
     }
 
+    #[inline]
     pub fn increment(&mut self, value: &Value) -> Result<(), SiltError> {
         binary_self_op!(self, +=,+, value, Add)
         // match match (&mut *self, value) {
@@ -549,7 +566,13 @@ macro_rules! from_val {
                         f.max(Self::MIN as f64).min(Self::MAX as f64).round() as Self
                     }
 
-                    Value::Integer(i) => i.max(Self::MIN as i64).min(Self::MAX as i64) as Self,
+                    Value::Integer(i) => {
+                        // Clamp in i128 so a wide unsigned MAX can't wrap: `Self::MAX
+                        // as i64` overflows to -1 for u64/usize, which collapsed every
+                        // value to -1 → u64::MAX.
+                        let hi = (Self::MAX as i128).min(i64::MAX as i128);
+                        (i as i128).max(Self::MIN as i128).min(hi) as Self
+                    }
                     Value::Bool(b) => {
                         if b {
                             Self::MAX
@@ -568,7 +591,11 @@ macro_rules! from_val {
                     Value::Number(f) => {
                         (*f).max(Self::MIN as f64).min(Self::MAX as f64).round() as Self
                     }
-                    Value::Integer(i) => (*i).max(Self::MIN as i64).min(Self::MAX as i64) as Self,
+                    Value::Integer(i) => {
+                        // See the by-value arm: clamp in i128 to avoid Self::MAX wrap.
+                        let hi = (Self::MAX as i128).min(i64::MAX as i128);
+                        (*i as i128).max(Self::MIN as i128).min(hi) as Self
+                    }
                     Value::Bool(b) => {
                         if *b {
                             Self::MAX
@@ -672,7 +699,9 @@ from_val!(u32);
 
 impl From<u64> for Value<'_> {
     fn from(value: u64) -> Self {
-        Value::Integer(value.max(i64::MAX as u64) as i64)
+        // Clamp values that EXCEED i64::MAX down (was `.max`, which forced small
+        // values UP to i64::MAX).
+        Value::Integer(value.min(i64::MAX as u64) as i64)
     }
 }
 
@@ -682,7 +711,8 @@ from_val!(u64);
 
 impl From<usize> for Value<'_> {
     fn from(value: usize) -> Self {
-        Value::Integer(value.max(i64::MAX as usize) as i64)
+        // Clamp values that EXCEED i64::MAX down (was `.max`).
+        Value::Integer(value.min(i64::MAX as usize) as i64)
     }
 }
 
@@ -707,7 +737,9 @@ impl From<f32> for Value<'_> {
 impl From<Value<'_>> for f32 {
     fn from(value: Value<'_>) -> Self {
         match value {
-            Value::Number(f) => f.max(f32::MAX as f64).min(f32::MIN as f64) as f32,
+            // clamp into f32's finite range: max(MIN) then min(MAX). The bounds
+            // were previously swapped, collapsing every Number to f32::MIN.
+            Value::Number(f) => f.max(f32::MIN as f64).min(f32::MAX as f64) as f32,
             Value::Integer(i) => i as f32,
             // TODO Value::String()
             _ => 0.,
@@ -718,7 +750,7 @@ impl From<Value<'_>> for f32 {
 impl From<&Value<'_>> for f32 {
     fn from(value: &Value<'_>) -> Self {
         match value {
-            Value::Number(f) => (*f).max(f32::MAX as f64).min(f32::MIN as f64) as f32,
+            Value::Number(f) => (*f).max(f32::MIN as f64).min(f32::MAX as f64) as f32,
             Value::Integer(i) => *i as f32,
             // TODO Value::String()
             _ => 0.,
@@ -843,12 +875,15 @@ impl From<String> for Value<'_> {
 }
 impl From<Value<'_>> for String {
     fn from(val: Value) -> Self {
-        val.to_string()
+        // NOT to_string(): Value's Display quotes strings (`"foo"`), which would
+        // leak the delimiters into host-side String values (native fn params,
+        // texture/asset names, etc). coerce_string() yields the raw content.
+        val.coerce_string()
     }
 }
 impl From<&Value<'_>> for String {
     fn from(val: &Value) -> Self {
-        val.to_string()
+        val.coerce_string()
     }
 }
 impl From<ExVal> for String {

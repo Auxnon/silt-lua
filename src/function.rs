@@ -1,5 +1,6 @@
 use std::{fmt::Display, rc::Rc};
 
+use colored::Colorize;
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
 use crate::{
@@ -15,6 +16,11 @@ use crate::{
 ///
 pub struct CallFrame<'gc> {
     pub function: Gc<'gc, Closure<'gc>>, // pointer
+    /// Effective code prototype for this frame: the closure's prototype, or its
+    /// hot-swap redirect target if one is set. All code/constant/arity reads go
+    /// through this (see `VM::get_chunk`) so a hot-swapped body executes while the
+    /// closure keeps its own upvalues.
+    pub proto: Gc<'gc, FunctionObject<'gc>>,
     // ip: *const OpCode
     // pub base: usize,
     // pointer points into VM values stack
@@ -36,9 +42,23 @@ impl<'frame> CallFrame<'frame> {
         call_arity: u8,
         multi_return: u8,
     ) -> Self {
-        let ip = function.function.chunk.code.as_ptr();
+        // Resolve the effective prototype. With `hot-swap`, follow the redirect cell
+        // if a hot-swap set one (stage 2); all live closures share one prototype, so a
+        // redirect set on it reaches every instance while each keeps its own upvalues.
+        // Without the feature there is no redirect — `proto` is just the closure's
+        // prototype, costing nothing beyond a pointer copy (and it lets `get_chunk`
+        // skip one indirection on every constant access).
+        #[cfg(feature = "hot-swap")]
+        let proto = match *function.function.swap.borrow() {
+            Some(redirect) => redirect,
+            None => function.function,
+        };
+        #[cfg(not(feature = "hot-swap"))]
+        let proto = function.function;
+        let ip = proto.chunk.code.as_ptr();
         Self {
             function,
+            proto,
             ip,
             local_stack: std::ptr::null_mut(),
             stack_snapshot,
@@ -47,12 +67,14 @@ impl<'frame> CallFrame<'frame> {
         }
     }
 
+    #[inline]
     pub fn current_instruction(&self) -> &crate::code::OpCode {
         // &self.function.chunk.code[self.ip]
         unsafe { &*self.ip }
     }
 
     /** shift ip by 1 instruction */
+    #[inline]
     pub fn iterate(&mut self) {
         // self.ip += 1;
         self.ip = unsafe { self.ip.add(1) };
@@ -71,11 +93,13 @@ impl<'frame> CallFrame<'frame> {
         self.ip = unsafe { self.ip.add(n) };
     }
 
+    #[inline]
     pub fn set_val(&mut self, index: u8, value: Value<'frame>) {
         // self.stack[index as usize] = value;
         unsafe { *self.local_stack.add(index as usize) = value };
     }
 
+    #[inline]
     pub fn get_val(&self, index: u8) -> &Value<'frame> {
         // &self.stack[index as usize]
         // println!("get_val: {}", index);
@@ -83,27 +107,40 @@ impl<'frame> CallFrame<'frame> {
         unsafe { &*self.local_stack.add(index as usize) }
     }
 
+    /// get a slice of size count from local stack offset by index.
+    /// Exclusive to VarArg
     pub fn get_vals(&self, index: u8, count: u8) -> &[Value<'frame>] {
         // &self.stack[index as usize]
-        println!("get_val index: {} count: {}", index, count);
         unsafe {
             let i = self.local_stack.add((index) as usize);
-            println!(" VAL: {}", &*i);
             std::slice::from_raw_parts(i, count as usize)
+        }
+    }
+
+    /// Read the variadic overflow values for this frame. In a variadic call the
+    /// extra arguments are left on the stack *below* the frame base (the fixed
+    /// params and function are copied above them at call time), so the `nextra`
+    /// values sit at `local_stack[-nextra .. 0]`.
+    pub fn get_varargs(&self, nextra: u8) -> &[Value<'frame>] {
+        unsafe {
+            let start = self.local_stack.sub(nextra as usize);
+            std::slice::from_raw_parts(start, nextra as usize)
         }
     }
 
     // get_vararg
 
+    #[inline]
     pub fn get_val_mut(&mut self, index: u8) -> &mut Value<'frame> {
         unsafe { &mut *self.local_stack.add(index as usize) }
     }
 
     #[cfg(feature = "dev-out")]
     pub fn print_local_stack(&self) {
-        println!("local stack: {:?}", unsafe {
+        print!("local stack: {:?}", unsafe {
             std::slice::from_raw_parts(self.local_stack, 10)
         });
+        println!("(top: {})", unsafe { &*self.local_stack });
     }
 
     // pub fn push(&mut self, value: Value) {
@@ -156,11 +193,13 @@ impl<'frame> CallFrame<'frame> {
     }
 
     // TODO validate safety of this, compiler has to be solid af!
+    #[inline]
     pub fn forward(&mut self, offset: u16) {
         // self.ip += offset as usize;
         self.ip = unsafe { self.ip.add(offset as usize) };
     }
 
+    #[inline]
     pub fn rewind(&mut self, offset: u16) {
         // self.ip -= offset as usize;
         self.ip = unsafe { self.ip.sub(offset as usize) };
@@ -182,6 +221,32 @@ pub struct FunctionObject<'chnk> {
     pub arity: u8,
     pub is_variadic: bool,
     pub varidic_index: u8,
+    /// Source line of the `function` keyword (1-indexed).  Used by the hotswap
+    /// engine to map compiled function objects back to their source positions
+    /// without requiring a secondary parse pass.  Defaults to 0 for the root
+    /// script object and for functions compiled before this field was added.
+    pub start_line: usize,
+    /// Source line of the matching `end` keyword (1-indexed).  Captured from the
+    /// lexer token during `block()` compilation, giving the exact closing line of
+    /// the function body for hotswap range detection.  Defaults to 0.
+    pub end_line: usize,
+    /// Index of the source this function object was compiled from, assigned by the
+    /// compiler and shared by the root chunk and every nested function compiled in
+    /// the same pass. A runtime error stamps this onto the `ErrorOut` so the caller
+    /// can look up the originating source. `usize::MAX` = untracked.
+    pub source_index: usize,
+    /// Hot-swap redirect cell (stage 2). `None` normally. When a function body is
+    /// hot-swapped, this *shared* prototype's cell is set to the newly-compiled
+    /// prototype; because every live closure of a definition points at the same
+    /// prototype, setting this redirects them all to the new code on their next
+    /// call while each keeps its own captured upvalues (instance state). The
+    /// redirect target itself always has `swap == None`, so resolution is a single
+    /// hop from the original prototype.
+    ///
+    /// Gated behind `hot-swap`: builds without the feature carry neither this field
+    /// nor the per-call redirect check, so the normal execution path is unchanged.
+    #[cfg(feature = "hot-swap")]
+    pub swap: RefLock<Option<Gc<'chnk, FunctionObject<'chnk>>>>,
 }
 
 impl<'chnk> FunctionObject<'chnk> {
@@ -195,6 +260,11 @@ impl<'chnk> FunctionObject<'chnk> {
             arity: 0,
             is_variadic: false,
             varidic_index: 0,
+            start_line: 0,
+            end_line: 0,
+            source_index: crate::error::SOURCE_INDEX_UNKNOWN,
+            #[cfg(feature = "hot-swap")]
+            swap: RefLock::new(None),
         }
     }
 
@@ -300,8 +370,18 @@ pub type NativeFunctionRef<'a> = &'a NativeFunctionRaw<'a>;
 pub type NativeFunctionRc<'a> = Rc<NativeFunctionRaw<'a>>;
 // pub trait NativeFunction<'a> =  Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>) -> Value<'a>;
 
+/// What a native function hands back. Most functions return a single value;
+/// multi-return functions (`next`, `pairs`, `ipairs`, `select`, `pcall`, …)
+/// return several, which the CALL handler spreads onto the stack.
+pub enum NativeReturn<'gc> {
+    Single(Value<'gc>),
+    Multi(Vec<Value<'gc>>),
+}
+
+pub type NativeResult<'gc> = Result<NativeReturn<'gc>, SiltError>;
+
 pub struct NativeFunctionRaw<'a> {
-    pub func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> InnerResult<'a> + 'a>,
+    pub func: Box<dyn Fn(&mut VM<'a>, &Mutation<'a>, &[Value<'a>]) -> NativeResult<'a> + 'a>,
 }
 
 impl<'gc> NativeFunctionRaw<'gc> {
@@ -320,8 +400,20 @@ impl<'gc> NativeFunctionRaw<'gc> {
         Self {
             func: Box::new(move |vm, mc, raw_args| {
                 let args = A::from_lua_multi(raw_args, vm, mc)?;
-                R::to_lua(f(vm, mc, args), vm, mc)
+                Ok(NativeReturn::Single(R::to_lua(f(vm, mc, args), vm, mc)?))
             }),
+        }
+    }
+
+    /// Register a native function that returns multiple values. The closure
+    /// takes the raw argument slice and yields a `Vec<Value>`.
+    pub fn new_multi<F>(f: F) -> Self
+    where
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> Result<Vec<Value<'gc>>, SiltError>
+            + 'gc,
+    {
+        Self {
+            func: Box::new(move |vm, mc, raw_args| Ok(NativeReturn::Multi(f(vm, mc, raw_args)?))),
         }
     }
 
@@ -340,7 +432,7 @@ impl<'gc> NativeFunctionRaw<'gc> {
         vm: &mut VM<'gc>,
         mutation: &Mutation<'gc>,
         args: &[Value<'gc>],
-    ) -> InnerResult<'gc> {
+    ) -> NativeResult<'gc> {
         (self.func)(vm, mutation, args)
     }
 }
@@ -369,7 +461,7 @@ impl<'gc> WrappedFn<'gc> {
         vm: &mut VM<'gc>,
         mc: &Mutation<'gc>,
         args: &[Value<'gc>],
-    ) -> InnerResult<'gc> {
+    ) -> NativeResult<'gc> {
         (self.f.func)(vm, mc, args)
     }
 }
@@ -431,6 +523,9 @@ impl<'chnk> Closure<'chnk> {
     pub fn get_variadic(&self) -> u8 {
         self.function.varidic_index
     }
+    pub fn get_arity(&self)->u8{
+        self.function.arity
+}
 
     pub fn print_upvalues(&self) {
         self.upvalues.iter().enumerate().for_each(|(i, f)| {
