@@ -1380,7 +1380,22 @@ impl Compiler {
             precedence,
             rule.precedence,
         );
-        // if (rule.prefix) != Self::void { // TODO bubble error up if no prefix, call invalid func to bubble?
+        // A token whose prefix rule is `void` cannot begin an expression: a stray
+        // closing `)`/`}`/`]`, a leading binary operator, a `,`, etc. The single-pass
+        // parser used to silently no-op on these (dropping the token), so malformed
+        // input like `local x = )` compiled clean. Report it instead so the CLI and
+        // LSP surface a real diagnostic (PLAN §1.0 leniency).
+        let void_prefix: for<'v> fn(
+            &mut Compiler,
+            &Mutation<'v>,
+            FnRef<'_, 'v>,
+            &mut Peekable<Lexer>,
+            bool,
+        ) -> Catch = void;
+        if rule.prefix as usize == void_prefix as usize {
+            let tok = t.clone();
+            return Err(self.error_at(SiltError::InvalidTokenPlacement(tok)));
+        }
         let can_assign = precedence <= Precedence::Assignment;
         (rule.prefix)(self, mc, f, it, can_assign)?;
 
@@ -1938,6 +1953,24 @@ fn build_function<'c>(
             build_param(this, it)?;
         }
     }
+    // Consume the `)` that closes the parameter list. Historically this was left
+    // for `block()` to trip over on its first statement, where the lenient parser
+    // silently dropped it (as a no-op expression statement that happened to emit
+    // the placeholder POP below); now that a stray `)` is a real error, close it here.
+    expect_token!(this it CloseParen);
+
+    // A `local function f(...)` sets `local_declare_mode = true` in the enclosing
+    // declaration; the body must not inherit it or its variable references compile
+    // as fresh local declarations instead of gets. The phantom `)` statement used to
+    // clear this (expression_statement ends with `local_declare_mode = false`); do it
+    // explicitly here so the body starts in a clean, non-declaring context.
+    this.local_declare_mode = false;
+
+    // Every function body begins with a placeholder POP that the CALL opcode skips
+    // over via its trailing `iterate()` (see lua.rs: it never actually runs). It used
+    // to be emitted as a side effect of the phantom `)` statement described above;
+    // emit it explicitly now that the `)` is consumed cleanly.
+    this.emit_at(fr2, OpCode::POP);
 
     // this.override_pop=true; // the function declare is inside our scope and it would trigger a pop
     block(this, mc, fr2, it)?;

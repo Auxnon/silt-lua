@@ -48,6 +48,21 @@ test binary.
   token and push a `SiltError` (then `synchronize`) on anything unexpected, rather than
   silently accepting. Add a `tests/errors.rs` matrix of must-error inputs. This is the
   highest-leverage correctness + tooling investment after the current feature work.
+- **Progress (2026-07, `tests/stray_tokens.rs`):** the *no-prefix-token* class is now
+  caught. `parse_precedence` used to call the `void` prefix rule (a no-op) for any token
+  that cannot begin an expression — a stray `)`, a leading/dangling binary operator, `end`,
+  a second `=` — silently dropping it. It now reports `InvalidTokenPlacement` instead, so
+  the CLI and LSP flag them (verified in-editor: a broken paren pair now diagnoses).
+  Now-caught: `local x = )`, `return )`, `)`, `end`, `x = = 5`, `local x = 1 +`, `return * 2`,
+  `return (1 + 2))`. **Still lenient:** juxtaposed values (`1 2 3`, `return 1 2 3` — no
+  missing-prefix token, needs an "expected separator after expression" check) and
+  `local = 5` (missing identifier — a `declaration_keyword` gap). Turning on the no-prefix
+  error exposed a latent bug: `build_function` never consumed the `)` closing its parameter
+  list — it leaned on the body's first (phantom) statement to swallow it, which *also*
+  emitted the placeholder leading POP the call convention skips and cleared
+  `local_declare_mode`. `build_function` now does all three explicitly (see `src/compiler.rs`
+  around the param loop). Without the last two, `local function f(a,b) …` misresolved every
+  param slot and function bodies dropped their first instruction.
 
 ### 1.1 Closure / upvalue capture panics — `index out of bounds` ✅ FIXED
 - **Repro:**
