@@ -34,7 +34,7 @@ These take the interpreter down hard (Rust `panic!`, index-out-of-bounds, or an 
 loop). They must be fixed before the suite can be trusted, because they can abort a whole
 test binary.
 
-### 1.0 Compiler is far too lenient — silently accepts malformed source 🔴 CRITICAL (next)
+### 1.0 Compiler is far too lenient — silently accepts malformed source 🟢 LARGELY FIXED (no-prefix + missing-ident classes done; only an optional Lua-parity check parked)
 - **Repro (all compile + "succeed" with NO error):** `local x = )`, `local = 5`, `x = = 5`,
   `return )`, `)`, `end`, `1 2 3`. The single-pass compiler emits whatever bytecode it can
   and moves on instead of reporting a syntax error.
@@ -60,15 +60,27 @@ test binary.
   `ExpectedLocalIdentifier` pointing at the offending token. Fixing that also surfaced that
   `push_error` (compile-loop error sink) never set `valid = false`, so any error built as a
   raw `ErrorTuple` (e.g. `peek_triple`'s EOF branch) was recorded but the chunk still
-  "succeeded" and ran garbage; `push_error` now invalidates. **Still lenient:** juxtaposed
-  values (`1 2 3`, `return 1 2 3` — no missing-prefix token, needs an "expected separator
-  after expression" check). Turning on the no-prefix
+  "succeeded" and ran garbage; `push_error` now invalidates. Turning on the no-prefix
   error exposed a latent bug: `build_function` never consumed the `)` closing its parameter
   list — it leaned on the body's first (phantom) statement to swallow it, which *also*
   emitted the placeholder leading POP the call convention skips and cleared
   `local_declare_mode`. `build_function` now does all three explicitly (see `src/compiler.rs`
   around the param loop). Without the last two, `local function f(a,b) …` misresolved every
   param slot and function bodies dropped their first instruction.
+- **Deferred / optional (backburner) — juxtaposed values are NOT leniency:** `1 2 3` → `3`
+  and `function f() 1 2 3 end` → `3` are the *implicit-return feature working as designed*,
+  not a bug. Bare expression statements are load-bearing: silt emits a `POP` after each and
+  drops the final one at block end so the last value survives (Lua proper forbids bare-value
+  statements, which is why it errors on `1 2 3`; silt deliberately relaxed that). So the "add
+  an expected-separator check" idea from earlier is wrong — it would reject valid implicit
+  returns. If we ever want to catch the dead-value typo, the only safe rule is narrow: *a
+  bare, non-call expression statement is legal only as the **last** statement of an
+  implicit-return block* (arrow bodies always; regular functions only when `implicit-return`
+  is on) — flag the non-last bare values (the ones that get computed then immediately popped).
+  This keeps `f() g() 42`, `local a=10 a`, and every arrow case, while catching `1 2 3` via
+  its discarded `1`/`2`. Cost: track each expr-statement's kind + position and flag non-last
+  bare ones at block close (single-pass ⇒ "is last" only known at `end`). Low payoff (dead
+  value, no crash/corruption), real behavior change — parked unless we want the Lua-parity.
 
 ### 1.1 Closure / upvalue capture panics — `index out of bounds` ✅ FIXED
 - **Repro:**
