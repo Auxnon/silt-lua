@@ -335,13 +335,15 @@ test binary.
 - **Follow-up (FIXED):** colon-method *calls* on a multi-level receiver (`a.b:m(41)`,
   `a.b.c:m()`) — see §1.2.1 below.
 
-### 2.11 Under-supplied multiple local assignment doesn't nil extras (function scope) 🔴
+### 2.11 Under-supplied multiple local assignment doesn't nil extras (function scope) ✅ FIXED
 - **Repro:** `function t() local a, b, c = 5; if b == nil then return 999 end; return 0 end; return t()`
-  → `0` (i.e. `b` is **not** nil). The identical code at top-level scope correctly returns `999`.
+  → used to return `0` (i.e. `b` was **not** nil). The identical code at top-level scope always
+  returned `999`.
 - **Expected:** `local a, b, c = 5` binds `b` and `c` to `nil`.
-- **Root cause:** function-local frame slot initialization for under-supplied `local` lists does
-  not pad missing values with `nil` (interacts with the vararg/local-offset work on this branch,
-  same area as §1.1).
+- **Root cause:** function-local frame slot initialization for under-supplied `local` lists did
+  not pad missing values with `nil` (interacted with the vararg/local-offset work, same area as §1.1).
+- **Resolution (verified 2026-07):** resolved as part of the multi-return/vararg/upvalue work
+  (§1.1 neighbourhood). Now returns `999`, and both `b` and `c` read `nil` in function scope.
 
 ### 2.12 Descending numeric `for` (negative step) never runs ✅ FIXED
 - **Repro:** `local s = 0; for i = 5, 1, -1 do s = s + i end; return s` → `0`.
@@ -356,18 +358,19 @@ test binary.
   `for i=10,2,-2` and an empty descending range. (A zero step still loops forever — pre-existing,
   not addressed here.)
 
-### 2.13 Under-supplied multiple-assignment from a call overflows the stack 🔴
+### 2.13 Under-supplied multiple-assignment from a call overflows the stack ✅ FIXED
 - **Repro:** `function f() return 42 end; local a, b, c = f(); return a` — `f` returns one value
   into three targets.
-- **Observed:** **stack overflow → `SIGABRT`** (aborts the process). This is distinct from §2.11
-  (which silently mis-binds for `local a,b,c = 5`); the *call* form recurses/loops unbounded in
-  the VM's `CALL`/`NEED`/multi-return adjustment.
+- **Was:** **stack overflow → `SIGABRT`** (aborted the process). Distinct from §2.11 (silent
+  mis-bind for `local a,b,c = 5`); the *call* form recursed/looped unbounded in the VM's
+  `CALL`/`NEED`/multi-return adjustment.
 - **Expected:** `a = 42`, `b = nil`, `c = nil`.
 - **Root cause:** the multi-return arity-adjustment path (`OpCode::CALL(args, want, _)` +
-  `NEED`/`VARARG`, `src/lua.rs` around line 220 and the `RETURN` handler) does not terminate
-  when the callee returns fewer values than requested. Belongs to the same multi-return/vararg
-  work that is WIP on this branch (§1.1 neighbourhood). High severity — it is a hard crash on
-  very common code.
+  `NEED`/`VARARG`, `src/lua.rs` ~line 220 and the `RETURN` handler) did not terminate when the
+  callee returned fewer values than requested.
+- **Resolution (verified 2026-07):** resolved as part of the multi-return/vararg work (§1.1
+  neighbourhood). No crash; `a=42, b=nil, c=nil`, and a 2-value callee spreads correctly
+  (`local a,b,c = (function() return 1,2 end)()` → `a=1, b=2, c=nil`).
 
 ### 2.9 `u64 → Value → u64` conversion overflow ✅ FIXED
 - **Was:** `999999u64` round-tripped to `u64::MAX`.
