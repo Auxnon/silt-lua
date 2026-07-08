@@ -252,23 +252,29 @@ impl<'v> Table<'v> {
         // self.data.insert(key, value);
         // Ok(())
 
+        // Positional insert — Lua `table.insert(t, pos, v)`: open a slot at `pos` by
+        // shifting every element in `pos..=counter` up one index, then store `v` there.
+        // The old loop ran `counter..pos`, which is empty whenever `pos < counter`, so
+        // nothing shifted and the element already at `pos` was silently overwritten.
         let i = key.strict_int()?;
-        if i >= self.counter {
-            self.recursion(i);
-        } else {
-            // push instead
-            for it in self.counter..i {
-                let v = self.data.remove(&it.into()).unwrap_or_default();
-                // TODO we need to do this as an array instead
-                self.data.insert((it + 1).into(), v);
+        let mut k = self.counter;
+        while k >= i && k >= 1 {
+            if let Some(v) = self.data.remove(&Value::Integer(k)) {
+                self.data.insert(Value::Integer(k + 1), v);
             }
-            self.counter += 1;
+            k -= 1;
         }
-
-        Ok(self.data.insert(key, value).unwrap_or_default())
+        self.counter += 1;
+        self.data.insert(Value::Integer(i), value);
+        Ok(Value::Nil)
     }
 
     pub fn push(&mut self, value: Value<'v>) {
+        // Append at the array border. `counter` is the last used integer index (0 for a
+        // fresh table), so the new element goes at `counter + 1` — Lua tables are
+        // 1-indexed. Incrementing FIRST (matching `raw_push`) was the bug: reading
+        // `counter` before the bump appended at index 0 and clobbered the last slot.
+        self.counter += 1;
         let key = self.counter.into();
         self.data.insert(key, value);
     }

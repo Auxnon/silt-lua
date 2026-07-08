@@ -435,7 +435,11 @@ test binary.
   resolve through the `string` table via `METHOD_GET` (and a new `Token::Colon` Pratt infix so a
   non-identifier receiver like `("x"):m()` works). Still TODO: patterns (`find`/`match`/`gmatch`/
   `gsub`) — a substantial sub-project.
-- **`table`:** `insert`/`remove` exist; `concat`, `sort`, `unpack`, `pack` still TODO.
+- **`table`:** `insert` ✅ (both forms — append `insert(t,v)` and positional `insert(t,pos,v)`
+  with element shift-up; fixed 2026-07, `tests/tables.rs`), `concat` ✅ (with/without separator).
+  Still TODO: `sort`, `unpack`, `pack`. **`remove` is BROKEN** — `table_remove` (`src/standard.rs`)
+  calls `table.insert(key, args.0)` (inserts the table into itself) instead of removing; separate
+  pre-existing bug, not yet addressed.
 - **`os`/`io`:** not started.
 
 **Native multi-return ✅ DONE** (§2.7) — `next`/`pairs`/`ipairs` + generic-for shipped on it.

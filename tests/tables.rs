@@ -88,3 +88,106 @@ fn iteration_with_pairs() {
         ExVal::Integer(6)
     );
 }
+
+// --- table.insert (append form) --------------------------------------------
+// Regression: `Table::push` read `counter` without incrementing, so the first
+// append landed at index 0 (Lua tables are 1-indexed) and later appends clobbered
+// the last slot.
+
+#[test]
+fn insert_append_to_empty() {
+    valeq!("local t = {} table.insert(t, 5) return t[1]", ExVal::Integer(5));
+    valeq!("local t = {} table.insert(t, 5) return #t", ExVal::Integer(1));
+}
+
+#[test]
+fn insert_append_multiple() {
+    valeq!(
+        "local t = {} table.insert(t, 5) table.insert(t, 6) return t[1] + t[2]",
+        ExVal::Integer(11)
+    );
+}
+
+#[test]
+fn insert_append_to_existing() {
+    valeq!("local t = {1, 2, 3} table.insert(t, 4) return t[4]", ExVal::Integer(4));
+    valeq!("local t = {1, 2, 3} table.insert(t, 4) return #t", ExVal::Integer(4));
+}
+
+// --- table.insert (positional form, shifts elements up) --------------------
+// Regression: the shift loop ran `counter..pos`, which is empty when `pos < counter`,
+// so nothing shifted and the element already at `pos` was silently overwritten.
+
+#[test]
+fn insert_positional_shifts_up() {
+    // {1,2} + insert(2,99) => {1,99,2}
+    valeq!(
+        "local t = {1, 2} table.insert(t, 2, 99) return t[1] * 100 + t[2] + t[3] * 1000",
+        ExVal::Integer(2199) // 1*100 + 99 + 2*1000
+    );
+    valeq!("local t = {1, 2} table.insert(t, 2, 99) return #t", ExVal::Integer(3));
+}
+
+#[test]
+fn insert_positional_at_front() {
+    // {1,2,3} + insert(1,0) => {0,1,2,3}
+    valeq!(
+        "local t = {1,2,3} table.insert(t, 1, 0) return t[1]*1000 + t[2]*100 + t[3]*10 + t[4]",
+        ExVal::Integer(123) // 0,1,2,3
+    );
+    valeq!("local t = {1,2,3} table.insert(t, 1, 0) return #t", ExVal::Integer(4));
+}
+
+// --- table.concat -----------------------------------------------------------
+
+#[test]
+fn concat_no_separator() {
+    valeq!(
+        r#"local t = {"a", "b", "c"} return table.concat(t)"#,
+        ExVal::String("abc".to_string())
+    );
+}
+
+#[test]
+fn concat_with_separator() {
+    valeq!(
+        r#"local t = {"a", "b", "c"} return table.concat(t, ",")"#,
+        ExVal::String("a,b,c".to_string())
+    );
+    valeq!(
+        r#"local t = {1, 2, 3} return table.concat(t, "-")"#,
+        ExVal::String("1-2-3".to_string())
+    );
+}
+
+// --- integration: build with insert, then concat / iterate ------------------
+
+#[test]
+fn insert_then_concat() {
+    valeq!(
+        r#"
+        local t = {}
+        table.insert(t, "a")
+        table.insert(t, "b")
+        table.insert(t, "c")
+        return table.concat(t, ",")
+    "#,
+        ExVal::String("a,b,c".to_string())
+    );
+}
+
+#[test]
+fn insert_then_ipairs() {
+    valeq!(
+        r#"
+        local t = {}
+        table.insert(t, 10)
+        table.insert(t, 20)
+        table.insert(t, 30)
+        local s = 0
+        for i, v in ipairs(t) do s = s + v end
+        return s
+    "#,
+        ExVal::Integer(60)
+    );
+}
