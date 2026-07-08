@@ -429,6 +429,21 @@ fn math_unary<'lua>(
     }
 }
 
+/// `math.modf(x)` — split `x` into its integral and fractional parts, returned as
+/// TWO values (integral as a float, fractional). A genuine typed multi-return native
+/// fn: `R = (f64, f64)` spreads via `ToLuaMulti`.
+pub fn math_modf<'lua>(
+    _: &mut VM,
+    _: &Mutation<'lua>,
+    args: Vec<Value<'lua>>,
+) -> Result<(f64, f64), SiltError> {
+    let n = match args.first() {
+        Some(v) => to_f64(v).ok_or_else(|| SiltError::Custom("bad argument #1 to 'modf'".into()))?,
+        None => return Err(SiltError::Custom("bad argument #1 to 'modf'".into())),
+    };
+    Ok((n.trunc(), n.fract()))
+}
+
 pub fn math_floor<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
     match args.first() {
         Some(Value::Integer(i)) => Ok(Value::Integer(*i)),

@@ -13,7 +13,7 @@ use crate::{
     prelude::UserData,
     table::{ExTable, Table},
     userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
-    value::{ExVal, FromLuaMulti, ToLua, ToLuaMulti, Value},
+    value::{ExVal, FromLuaMulti, ToLuaMulti, Value},
 };
 
 /** Convert Integer to Float, lossy for now */
@@ -3165,6 +3165,7 @@ impl<'gc> VM<'gc> {
         // math library
         let mut math = self.raw_table();
         self.register_native_function_to(mc, &mut math, "floor", crate::standard::math_floor);
+        self.register_native_function_to(mc, &mut math, "modf", crate::standard::math_modf);
         self.register_native_function_to(mc, &mut math, "ceil", crate::standard::math_ceil);
         self.register_native_function_to(mc, &mut math, "abs", crate::standard::math_abs);
         self.register_native_function_to(mc, &mut math, "sqrt", crate::standard::math_sqrt);
@@ -3233,8 +3234,8 @@ impl<'gc> VM<'gc> {
     ) where
         A: FromLuaMulti<'gc>,
         // <T as FromLuaMulti<'gc>>::Output
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, A) -> R + 'gc,
-        R: ToLua<'gc> + 'gc,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, A) -> Result<R, SiltError> + 'gc,
+        R: ToLuaMulti<'gc> + 'gc,
     {
         let raw = NativeFunctionRaw::new::<A, _, _>(function);
 
@@ -3284,8 +3285,8 @@ impl<'gc> VM<'gc> {
     ) where
         A: FromLuaMulti<'gc>,
         // <T as FromLuaMulti<'gc>>::Output
-        F: Fn(&mut VM<'gc>, &Mutation<'gc>, A) -> R + 'gc,
-        R: ToLua<'gc> + 'gc,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, A) -> Result<R, SiltError> + 'gc,
+        R: ToLuaMulti<'gc> + 'gc,
     {
         let raw = NativeFunctionRaw::new::<A, _, _>(function);
 

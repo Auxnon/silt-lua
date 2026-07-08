@@ -549,11 +549,9 @@ macro_rules! base_val {
             }
         }
 
-        impl<'gc> ToLuaMulti<'gc> for $type {
-            fn to_lua_multi(self, _: &VM<'gc>, _: &Mutation<'gc>) -> ValuesResult<'gc> {
-                Ok(vec![self.into()])
-            }
-        }
+        // NOTE: no per-type `ToLuaMulti` here — scalars are covered by the blanket
+        // `impl<T: ToLua> ToLuaMulti for T` (single value). A per-type impl would
+        // conflict with that blanket.
     };
 }
 macro_rules! from_val {
@@ -1141,21 +1139,12 @@ where
 }
 
 // ==================================
-impl<'a, A, B> ToLua<'a> for (A, B)
-where
-    // T: Copy,
-    A: ToLua<'a>,
-    B: ToLua<'a>,
-{
-    // TODO making an entire table is dumb for a tuple, we need a multireturn! should to_lua also
-    // have a slice or vec we can append to?
-    fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
-        let mut t = vm.raw_table();
-        t.set_and_check(1, self.0.to_lua(vm, mc)?);
-        t.set_and_check(2, self.1.to_lua(vm, mc)?);
-        Ok(vm.wrap_table(mc, t))
-    }
-}
+// NOTE: tuples deliberately do NOT implement `ToLua` (single value). They implement
+// `ToLuaMulti` instead (spread — see below), matching Lua/mlua multi-return semantics.
+// Keeping them out of `ToLua` is also what lets the blanket
+// `impl<T: ToLua> ToLuaMulti for T` coexist with the tuple `ToLuaMulti` impls without
+// a coherence conflict (a tuple can never satisfy `ToLua`, and orphan rules forbid a
+// downstream impl). If you want a tuple as a table, build the table explicitly.
 
 // impl<'a> ToLua<'a> for u8{
 //     fn to_lua(self, vm: &VM<'a>, mc: &Mutation<'a>) -> ValueResult<'a> {
@@ -1179,56 +1168,49 @@ type Values<'a> = Vec<Value<'a>>;
 type ValuesResult<'a> = Result<Values<'a>, SiltError>;
 
 pub trait ToLuaMulti<'a> {
+    /// Collect into a `Vec<Value>` — used at the Rust boundary (`call_with_params`
+    /// args, `call_fn` results handed back to Rust).
     fn to_lua_multi(self, lua: &VM<'a>, mc: &Mutation<'a>) -> ValuesResult<'a>;
-}
 
-impl<'a> ToLuaMulti<'a> for Vec<()> {
-    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'a>) -> ValuesResult<'a> {
-        Ok(vec![])
+    /// Convert into a `NativeReturn` for the VM-internal native-call path. The default
+    /// collects into `Multi(Vec)`; the single-value blanket overrides this to `Single`
+    /// so a scalar return doesn't allocate a Vec (the common fast path). (This is the
+    /// seam a future push-based `push_multi` slots into — see PLAN §6.1.)
+    fn to_native_return(
+        self,
+        lua: &VM<'a>,
+        mc: &Mutation<'a>,
+    ) -> Result<crate::function::NativeReturn<'a>, SiltError>
+    where
+        Self: Sized,
+    {
+        Ok(crate::function::NativeReturn::Multi(self.to_lua_multi(lua, mc)?))
     }
 }
 
-impl<'a, A, I> ToLuaMulti<'a> for I
+/// Blanket: any single value (`ToLua`) is a one-element multi. Tuples deliberately do
+/// NOT implement `ToLua`, so the explicit tuple spread impls below don't collide with
+/// this blanket — orphan rules make `(A, B): ToLua` provably false. Collections
+/// (`Vec`, `[T; N]`) go through their `ToLua`→table impls and land here as one table.
+impl<'a, T> ToLuaMulti<'a> for T
 where
-    I: IntoIterator<Item = A>,
-    A: Into<Value<'a>>,
-    I: NotSingle,
+    T: ToLua<'a>,
 {
-    fn to_lua_multi(self, _: &VM<'a>, _: &Mutation) -> ValuesResult<'a> {
-        let mut bucket = vec![];
-        for v in self.into_iter() {
-            bucket.push(v.into())
-        }
-        Ok(bucket)
+    fn to_lua_multi(self, lua: &VM<'a>, mc: &Mutation<'a>) -> ValuesResult<'a> {
+        Ok(vec![self.to_lua(lua, mc)?])
+    }
+
+    fn to_native_return(
+        self,
+        lua: &VM<'a>,
+        mc: &Mutation<'a>,
+    ) -> Result<crate::function::NativeReturn<'a>, SiltError> {
+        Ok(crate::function::NativeReturn::Single(self.to_lua(lua, mc)?))
     }
 }
 
-trait NotSingle {}
-// impl<T> NotSingle for Vec<T>{}
-// impl<T, const N: usize> NotSingle for [ T; N ]{}
-// impl<T> NotSingle for &[T] {}
-// impl NotSingle for std::ops::Range<i32>{}
-// impl NotSingle for std::ops::Range<usize>{}
-// impl NotSingle for std::ops::Range<i64>{}
-// impl NotSingle for std::ops::RangeInclusive<i32>{}
-// impl NotSingle for std::ops::RangeInclusive<usize>{}
-// impl NotSingle for std::ops::RangeInclusive<i64>{}
-
-// impl<'a, A> ToLuaMulti<'a> for A
-// where
-//     A: Into<Value<'a>>,
-// {
-//     fn to_lua_multi(self, _: &VM<'a>, _: &Mutation<'a>) -> ValuesResult<'a> {
-//         Ok(vec![self.into()])
-//     }
-// }
-//
-
-impl<'a> ToLuaMulti<'a> for () {
-    fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'a>) -> ValuesResult<'a> {
-        Ok(vec![])
-    }
-}
+// NOTE: `()` and `Vec<()>` are already `ToLua` (unit → nil), so they're covered by
+// the blanket above and must NOT have their own `ToLuaMulti` impl (it would conflict).
 
 // impl<'a> ToLuaMulti<'a> for Vec<()> {
 //     fn to_lua_multi<'e>(self, _: &VM<'a>, _: &Mutation<'e>) -> ValuesResult<'a> {

@@ -430,7 +430,18 @@ test binary.
   ABI.
 - **`math` ✅:** `floor`, `ceil`, `abs`, `sqrt`, `sin`/`cos`/`tan`, `min`, `max`, `random`,
   `randomseed` (thread-local xorshift, no `rand` dep), `huge`, `pi`, `maxinteger`, `mininteger`.
-  Still TODO: `fmod`, `modf`, `tointeger`, `type`.
+  `modf` ✅ (returns integral+fractional as a typed tuple — the first consumer of the
+  mlua-style multi-return reshape, see below). Still TODO: `fmod`, `tointeger`, `type`.
+
+  **Native multi-return reshape (2026-07, `value.rs`):** `ToLuaMulti` now follows mlua's
+  model — blanket `impl<T: ToLua> ToLuaMulti for T` (single→one value), explicit tuple
+  impls (spread), collections stay one table via their `ToLua` impls. Tuples deliberately
+  do NOT implement `ToLua` (removed the old tuple→table impl), which is what lets the
+  blanket and the tuple spread impls coexist. `NativeFunctionRaw::new` and
+  `register_native_function[_to]` now bind `R: ToLuaMulti` and take `F: … -> Result<R, _>`
+  (the `?` handles errors; `R` is the success type). `ToLuaMulti::to_native_return` keeps
+  the scalar path allocation-free (`Single`, no Vec) — and is the seam a future push-based
+  `push_multi` slots into (PLAN §6.1). Tests: `tests/multi_return.rs`.
 - **`string` ✅:** `len`, `sub`, `upper`, `lower`, `rep`, `reverse`, `byte` (single-index only —
   see below), `char`, `format` (`%d %i %u %x %X %o %f %e %g %s %c %q %%` with `- + space # 0`
   flags + width + `.precision`). **String metatable wired** — `("hi"):upper()` and `s:method()`

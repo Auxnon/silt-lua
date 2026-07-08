@@ -1007,7 +1007,7 @@ impl UserData for TestEnt {
                 "internal userdata method heehehehe (is self param userdata? {}!)",
                 this.is_some()
             );
-            let ve: Vec<(u8, i32)> = vec![];
+            let ve: Vec<i32> = vec![];
             Ok(ve)
         });
 
