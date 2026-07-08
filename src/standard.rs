@@ -72,33 +72,21 @@ pub fn table_remove<'lua>(
     _: &mut VM,
     mc: &Mutation<'lua>,
     args: (Value<'lua>, Option<Value<'lua>>),
-) ->InnerResult<'lua>{
-    
-    // let key = Value::Integer(self.counter);
-    // let value = self.data.remove(&key);
-    // self.counter -= 1;
-
-
-match &args.0 {
+) -> InnerResult<'lua> {
+    match &args.0 {
         Value::Table(t) => {
             let mut table = t.borrow_mut(mc);
-            match args.1 {
-                Some(key) => {
-                    return table.insert(key, args.0)
-                    // let v1 = args.1;
-                    // if let Some(ret) = table.set(v1, v2) {
-                    //     return Ok(ret);
-                    // }
-                }
-                None => {
-                    // table.push(args.1);
-                    table.push(args.0);
-                }
-            }
+            // `table.remove(t)` removes the last element (#t); `table.remove(t, pos)`
+            // removes the element at `pos` and shifts the rest down. Returns the value
+            // removed (nil for an empty table).
+            let pos = match args.1 {
+                Some(key) => key.strict_int()?,
+                None => table.border(),
+            };
+            Ok(table.remove_at(pos))
         }
-        _ => return Err(crate::LuaError::VmNonTableOperations(args.0.to_error())),
+        _ => Err(crate::LuaError::VmNonTableOperations(args.0.to_error())),
     }
-    Ok(Value::Nil)
 }
 
 pub fn setmetatable<'lua>(
@@ -283,7 +271,18 @@ pub fn lua_type<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) ->
 
 pub fn tostring<'lua>(_: &mut VM, _: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
     let v = args.first().cloned().unwrap_or(Value::Nil);
-    Ok(Value::String(v.coerce_string()))
+    // Reference types get a Lua-style `type: 0xADDR` so distinct tables/functions are
+    // distinguishable (bare `coerce_string` collapses every table to "table" and every
+    // builtin to "native_function", so `tostring(a) == tostring(b)` for all of them).
+    // `coerce_string` is left untouched — it is shared with `..` concatenation.
+    let s = match &v {
+        Value::Table(t) => format!("table: {:p}", Gc::as_ptr(*t)),
+        Value::Function(f) => format!("function: {:p}", Gc::as_ptr(*f)),
+        Value::Closure(c) => format!("function: {:p}", Gc::as_ptr(*c)),
+        Value::NativeFunction(f) => format!("function: builtin: {:p}", Gc::as_ptr(*f)),
+        _ => v.coerce_string(),
+    };
+    Ok(Value::String(s))
 }
 
 pub fn tonumber<'lua>(

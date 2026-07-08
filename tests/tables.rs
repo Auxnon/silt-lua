@@ -191,3 +191,74 @@ fn insert_then_ipairs() {
         ExVal::Integer(60)
     );
 }
+
+// --- table.remove ----------------------------------------------------------
+// Regression: `table_remove` called `insert`/`push` (adding, not removing) — the
+// default form grew the table and the positional form corrupted it / stack-overflowed.
+
+#[test]
+fn remove_last_returns_value_and_shrinks() {
+    valeq!("local t = {1,2,3} return table.remove(t)", ExVal::Integer(3));
+    valeq!("local t = {1,2,3} table.remove(t) return #t", ExVal::Integer(2));
+    valeq!(
+        "local t = {1,2,3} table.remove(t) return t[3] == nil",
+        ExVal::Bool(true)
+    );
+}
+
+#[test]
+fn remove_positional_shifts_down() {
+    // {1,2,3} remove(1) => returns 1, leaves {2,3}
+    valeq!("local t = {1,2,3} return table.remove(t, 1)", ExVal::Integer(1));
+    valeq!(
+        "local t = {1,2,3} table.remove(t, 1) return #t * 100 + t[1] * 10 + t[2]",
+        ExVal::Integer(223) // #t=2, t[1]=2, t[2]=3
+    );
+    // {10,20,30} remove(2) => leaves {10,30}
+    valeq!(
+        "local t = {10,20,30} table.remove(t, 2) return t[1] + t[2]",
+        ExVal::Integer(40)
+    );
+}
+
+#[test]
+fn remove_on_empty_returns_nil() {
+    valeq!("local t = {} return table.remove(t) == nil", ExVal::Bool(true));
+}
+
+#[test]
+fn insert_remove_roundtrip() {
+    valeq!(
+        r#"
+        local t = {}
+        table.insert(t, "a")
+        table.insert(t, "b")
+        local x = table.remove(t)
+        table.insert(t, "c")
+        return t[1] .. t[2] .. x
+    "#,
+        ExVal::String("acb".to_string())
+    );
+}
+
+// --- tostring identity for reference types ---------------------------------
+// tostring already worked for scalars; tables/functions collapsed to bare
+// "table"/"native_function" so distinct values compared equal. Now Lua-style.
+
+#[test]
+fn tostring_table_is_distinct_and_stable() {
+    valeq!("local a={} local b={} return tostring(a) == tostring(b)", ExVal::Bool(false));
+    valeq!("local a={} return tostring(a) == tostring(a)", ExVal::Bool(true));
+    valeq!(
+        r#"local a={} return string.sub(tostring(a), 1, 7)"#,
+        ExVal::String("table: ".to_string())
+    );
+}
+
+#[test]
+fn tostring_function_prefix() {
+    valeq!(
+        r#"return string.sub(tostring(print), 1, 9)"#,
+        ExVal::String("function:".to_string())
+    );
+}

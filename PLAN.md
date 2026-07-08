@@ -422,7 +422,9 @@ test binary.
 **Tier 1–3 landed (2026-06):** the single-return base/math/string functions are implemented in
 `src/standard.rs` and registered in `load_standard_library`.
 
-- **Base ✅:** `type`, `tostring`, `tonumber` (incl. base arg + `0x`), `assert`, `error`,
+- **Base ✅:** `type`, `tostring` (scalars via `coerce_string`; reference types now get a
+  Lua-style `table: 0xADDR` / `function: 0xADDR` identity so distinct tables/functions no longer
+  compare equal — 2026-07), `tonumber` (incl. base arg + `0x`), `assert`, `error`,
   `next`, `pairs`, `ipairs` (multi-return — see §2.7). Still TODO: `pcall`/`xpcall`, `select`,
   `rawget`/`rawset`/`rawequal`/`rawlen`, `unpack` — all now unblocked by the native multi-return
   ABI.
@@ -435,11 +437,11 @@ test binary.
   resolve through the `string` table via `METHOD_GET` (and a new `Token::Colon` Pratt infix so a
   non-identifier receiver like `("x"):m()` works). Still TODO: patterns (`find`/`match`/`gmatch`/
   `gsub`) — a substantial sub-project.
-- **`table`:** `insert` ✅ (both forms — append `insert(t,v)` and positional `insert(t,pos,v)`
-  with element shift-up; fixed 2026-07, `tests/tables.rs`), `concat` ✅ (with/without separator).
-  Still TODO: `sort`, `unpack`, `pack`. **`remove` is BROKEN** — `table_remove` (`src/standard.rs`)
-  calls `table.insert(key, args.0)` (inserts the table into itself) instead of removing; separate
-  pre-existing bug, not yet addressed.
+- **`table`:** `insert` ✅ (append `insert(t,v)` + positional `insert(t,pos,v)` with shift-up),
+  `remove` ✅ (default removes last `#t`; positional `remove(t,pos)` shifts the rest down;
+  returns the removed value, nil on empty — fixed 2026-07, was calling `insert`/`push` and never
+  removed anything), `concat` ✅ (with/without separator). Still TODO: `sort`, `unpack`, `pack`.
+  All in `tests/tables.rs`.
 - **`os`/`io`:** not started.
 
 **Native multi-return ✅ DONE** (§2.7) — `next`/`pairs`/`ipairs` + generic-for shipped on it.

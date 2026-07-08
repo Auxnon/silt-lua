@@ -279,19 +279,30 @@ impl<'v> Table<'v> {
         self.data.insert(key, value);
     }
 
-    pub fn remove(&mut self, key: Value<'v>,value: Value<'v>) -> Result<Value<'v>, SiltError> {
-        let i = key.strict_int()?;
-        let ret = self.data.remove(&value).unwrap_or_default();
+    /// The current array border (last integer index in use, 0 when empty) — Lua's `#t`
+    /// for a hole-free table. Used as the default position for `table.remove`.
+    pub fn border(&self) -> i64 {
+        self.counter
+    }
 
-        if i >= self.counter {
-        } else {
-            for it in i..self.counter {
-                let v = self.data.remove(&(it + 1).into()).unwrap_or_default();
-                self.data.insert(it.into(), v);
+    /// Remove the element at `pos` (Lua `table.remove`): return it, then shift every
+    /// element in `pos+1..=counter` DOWN one index to close the gap, and shrink the
+    /// border. The old `remove` removed by *value*, shifted the wrong direction, and
+    /// decremented the border unconditionally — it never actually removed anything
+    /// (the standard-lib wrapper even called `insert` instead). See `tests/tables.rs`.
+    pub fn remove_at(&mut self, pos: i64) -> Value<'v> {
+        let removed = self.data.remove(&Value::Integer(pos)).unwrap_or_default();
+        let mut k = pos + 1;
+        while k <= self.counter {
+            if let Some(v) = self.data.remove(&Value::Integer(k)) {
+                self.data.insert(Value::Integer(k - 1), v);
             }
+            k += 1;
         }
-        self.counter -= 1;
-        Ok(ret)
+        if self.counter > 0 {
+            self.counter -= 1;
+        }
+        removed
     }
 
     pub fn pop(&mut self) -> Value<'v> {
