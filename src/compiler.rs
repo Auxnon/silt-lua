@@ -537,6 +537,11 @@ impl Compiler {
 
     /** Push error and location on to error stack */
     fn push_error(&mut self, code: ErrorTuple) {
+        // An error reaching the compile loop means compilation failed; invalidate the
+        // chunk. Most errors flow through `error_syntax` (which already clears `valid`),
+        // but some are built as raw `ErrorTuple`s (e.g. `peek_triple`'s EOF branch) and
+        // would otherwise leave `valid` true — the chunk then "succeeds" and runs garbage.
+        self.valid = false;
         self.errors.push(code);
     }
 
@@ -1523,11 +1528,11 @@ fn declaration_keyword<'a, 'c: 'a>(
                 // Statement::InvalidStatement
             }
         }
-        // _ => {
-        //     self.error(SiltError::ExpectedLocalIdentifier);
-        //     Statement::InvalidStatement
-        // }
-        _ => todo!(),
+        // `local`/`global` followed by anything that is not an identifier or
+        // `function` (e.g. `local = 5`, `local 5`, `local`+EOF) is malformed. This
+        // used to `todo!()` — a panic that would take down the LSP server — so report
+        // it as a real error pointing at the offending token (PLAN §1.0 leniency).
+        _ => return Err(this.error_syntax(SiltError::ExpectedLocalIdentifier, (location.line, location.col))),
     }
     Ok(())
 }

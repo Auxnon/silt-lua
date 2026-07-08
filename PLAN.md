@@ -54,9 +54,15 @@ test binary.
   a second `=` — silently dropping it. It now reports `InvalidTokenPlacement` instead, so
   the CLI and LSP flag them (verified in-editor: a broken paren pair now diagnoses).
   Now-caught: `local x = )`, `return )`, `)`, `end`, `x = = 5`, `local x = 1 +`, `return * 2`,
-  `return (1 + 2))`. **Still lenient:** juxtaposed values (`1 2 3`, `return 1 2 3` — no
-  missing-prefix token, needs an "expected separator after expression" check) and
-  `local = 5` (missing identifier — a `declaration_keyword` gap). Turning on the no-prefix
+  `return (1 + 2))`. Also the *missing-identifier* class: `local`/`global` not followed by
+  an identifier or `function` (`local = 5`, `local 5`, `global = 5`, bare `local`) used to
+  `todo!()` — a **panic** that would take down the LSP server — and now reports
+  `ExpectedLocalIdentifier` pointing at the offending token. Fixing that also surfaced that
+  `push_error` (compile-loop error sink) never set `valid = false`, so any error built as a
+  raw `ErrorTuple` (e.g. `peek_triple`'s EOF branch) was recorded but the chunk still
+  "succeeded" and ran garbage; `push_error` now invalidates. **Still lenient:** juxtaposed
+  values (`1 2 3`, `return 1 2 3` — no missing-prefix token, needs an "expected separator
+  after expression" check). Turning on the no-prefix
   error exposed a latent bug: `build_function` never consumed the `)` closing its parameter
   list — it leaned on the body's first (phantom) statement to swallow it, which *also*
   emitted the placeholder leading POP the call convention skips and cleared

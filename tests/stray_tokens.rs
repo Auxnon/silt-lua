@@ -58,6 +58,45 @@ fn leading_binary_operator() {
     assert_invalid_token("return * 2");
 }
 
+// ---- `local`/`global` with no identifier ----------------------------------
+// These used to `todo!()` (a panic that would take down the LSP server) or, for a
+// bare `local` at EOF, silently produce a chunk that ran garbage.
+
+fn assert_expected_local_ident(src: &str) {
+    match error_of(src) {
+        Some(msg) => assert!(
+            msg.contains("Expected identifier following local keyword"),
+            "expected an `ExpectedLocalIdentifier` error for {src:?}, got: {msg}"
+        ),
+        None => panic!("expected {src:?} to be rejected, but it compiled clean"),
+    }
+}
+
+#[test]
+fn local_followed_by_assign() {
+    assert_expected_local_ident("local = 5");
+}
+
+#[test]
+fn local_followed_by_literal() {
+    assert_expected_local_ident("local 5");
+}
+
+#[test]
+fn global_followed_by_assign() {
+    assert_expected_local_ident("global = 5");
+}
+
+#[test]
+fn bare_local_at_eof_is_rejected() {
+    // Degenerate case: `local` with nothing after. The message is generic, but it
+    // must be an error rather than a chunk that "succeeds" and returns garbage.
+    assert!(
+        error_of("local").is_some(),
+        "bare `local` should be rejected, not compile clean"
+    );
+}
+
 // ---- constructs that must still compile & run (no false positives) ---------
 
 #[test]
