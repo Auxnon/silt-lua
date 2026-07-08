@@ -1,7 +1,7 @@
 use std::vec;
 
-use crate::{code::OpCode, error::{TokenCell, TokenTriple}, value::Value};
-use gc_arena::{Collect, Gc};
+use crate::{code::OpCode, error::TokenCell, value::Value};
+use gc_arena::Collect;
 
 // TODO benchmark/compare to using a manually resized array
 #[derive(Default, Collect)]
@@ -67,7 +67,7 @@ impl<'chnk> Chunk<'chnk> {
     // TODO lets change to a hashmap, cant see an advantage not to so far
     /** for global identifiers we attempt to resolve to an existing global variable if it exists and return that index */
     pub fn write_identifier(&mut self, identifier: String) -> usize {
-        match self.constants.iter().enumerate().position(|(i, x)| {
+        match self.constants.iter().enumerate().position(|(_i, x)| {
             if let Value::String(s) = x {
                 s == &identifier
             } else {
@@ -85,12 +85,28 @@ impl<'chnk> Chunk<'chnk> {
     }
 
     pub fn get_constant(&self, index: u8) -> &Value<'chnk> {
-        // println!("get constant (size is {})", self.constants.len());
         &self.constants[index as usize]
     }
 
     pub fn copy_constant(&self, index: u8) -> Value<'chnk> {
         self.constants[index as usize].clone()
+    }
+
+    /// Number of constants stored in this chunk.
+    pub fn constants_len(&self) -> usize {
+        self.constants.len()
+    }
+
+    /// Replace the constant at `index` with `value`.  A no-op if `index` is out of bounds.
+    pub fn patch_constant(&mut self, index: usize, value: Value<'chnk>) {
+        if index < self.constants.len() {
+            self.constants[index] = value;
+        }
+    }
+
+    /// Line number of the last instruction in this chunk, or 0 if the chunk is empty.
+    pub fn last_line(&self) -> usize {
+        self.locations.last().map(|&(line, _)| line).unwrap_or(0)
     }
 
     pub fn invalidate(&mut self) {
@@ -160,5 +176,14 @@ impl<'chnk> Chunk<'chnk> {
         self.code.clear();
         self.constants.clear();
         self.locations.clear();
+    }
+
+    pub fn get_loc(&self, index: usize) -> (usize, usize) {
+        // TODO there are circumstances where this overflows, why? Are we getting bad error
+        // handling? this match is a panic resolver
+        match self.locations.get(index) {
+            Some(s) => *s,
+            None => (0, 0),
+        }
     }
 }

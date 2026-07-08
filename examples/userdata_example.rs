@@ -3,11 +3,11 @@ use silt_lua::userdata::UserDataMethods;
 use silt_lua::error::ValueTypes;
 use silt_lua::gc_arena::Mutation;
 use silt_lua::userdata::{MetaMethod, UserData, UserDataFields};
-use silt_lua::{Compiler, ExVal};
 use silt_lua::Lua;
 use silt_lua::LuaError;
 use silt_lua::Value;
 use silt_lua::VM;
+use silt_lua::{Compiler};
 
 // Example UserData struct
 struct Counter {
@@ -46,54 +46,64 @@ impl UserData for Counter {
         69
     }
     fn add_methods<'v, M: UserDataMethods<'v, Self>>(methods: &mut M) {
-        methods.add_method_mut("increment", |_vm, m, counter, _: ()| {
+        methods.add_method_mut("increment", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 let value = this.increment();
                 Ok(Value::Integer(value))
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
 
-        methods.add_method_mut("decrement", |_vm, m, counter, _: ()| {
+        methods.add_method_mut("decrement", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 let value = this.decrement();
                 Ok(Value::Integer(value))
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
 
-        methods.add_method_mut("reset", |_vm, m, counter, _: ()| {
+        methods.add_method_mut("reset", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 this.set_count(0);
                 Ok(Value::Nil)
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
 
-        methods.add_meta_method("__tostring", |_vm, m, counter, _: ()| {
+        // A method that takes a parameter — exercises `userdata:add(n)`.
+        methods.add_method_mut("add", |_vm, _m, counter, n: i64| {
+            if let Some(this) = counter {
+                this.count += n;
+                Ok(Value::Integer(this.count))
+            } else {
+                Err(LuaError::UDBadCall)
+            }
+        });
+
+        methods.add_meta_method("__tostring", |_vm, _m, counter, _: ()| {
             if let Some(this) = counter {
                 Ok(Value::String(format!("Counter({})", this.get_count())))
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
 
-        methods.add_meta_method("__add", |_vm, m, counter, value| {
-            if let Some(v) = value.get(0) {
-                if let Value::Integer(n) = v {
-                    Ok(Value::Integer(counter.get_count() + n))
+        methods.add_meta_method("__add", |_vm, _m, counter, value: Value| {
+            if let Some(this) = counter {
+                if let Value::Integer(n) = value {
+                    Ok(Value::Integer(this.get_count() + n))
                 } else {
                     Err(LuaError::ExpOpValueWithValue(
                         ValueTypes::UserData,
                         MetaMethod::Add,
-                        v.to_error(),
+                        value.to_error(),
                     ))
                 }
             } else {
-                Err(LuaError::UDBadCast)
+                Err(LuaError::UDBadCall)
             }
         });
     }
@@ -119,27 +129,27 @@ impl UserData for Counter {
 }
 
 fn main() {
-    let mut lua = Lua::new();
+    // new_with_standard() so `print` and friends are available.
+    let mut lua = Lua::new_with_standard();
     let mut comp = Compiler::new();
     lua.enter(|vm, mc| {
         vm.register_native_function(mc, "make_counter", make_userdata);
-        Ok(ExVal::Nil)
     });
     let res = lua.run(
+        Some("counter userdata test"),
         r#"
-         counter=make_counter()
-         counter.increment()
-         print(counter)
-         counter.increment()
-         print(counter)
-         return 8
+         counter = make_counter()
+         counter:increment()          -- self method, no args
+         counter:add(10)              -- self method WITH a parameter
+         print(counter.count)         -- field getter -> 11
+         return counter:increment()   -- -> 12
          "#,
         &mut comp,
     );
     match res {
         Ok(o) => println!("{}", o),
         Err(ee) => {
-            for e in ee.iter() {
+            for e in ee.errors.iter() {
                 println!("error: {}", e);
             }
         }

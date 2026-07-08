@@ -4,7 +4,6 @@ use std::{
     collections::HashMap,
     error::Error,
     marker::PhantomData,
-    ops::Deref,
     rc::Rc,
     sync::{Arc, Mutex, Weak},
 };
@@ -15,17 +14,17 @@ use gc_arena::{Collect, Gc, Mutation};
 use crate::{
     code::OpCode,
     error::SiltError,
-    function::{NativeFunctionRaw, WrappedFn},
+    function::{NativeFunctionRaw, NativeReturn, WrappedFn},
     lua::VM,
-    value::{FromLua, FromLuaMulti, ToLua, Value, ValueRef, Variadic},
+    value::{FromLua, FromLuaMulti, ToLua, Value, Variadic},
 };
 
 /// Result type for Lua operations
 pub type InnerResult<'gc> = Result<Value<'gc>, SiltError>;
-pub type ToInnerResult<'gc, V: ToLua<'gc>> = V;
+pub type ToInnerResult<'gc, V> = V;
 
 /// Trait for Rust types that can be used as Lua UserData
-pub trait UserData: Sized + 'static {
+pub trait UserData: Sized + Send + 'static {
     /// Returns a unique type name for this UserData type
     fn type_name() -> &'static str;
 
@@ -182,7 +181,9 @@ pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
     methods: HashMap<String, UserDataMethodClosure<'gc>>,
     // methods2: HashMap<String, dyn MethodHandler<'gc,T,_,_>>,
     // method_cache: Vec<NativeFunctionRc<'gc>>,
-    meta_methods: Vec<UserDataMethodClosure<'gc>>,
+    // Keyed by `MetaMethod::as_ind()`; a Vec was indexed sparsely (e.g. index 25)
+    // which panicked on insert into an empty Vec.
+    meta_methods: HashMap<usize, UserDataMethodClosure<'gc>>,
     getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
     setters: HashMap<String, Box<UserDataSetterFn<'gc, T>>>,
     // type_id: std::any::TypeId,
@@ -194,7 +195,7 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
         Self {
             methods: HashMap::new(),
             // method_cache: Vec::new(),
-            meta_methods: Vec::new(),
+            meta_methods: HashMap::new(),
             getters: HashMap::new(),
             setters: HashMap::new(),
             // type_id: std::any::TypeId::of::<T>(),
@@ -275,7 +276,12 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
             //     // Value::Nil
             // };
             let native_fn = method_fn;
-            let raw = NativeFunctionRaw { func: native_fn };
+            // wrap the single-value userdata method closure into the native ABI
+            let raw = NativeFunctionRaw {
+                func: Box::new(move |vm, mc, args| {
+                    Ok(NativeReturn::Single(native_fn(vm, mc, args)?))
+                }),
+            };
             let r = Rc::new(raw);
             // self.method_cache.push(r.clone());
             self.getters.insert(
@@ -317,23 +323,23 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
 
     fn call_meta_method(
         &self,
-        vm: &VM<'gc>,
-        mc: &Mutation<'gc>,
-        ud: &mut UserDataWrapper,
-        index: usize,
-        args: Vec<Value<'gc>>,
+        _vm: &VM<'gc>,
+        _mc: &Mutation<'gc>,
+        _ud: &mut UserDataWrapper,
+        _index: usize,
+        _args: Vec<Value<'gc>>,
     ) -> InnerResult<'gc> {
         // TODO man this is broken, we can downcast but it wont work with our normal method
         // closure, we need a new thing??
-            // if let Some(&method_fn) = self.meta_methods.get(index) {
-            //     if let Ok(mut d) = ud.data.lock() {
-            //        
-            //         return match d.downcast_mut() {
-            //             Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
-            //             None => Err(SiltError::UDBadCast),
-            //         };
-            //     }
-            // }
+        // if let Some(&method_fn) = self.meta_methods.get(index) {
+        //     if let Ok(mut d) = ud.data.lock() {
+        //
+        //         return match d.downcast_mut() {
+        //             Some(typed_ud) => method_fn(vm, mc, typed_ud, args),
+        //             None => Err(SiltError::UDBadCast),
+        //         };
+        //     }
+        // }
         Err(SiltError::UDNoMethodRef)
     }
 
@@ -350,7 +356,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
             if let Ok(d) = ud.data.lock() {
                 return match d.downcast_ref() {
                     Some(typed_ud) => getter_fn(vm, mc, typed_ud),
-                    None => Err(SiltError::UDBadCast),
+                    None => Err(SiltError::UDBadCall),
                 };
             }
         }
@@ -369,7 +375,7 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
             if let Ok(mut d) = ud.data.lock() {
                 return match d.downcast_mut() {
                     Some(typed_ud) => setter_fn(vm, mc, typed_ud, value),
-                    None => Err(SiltError::UDBadCast),
+                    None => Err(SiltError::UDBadCall),
                 };
             }
         }
@@ -491,12 +497,12 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
             metamethod.as_ind(),
             Box::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
-                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                    match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
                         Ok(rr) => rr,
-                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(SiltError::UDBadCall) => closure.call_method(vm, mc, None, args)?,
                         Err(e) => return Err(e),
                     }
                 } else {
@@ -525,12 +531,12 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
             name.to_string(),
             Box::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
-                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                    match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
                         Ok(rr) => rr,
-                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(SiltError::UDBadCall) => closure.call_method(vm, mc, None, args)?,
                         Err(e) => return Err(e),
                     }
                 } else {
@@ -574,12 +580,12 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
             name.to_string(),
             Box::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
-                    match ud_val.apply_userdata::<T, _, R>(mc, |ud| {
+                    match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
                         let method_args = &args[1..];
                         closure.call_method(vm, mc, Some(ud), method_args)
                     }) {
                         Ok(rr) => rr,
-                        Err(SiltError::UDBadCast) => closure.call_method(vm, mc, None, args)?,
+                        Err(SiltError::UDBadCall) => closure.call_method(vm, mc, None, args)?,
                         Err(e) => return Err(e),
                     }
                 } else {
@@ -592,7 +598,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
     }
 }
 
-impl<'a, 'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc, T> {
+impl<'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc, T> {
     fn add_field_method_get<F, R>(&mut self, name: &str, closure: F)
     where
         R: ToLua<'gc>,
@@ -681,7 +687,7 @@ unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
 
 /// A wrapper for UserData objects
 pub struct UserDataWrapper {
-    data: Arc<Mutex<dyn Any>>,
+    data: Arc<Mutex<dyn Any + Send>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -689,7 +695,7 @@ pub struct UserDataWrapper {
 }
 
 pub struct WeakWrapper {
-    data: Weak<Mutex<dyn Any>>,
+    data: Weak<Mutex<dyn Any + Send>>,
     id: usize,
     type_name: &'static str,
     // Index in the VM's userdata_stack
@@ -730,6 +736,40 @@ impl WeakWrapper {
     /// Check if the original UserDataWrapper has been dropped
     pub fn is_dropped(&self) -> bool {
         self.data.upgrade().is_none()
+    }
+
+    pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(&'a self, apply: F) -> Result<R, SiltError>
+    where
+        F: FnOnce(&T) -> Result<R, SiltError>,
+    {
+        let arc = match self.data.upgrade() {
+            Some(arc) => arc,
+            None => {
+                return Err(SiltError::UDRefDropped);
+            }
+        };
+        let i = arc.lock().map_err(|_| SiltError::UDNoMap)?;
+        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCall)?;
+        apply(ud)
+    }
+
+    pub fn downcast_mut<'a, 'b: 'a, T: UserData, F, R>(
+        &'a mut self,
+        apply: F,
+    ) -> Result<R, SiltError>
+    where
+        F: FnOnce(&mut T) -> Result<R, SiltError>,
+        R: ToLua<'b>,
+    {
+        let arc = match self.data.upgrade() {
+            Some(arc) => arc,
+            None => {
+                return Err(SiltError::UDRefDropped);
+            }
+        };
+        let mut i = arc.lock().map_err(|_| SiltError::UDNoMap)?;
+        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCall)?;
+        apply(ud)
     }
 
     /// Convert to a string representation
@@ -793,6 +833,14 @@ impl UserDataWrapper {
         }
     }
 
+    pub fn is_type<T: UserData>(&self) -> bool {
+        if let Ok(d) = self.data.lock() {
+            d.is::<T>()
+        } else {
+            false
+        }
+    }
+
     // pub fn lock()
 
     // pub fn downcast_mut2<'a, 'b: 'a, T:'static>(&'b mut self) -> Result<&'a mut T, SiltError> {
@@ -804,14 +852,32 @@ impl UserDataWrapper {
     // pub fn
     pub fn downcast_mut<'a, 'b: 'a, T: UserData, F, R>(
         &'a mut self,
-        mut apply: F,
+        apply: F,
     ) -> Result<R, SiltError>
     where
-        F: FnMut(&mut T) -> Result<R, SiltError>,
+        F: FnOnce(&mut T) -> Result<R, SiltError>,
         R: ToLua<'b>,
     {
         let mut i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
-        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCast)?;
+        let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCall)?;
+        apply(ud)
+    }
+
+    pub fn downcast_ref<'a, 'b: 'a, T: UserData, F, R>(&'a self, apply: F) -> Result<R, SiltError>
+    where
+        F: FnOnce(&T) -> Result<R, SiltError>,
+    {
+        let i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
+        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCall)?;
+        apply(ud)
+    }
+
+    pub fn downcast_get<'a, 'b: 'a, T: UserData, F, R>(&'a self, apply: F) -> Result<R, SiltError>
+    where
+        F: FnOnce(&T) -> Result<R, SiltError>,
+    {
+        let i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
+        let ud = (*i).downcast_ref::<T>().ok_or(SiltError::UDBadCall)?;
         apply(ud)
 
         // Ok(Value::Nil)
@@ -880,13 +946,13 @@ impl UserData for TestEnt {
     fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {
         methods.add_meta_method(
             MetaMethod::ToString,
-            |vm, mc, this: Option<&mut TestEnt>, _: ()| {
+            |_vm, _mc, this: Option<&mut TestEnt>, _: ()| {
                 let id = if let Some(ud) = this { ud.get_id() } else { 0 };
                 Ok(Value::String(format!("[entity {}]", id)))
             },
         );
 
-        methods.add_meta_method("__concat", |vm, mc, this, _: ()| {
+        methods.add_meta_method("__concat", |_vm, _mc, this, _: ()| {
             let id = if let Some(ud) = this { ud.get_id() } else { 0 };
             Ok(Value::String(format!("[entity {}]", id)))
         });
@@ -935,16 +1001,17 @@ impl UserData for TestEnt {
         //     // &mut T,
         //     < V as FromLuaMulti<'f, 'gc>>::Output<'f> = |vm: &mut VM<'gc>, mc, args| Ok(()));
 
-        methods.add_method_mut("test", |_, _, this, _: ValueRef| {
+        methods.add_method_mut("test", |_vm, _mc, this, _test: f64| {
             // let v = args.deref();
             println!(
                 "internal userdata method heehehehe (is self param userdata? {}!)",
                 this.is_some()
             );
-            Ok(Value::Integer(3))
+            let ve: Vec<(u8, i32)> = vec![];
+            Ok(ve)
         });
 
-        methods.add_method_mut("iter", |vm, mc, this, args: Variadic| {
+        methods.add_method_mut("iter", |_vm, _mc, _this, args: Variadic| {
             let ite = args.iter();
             println!("start iterate! we got:");
             ite.for_each(|v| {
@@ -1257,19 +1324,14 @@ pub mod vm_integration {
     use super::*;
     use crate::lua::{UDVec, VM};
 
-    /// Create a new UserData value
-    pub fn create_userdata<'gc, T: UserData>(
+    /// Create a new UserData value while registering it's type and storing it on the UD stack
+    pub fn create_userdata_raw<'gc, T: UserData>(
         reg: &mut UserDataRegistry<'gc>,
         mc: &Mutation<'gc>,
         data: T,
         userdata_stack: &mut Option<UDVec>,
-    ) -> Value<'gc> {
-        // Register the type if it hasn't been registered yet
-        let type_name = T::type_name();
-        if !reg.maps.contains_key(type_name) {
-            // println!(" register userdata");
-            reg.register::<T>(mc);
-        }
+    ) -> UserDataWrapper {
+        register_userdata::<T>(reg, mc);
 
         // Create the UserData wrapper
         let mut wrapper = UserDataWrapper::new(data);
@@ -1283,9 +1345,44 @@ pub mod vm_integration {
             let weak_wrapper = WeakWrapper::from_wrapper(&wrapper);
             stack.0.push(weak_wrapper);
         };
+        wrapper
+    }
 
-        // Create the GC-managed wrapper
-        let ud_gc = Gc::new(mc, RefLock::new(wrapper));
+    /// Create UserData value and return both it and a weak wrapper, skip storing the wrapper
+    pub fn create_userdata_tuple<'gc, T: UserData>(
+        reg: &mut UserDataRegistry<'gc>,
+        mc: &Mutation<'gc>,
+        data: T,
+    ) -> (UserDataWrapper, WeakWrapper) {
+        register_userdata::<T>(reg, mc);
+
+        // Create the UserData wrapper
+        let wrapper = UserDataWrapper::new(data);
+
+        // Create a weak wrapper and store it in the stack
+        let weak_wrapper = WeakWrapper::from_wrapper(&wrapper);
+        (wrapper, weak_wrapper)
+    }
+
+    fn register_userdata<'gc, T: UserData>(reg: &mut UserDataRegistry<'gc>, mc: &Mutation<'gc>) {
+        // Register the type if it hasn't been registered yet
+        let type_name = T::type_name();
+        if !reg.maps.contains_key(type_name) {
+            // println!(" register userdata");
+            reg.register::<T>(mc);
+        }
+    }
+
+    /// Create a new UserData value
+    pub fn create_userdata<'gc, T: UserData>(
+        reg: &mut UserDataRegistry<'gc>,
+        mc: &Mutation<'gc>,
+        data: T,
+        userdata_stack: &mut Option<UDVec>,
+    ) -> Value<'gc> {
+        let ud = create_userdata_raw(reg, mc, data, userdata_stack);
+
+        let ud_gc = Gc::new(mc, RefLock::new(ud));
 
         // Set the stack index in the GC-managed wrapper
         // ud_gc.borrow_mut(mc).set_stack_index(index);

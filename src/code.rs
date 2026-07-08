@@ -1,6 +1,12 @@
 use gc_arena::Collect;
 use std::fmt::{self, Display, Formatter};
 
+/// Sentinel `want` value on `CALL` meaning "this call produces ALL its return
+/// values" (Lua's open multiret), used when a call is the trailing argument of
+/// another call so the outer call can spread them. Distinct from any real target
+/// count (the compiler caps argument/assignment counts well below 255).
+pub const MULTIRET: u8 = u8::MAX;
+
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Clone, Collect)]
 #[collect(no_drop)]
@@ -43,6 +49,11 @@ pub enum OpCode {
     POP_AND_GOTO_IF_FALSE(u16),
     /** Compares 2nd(end) and 3rd(iter) value on stack, if greater then forward by X, otherwise push 3rd(iter) on to new stack  */
     FOR_NUMERIC(u16),
+    /** Numeric-for loop tail: increment the iterator (3rd-from-top) by the step (top),
+     *  re-test against the limit, and either push the new loop variable and REWIND by X
+     *  to the loop body, or fall through to exit. Fuses INCREMENT + bound-check + REWIND
+     *  into one op so the steady-state loop runs `body + POP + FORLOOP` per iteration. */
+    FORLOOP(u16),
     FORWARD(u16),
     REWIND(u16),
     RETURN(u8),
@@ -70,8 +81,15 @@ pub enum OpCode {
     GREATER_EQUAL,
     PRINT,
     META(u8),
-    /// Call function with n parameters, and r count of assignments desired
-     CALL(u8,u8),
+    /// Call function with CALL.0 parameters, and CALL.1 count of desired assignments. On call frame return, pops
+    /// stack until CALL.1 is met, even if nils
+    CALL(u8, u8,bool),
+    /// Push vararg values onto stack from starting point
+    VARARG {
+        /// is the argument of a function call or a table, not assignment
+        is_arg: bool,
+        count: u8,
+    },
     /// tell the VM we expect n values for next assignment before resetting, otherwise 1
     NEED(u8),
     REGISTER_UPVALUE {
@@ -102,6 +120,13 @@ pub enum OpCode {
     TABLE_SET {
         depth: u8,
     },
+    /** Method lookup for `obj:method(...)`. The fully-evaluated receiver is on
+     * top of the stack; this looks up `receiver[constant]` and leaves
+     * `[method, receiver]` so the receiver becomes the implicit `self` arg.
+     * Mirrors PUC-Lua's OP_SELF and works for any receiver expression. */
+    METHOD_GET {
+        constant: u8,
+    },
     // TABLE_SET_BY_CONSTANT {
     //     constant: u8,
     // },
@@ -109,12 +134,42 @@ pub enum OpCode {
     INCREMENT {
         index: u8,
     },
+    /// `%` floored modulo (Lua semantics)
+    MODULUS,
+    /// `^` exponentiation — always yields a float
+    POWER,
+    /// `//` floor division
+    FLOOR_DIVIDE,
+    /// `&` bitwise and (integer operands)
+    BIT_AND,
+    /// `|` bitwise or
+    BIT_OR,
+    /// `~` (binary) bitwise xor
+    BIT_XOR,
+    /// `~` (unary) bitwise not
+    BIT_NOT,
+    /// `<<` left shift
+    SHIFT_LEFT,
+    /// `>>` right shift
+    SHIFT_RIGHT,
+    /// Generic `for v1..vn in f, s, control do`. The iterator triple is the top
+    /// three stack values (f, s, control). Calls `f(s, control)`; if the first
+    /// result is nil, jumps `exit` to leave the loop; otherwise updates `control`
+    /// and pushes `count` loop variables for the body.
+    FOR_GENERIC {
+        count: u8,
+        exit: u16,
+    },
+    /// Duplicate the top `n` stack values in order (used by compound assignment
+    /// to a table field so the receiver+keys can feed both a GET and a SET).
+    DUP_N(u8),
 }
 
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CALL(i,m) => write!(f, "OP_CALL({},{})", i,m),
+            Self::CALL(i, m,v) => write!(f, "OP_CALL({},{},{})", i, m,v),
+            Self::VARARG { is_arg, count } => write!(f, "OP_VARARG({},{})", is_arg, count),
             Self::REGISTER_UPVALUE {
                 index: i,
                 neighboring: n,
@@ -137,6 +192,7 @@ impl Display for OpCode {
             }
             Self::FORWARD(offset) => write!(f, "OP_FORWARD {}", offset),
             Self::REWIND(offset) => write!(f, "OP_REWIND {}", offset),
+            Self::FORLOOP(offset) => write!(f, "OP_FORLOOP {}", offset),
             Self::FOR_NUMERIC(offset) => {
                 write!(f, "OP_FOR_NUMERIC {}", offset)
             }
@@ -149,8 +205,8 @@ impl Display for OpCode {
             Self::DEFINE_LOCAL { constant } => {
                 write!(f, "OP_DEFINE_LOCAL {}", constant)
             }
-            Self::NEED(u) => write!(f, "OP_NEED {}",u),
-            Self::RETURN(u) => write!(f, "OP_RETURNx{}",u),
+            Self::NEED(u) => write!(f, "OP_NEED {}", u),
+            Self::RETURN(u) => write!(f, "OP_RETURNx{}", u),
             Self::POP => write!(f, "OP_POP"),
             Self::POPS(n) => {
                 write!(f, "OP_POPx{}", n)
@@ -182,7 +238,7 @@ impl Display for OpCode {
                 write!(f, "OP_LITERAL {} {}", dest, literal)
             }
             Self::NIL => write!(f, "OP_NIL"),
-            Self::NILS(n) => write!(f, "OP_NILS x{}",n),
+            Self::NILS(n) => write!(f, "OP_NILS x{}", n),
             Self::TRUE => write!(f, "OP_TRUE"),
             Self::FALSE => write!(f, "OP_FALSE"),
             Self::NOT => write!(f, "OP_NOT"),
@@ -215,19 +271,31 @@ impl Display for OpCode {
                 write!(f, "OP_TABLE_GET_FROM {}", index)
             }
             Self::TABLE_SET { depth } => write!(f, "OP_TABLE_SET {}[]", depth),
+            Self::METHOD_GET { constant } => write!(f, "OP_METHOD_GET {}", constant),
             // Self::TABLE_SET_BY_CONSTANT { constant } => {
             //     write!(f, "OP_TABLE_SET_BY_CONSTANT {}", constant)
             // }
             Self::INCREMENT { index } => write!(f, "OP_INCREMENT {}", index),
+            Self::MODULUS => write!(f, "OP_MODULUS"),
+            Self::POWER => write!(f, "OP_POWER"),
+            Self::FLOOR_DIVIDE => write!(f, "OP_FLOOR_DIVIDE"),
+            Self::BIT_AND => write!(f, "OP_BIT_AND"),
+            Self::BIT_OR => write!(f, "OP_BIT_OR"),
+            Self::BIT_XOR => write!(f, "OP_BIT_XOR"),
+            Self::BIT_NOT => write!(f, "OP_BIT_NOT"),
+            Self::SHIFT_LEFT => write!(f, "OP_SHIFT_LEFT"),
+            Self::SHIFT_RIGHT => write!(f, "OP_SHIFT_RIGHT"),
+            Self::DUP_N(n) => write!(f, "OP_DUP_N {}", n),
+            Self::FOR_GENERIC { count, exit } => write!(f, "OP_FOR_GENERIC {}[{}]", count, exit),
         }
     }
 }
 
-impl PartialEq for OpCode{
+impl PartialEq for OpCode {
     fn eq(&self, other: &Self) -> bool {
-        match (self,other){
+        match (self, other) {
             (Self::POP, Self::POP) => true,
-                _=>false
+            _ => false,
         }
     }
 }

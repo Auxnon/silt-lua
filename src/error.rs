@@ -25,6 +25,9 @@ pub enum SiltError {
     TooManyLocals,
     TooManyOperations,
     TooManyParameters,
+    InvalidVarArgParam,
+    InvalidVarArgUsage,
+    InvalidVarArgAssignment,
     ChunkCorrupt,
 
     //expression errors
@@ -48,16 +51,19 @@ pub enum SiltError {
     // Return(Value),
     MetaMethodMissing(MetaMethod),
     MetaMethodNotCallable(MetaMethod),
+    CoerceInt,
 
     // Userdata errors
     UDNoInitField,
     UDNoInitMethod,
+    UDBadCall,
     UDBadCast,
     UDNoMap,
     UDNoFieldGet,
     UDNoFieldSet,
     UDNoMethodRef,
     UDTypeMismatch,
+    UDRefDropped,
 
     //vm
     VmCompileError,
@@ -75,6 +81,21 @@ pub enum SiltError {
     Network(String),
     IO(String),
 }
+
+impl std::error::Error for SiltError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            // SiltError::InvalidNumber(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+// impl From<SiltError> for Box<dyn std::error::Error> {
+//     fn from(err: SiltError) -> Self {
+//         Box::new(err)
+//     }
+// }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueTypes {
@@ -96,6 +117,7 @@ pub enum ValueTypes {
     Vec2,
 }
 
+#[derive(Clone)]
 pub struct TokenTriple {
     pub line: usize,
     pub col: usize,
@@ -167,6 +189,9 @@ impl std::fmt::Display for SiltError {
             ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
             Self::TooManyParameters => write!(f, "Too many parameters, limited to 255"),
+            Self::InvalidVarArgParam => write!(f, "vararg is not last param in function"),
+            Self::InvalidVarArgUsage => write!(f, "vararg used outside of vararg function"),
+            Self::InvalidVarArgAssignment => write!(f, "cannot assign to a vararg"),
             Self::InvalidNumber(s) => write!(f, "Invalid number: {}", s),
             Self::NotANumber(s) => write!(f, "Not a number: {}", s),
             Self::UnexpectedCharacter(c) => write!(f, "Unexpected character: {}", c),
@@ -193,7 +218,7 @@ impl std::fmt::Display for SiltError {
             Self::VmNonTableOperations(v) => {
                 write!(
                     f,
-                    "Cannot perform table operations on a non-table value: {}",
+                    "Cannot perform table operations on a non-table value ({})",
                     v
                 )
             }
@@ -225,8 +250,10 @@ impl std::fmt::Display for SiltError {
             Self::VmCompileError => write!(f, "Error compiling chunk"),
             Self::VmRuntimeError => write!(f, "Runtime error for chunk"),
             Self::VmCorruptConstant => write!(f, "Constant store corrupted"),
-            Self::VmValBadConvert(t)=> write!(f, "Impossible to convert from \"{}\"",t),
-            Self::VmNativeParameterMismatch=>write!(f, "Cannot call native function with available parameters"), 
+            Self::VmValBadConvert(t) => write!(f, "Impossible to convert from \"{}\"", t),
+            Self::VmNativeParameterMismatch => {
+                write!(f, "Cannot call native function with available parameters")
+            }
 
             Self::Unknown => write!(f, "Unknown error"),
             SiltError::MetaMethodMissing(meta_method) => {
@@ -235,7 +262,9 @@ impl std::fmt::Display for SiltError {
             SiltError::MetaMethodNotCallable(meta_method) => {
                 write!(f, "Value for meta method '{}' is not callable", meta_method)
             }
-
+            SiltError::CoerceInt => {
+                write!(f, "Value can't be strictly coerced to an integer")
+            }
             SiltError::UDNoInitField => write!(f, "UserData field not setup"),
             SiltError::UDNoInitMethod => write!(f, "UserData method not setup"),
             SiltError::UDNoMap => write!(f, "UserData map not setup"),
@@ -245,10 +274,16 @@ impl std::fmt::Display for SiltError {
             SiltError::UDTypeMismatch => {
                 write!(f, "UserData type mismatch during method or field access")
             }
+            SiltError::UDRefDropped => {
+                write!(f, "UserData weak reference dropped")
+            }
+            SiltError::UDBadCall => {
+                write!(f, "UserData method called with non-userdata self, try :")
+            }
             SiltError::UDBadCast => write!(f, "UserData bad downcast"),
-            SiltError::Custom(s)=> write!(f, "{}",s),
-            SiltError::Network(s)=> write!(f, "Network Error; {}",s),
-            SiltError::IO(s)=> write!(f, "Input Output Error; {}",s),
+            SiltError::Custom(s) => write!(f, "{}", s),
+            SiltError::Network(s) => write!(f, "Network Error; {}", s),
+            SiltError::IO(s) => write!(f, "Input Output Error; {}", s),
         }
     }
 }
@@ -279,6 +314,129 @@ impl std::fmt::Display for ValueTypes {
 pub struct ErrorTuple {
     pub code: SiltError,
     pub location: TokenCell,
+}
+
+impl Default for ErrorTuple {
+    fn default() -> Self {
+        Self {
+            code: SiltError::Unknown,
+            location: (0, 0),
+        }
+    }
+}
+impl Default for &ErrorTuple {
+    fn default() -> Self {
+        &ErrorTuple {
+            code: SiltError::Unknown,
+            location: (0, 0),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ErrorOut {
+    pub errors: Vec<ErrorTuple>,
+    pub source: Option<String>,
+    /// Index of the compiled source this error came from, as assigned by the
+    /// compiler at compile time and carried on every `FunctionObject`. Lets a
+    /// caller that stored sources by index look up the exact source to snippet
+    /// against — even for a runtime error raised long after compilation, in a
+    /// nested function from a different source than the one currently running.
+    /// `usize::MAX` means "unknown / not tracked".
+    pub source_index: usize,
+}
+
+/// Sentinel `source_index` meaning the source was not tracked (e.g. errors raised
+/// before any chunk context exists).
+pub const SOURCE_INDEX_UNKNOWN: usize = usize::MAX;
+
+impl ToString for ErrorOut {
+    fn to_string(&self) -> String {
+        let source = self.source.clone().unwrap_or("unknown".to_string());
+        if self.errors.len() > 1 {
+            let failed = self
+                .errors
+                .iter()
+                .enumerate()
+                .map(|(i, item)| format!("{}. {}", i + 1, item.to_string()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("source [{}] failed with:\n{}", source, failed)
+        } else {
+            format!(
+                "source [{}] failed with: {}",
+                source,
+                self.errors.first().unwrap_or_default()
+            )
+        }
+    }
+}
+
+impl ErrorOut {
+    pub fn get_first(&self) -> SiltError {
+        let f = self.errors.first();
+        match f {
+            Some(e) => e.code.clone(),
+            None => SiltError::Unknown,
+        }
+    }
+
+    /// Render every error as a message + source snippet, given the original source
+    /// string. `ErrorOut.source` holds the chunk *name*, not the code, so the caller
+    /// must supply the source — which is the point: the VM may have run elsewhere.
+    pub fn snippet(&self, source: &str) -> String {
+        self.errors
+            .iter()
+            .map(|e| e.snippet(source))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+}
+
+impl ErrorTuple {
+    /// This error's message plus a source snippet with a caret under its location.
+    pub fn snippet(&self, source: &str) -> String {
+        format!(
+            "error: {} (line {}, col {})\n{}",
+            self.code, self.location.0, self.location.1,
+            error_snippet(source, self.location)
+        )
+    }
+}
+
+/// Render a one-line source snippet pointing at `location` (1-indexed line, col): the
+/// offending line with a caret beneath the column.
+///
+/// This is a standalone helper so a caller that still holds the source can produce a
+/// snippet for an error raised elsewhere — e.g. a VM running on another thread that no
+/// longer has the source. It degrades gracefully when the location is out of range.
+///
+/// ```text
+///  3 | local c = )
+///    |           ^
+/// ```
+pub fn error_snippet(source: &str, location: TokenCell) -> String {
+    let (line, col) = location;
+    let text = match line.checked_sub(1).and_then(|i| source.lines().nth(i)) {
+        Some(t) => t,
+        None => return format!("  (line {} not in source)", line),
+    };
+    let gutter = line.to_string();
+    let pad = " ".repeat(gutter.len());
+    // Echo the line's leading characters as the caret indent (tabs stay tabs) so the
+    // caret aligns under tab- or space-indented code.
+    let indent: String = text
+        .chars()
+        .take(col.saturating_sub(1))
+        .map(|c| if c == '\t' { '\t' } else { ' ' })
+        .collect();
+    format!("{} | {}\n{} | {}^", gutter, text, pad, indent)
+}
+
+impl From<Vec<ErrorTuple>> for SiltError {
+    fn from(value: Vec<ErrorTuple>) -> Self {
+        value.into_iter().next().unwrap().code
+    }
 }
 
 impl std::fmt::Display for ErrorTuple {

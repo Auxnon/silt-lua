@@ -1,12 +1,15 @@
 use std::{borrow::BorrowMut, cell::RefCell, mem::take, ops::DerefMut, rc::Rc};
 
+use colored::Colorize;
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
     code::OpCode,
     compiler::Compiler,
-    error::{ErrorTuple, SiltError, ValueTypes},
-    function::{CallFrame, Closure, FunctionObject, NativeFunctionRaw, UpValue, WrappedFn},
+    error::{ErrorOut, ErrorTuple, SiltError, ValueTypes},
+    function::{
+        CallFrame, Closure, FunctionObject, NativeFunctionRaw, NativeReturn, UpValue, WrappedFn,
+    },
     prelude::UserData,
     table::{ExTable, Table},
     userdata::{InnerResult, MetaMethod, UserDataRegistry, UserDataWrapper, WeakWrapper},
@@ -20,12 +23,6 @@ macro_rules! int2f {
     };
 }
 
-// macro_rules! intr2f {
-//     ($left:ident) => {
-//         *$left as f64
-//     };
-// }
-
 macro_rules! devout {
     ($($arg:tt)*) => {
         #[cfg(feature = "dev-out")]
@@ -34,66 +31,78 @@ macro_rules! devout {
 
 }
 
+macro_rules! bubble {
+    ($arg:expr) => {
+        match $arg {
+            Ok(o) => o,
+            Err(e) => break Err(e),
+        }
+    };
+}
+
 macro_rules! str_op_str{
     ($left:ident $op:tt $right:ident $enu:ident )=>{
-        (||{
+        ({
+            let mut out=Value::Nil;
             if let Ok(n1) = $left.parse::<i64>() {
                 if let Ok(n2) = $right.parse::<i64>() {
-                    return Ok(Value::Integer(n1 $op n2));
+                    out=Value::Integer(n1 $op n2)
+                }else if let Ok(n2) = $right.parse::<f64>() {
+                    out=Value::Number(int2f!(n1) $op n2)
                 }
+            }else if let Ok(n1) = $left.parse::<f64>() {
                 if let Ok(n2) = $right.parse::<f64>() {
-                    return Ok(Value::Number(int2f!(n1) $op n2));
+                    out=(Value::Number(n1 $op n2));
                 }
             }
-            if let Ok(n1) = $left.parse::<f64>() {
-                if let Ok(n2) = $right.parse::<f64>() {
-                    return Ok(Value::Number(n1 $op n2));
-                }
-            }
-            return Err(SiltError::ExpOpValueWithValue(
+
+            if out==Value::Nil{
+                break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
                 MetaMethod::$enu,
                 ValueTypes::String,
-            ));
-        })()
+                ));
+            }
+            out
+        })
     }
 }
 
 macro_rules! str_op_int{
     ($left:ident $op:tt $right:ident $enu:ident)=>{
-        (||{
+        {
             if let Ok(n1) = $left.parse::<i64>() {
-                    return Ok(Value::Integer(n1 $op $right));
-
+                    Value::Integer(n1 $op $right)
             }
-            if let Ok(n1) = $left.parse::<f64>() {
-                    return Ok(Value::Number(n1 $op int2f!($right)));
-            }
-            return Err(SiltError::ExpOpValueWithValue(
+            else if let Ok(n1) = $left.parse::<f64>() {
+                    Value::Number(n1 $op int2f!($right))
+            }else{
+            break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
                 MetaMethod::$enu,
                 ValueTypes::Integer,
             ));
-        })()
+            }
+        }
     }
 }
 
 macro_rules! int_op_str{
     ($left:ident $op:tt $right:ident  $enu:ident)=>{
-        (||{
+        {
             if let Ok(n1) = $right.parse::<i64>() {
-                    return Ok(Value::Integer($left $op n1));
+                    Value::Integer($left $op n1)
 
-            }
-            if let Ok(n1) = $right.parse::<f64>() {
-                    return Ok(Value::Number((int2f!($left) $op n1)));
-            }
-            return Err(SiltError::ExpOpValueWithValue(
+            }else if let Ok(n1) = $right.parse::<f64>() {
+                    Value::Number(int2f!($left) $op n1)
+            }else {
+            break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::Integer,
                 MetaMethod::$enu,
                 ValueTypes::String,
             ));
-        })()
+            }
+        }
     }
 }
 
@@ -112,7 +121,7 @@ macro_rules! str_op_num{
         if let Ok(n1) = $left.parse::<f64>() {
             Value::Number(n1 $op $right)
         }else {
-            return Err(SiltError::ExpOpValueWithValue(
+            break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::String,
                 MetaMethod::$enu,
                 ValueTypes::String,
@@ -126,12 +135,52 @@ macro_rules! num_op_str{
         if let Ok(n1) = $right.parse::<f64>() {
             Value::Number($left $op n1)
         }else{
-            return Err(SiltError::ExpOpValueWithValue(
+            break Err(SiltError::ExpOpValueWithValue(
                 ValueTypes::Number,
                 MetaMethod::$enu,
                 ValueTypes::String,
             ))
         }
+    }
+}
+
+/// Coerce a value to an integer for bitwise ops, per Lua: integers pass through,
+/// floats with an exact integer value convert, everything else has "no integer
+/// representation" and is rejected by the caller.
+fn bit_int(v: &Value<'_>) -> Option<i64> {
+    match v {
+        Value::Integer(i) => Some(*i),
+        Value::Number(f) => {
+            if f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 {
+                Some(*f as i64)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Lua logical left shift on 64 bits: shifts >= 64 give 0, negative counts shift
+/// the other direction.
+fn lua_shl(a: i64, b: i64) -> i64 {
+    if b <= -64 || b >= 64 {
+        0
+    } else if b >= 0 {
+        ((a as u64).wrapping_shl(b as u32)) as i64
+    } else {
+        ((a as u64).wrapping_shr((-b) as u32)) as i64
+    }
+}
+
+/// Lua logical right shift (mirror of `lua_shl`).
+fn lua_shr(a: i64, b: i64) -> i64 {
+    if b <= -64 || b >= 64 {
+        0
+    } else if b >= 0 {
+        ((a as u64).wrapping_shr(b as u32)) as i64
+    } else {
+        ((a as u64).wrapping_shl((-b) as u32)) as i64
     }
 }
 
@@ -155,9 +204,9 @@ macro_rules! binary_op  {
             (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
             (Value::Number(left), Value::Integer(right)) => (Value::Number(left $op right as f64)),
             (Value::Integer(left), Value::Number(right)) =>(Value::Number(left as f64 $op right)),
-            (Value::String(left), Value::String(right)) => str_op_str!(left $op right $opp)?,
-            (Value::String(left), Value::Integer(right)) => str_op_int!(left $op right $opp)?,
-            (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp)?,
+            (Value::String(left), Value::String(right)) => str_op_str!(left $op right $opp),
+            (Value::String(left), Value::Integer(right)) => str_op_int!(left $op right $opp),
+            (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp),
             (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
             (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
             (Value::Table(left), rr ) => {
@@ -167,14 +216,25 @@ macro_rules! binary_op  {
                 let er = right.to_error(); // just in case, cheap op
                 match $lua.handle_userdata_binary_op($ep, left, MetaMethod::$opp, right) {
                     Ok(result) => result,
-                    Err(_) => return Err(SiltError::ExpOpValueWithValue(
+                    Err(_) => break Err(SiltError::ExpOpValueWithValue(
                         ValueTypes::UserData,
                         MetaMethod::$opp,
                         er
                     ))
                 }
             },
-            (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
+            (ll,rr) => break Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
+        }
+    };
+}
+
+#[allow(unused_macros)]
+macro_rules! check_meta {
+    ( $lua:ident, $i:tt, $op:expr) => {
+        if let Some(table) = $lua.primative_meta_tables.get($i) {
+            table.borrow()
+        } else {
+            $op
         }
     };
 }
@@ -201,7 +261,7 @@ macro_rules! table_meta_op {
                 if let Value::Closure(c) = val {
                     const ARITY: usize = 2;
                     let frame_top = unsafe { $ep.ip.sub(ARITY) };
-                    let new_frame = CallFrame::new(c.clone(), $lua.stack_count - ARITY, 0); // TODO using this opcode method means metamethods cant multireturn
+                    let new_frame = CallFrame::new(c.clone(), $lua.stack_count - ARITY, ARITY as u8, 0); // TODO using this opcode method means metamethods cant multireturn
                     $frames.push(new_frame);
                     $frame = $frames.last_mut().unwrap();
                     $frame.local_stack = frame_top;
@@ -212,13 +272,149 @@ macro_rules! table_meta_op {
                 // Value::Nil
                 $right
             }
-            Err(e) => return Err(e),
+            Err(e) => break Err(e),
         }
     }};
 }
 
-type LuaResult = Result<ExVal, Vec<ErrorTuple>>;
+type LuaResult = Result<ExVal, ErrorOut>;
 type InnerUserData<'a> = Gc<'a, RefLock<UserDataWrapper>>;
+
+/// Outcome of a [`Lua::hotswap`] / [`VM::hotswap`] call.
+#[cfg(feature = "hot-swap")]
+#[derive(Debug, PartialEq)]
+pub enum HotswapResult {
+    /// Old and new source are identical; no action was taken.
+    NoChange,
+    /// Root-level code changed; the entire source was recompiled and re-executed.
+    RootChanged,
+    /// One or more function bodies changed, applied *live* with no `cycle()` and all
+    /// global/runtime state preserved:
+    /// * **Top-level global functions** (stage 1): the live global closure is rebound to
+    ///   the new code, reusing its upvalue cells — the new body runs on the next call.
+    /// * **Nested / instance methods** (stage 2): the changed nested prototype's shared
+    ///   `swap` cell is redirected to the new code, so every existing instance picks up the
+    ///   new body on its next call while keeping its own captured state. The enclosing
+    ///   (unchanged) function is left untouched.
+    ///
+    /// The inner `Vec<String>` contains the names of every changed function — the most
+    /// specific ones (e.g. the nested method, not its wrapper) — or `"anonymous"` for
+    /// unnamed functions.
+    FunctionChanged(Vec<String>),
+}
+
+/// Returns 1-indexed line numbers for every line that differs between `old` and
+/// `new`.  An empty `Vec` means the two sources are identical.
+#[cfg(feature = "hot-swap")]
+fn find_changed_lines(old: &str, new: &str) -> Vec<usize> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let max_len = old_lines.len().max(new_lines.len());
+    (0..max_len)
+        .filter(|&i| {
+            old_lines.get(i).copied().unwrap_or("") != new_lines.get(i).copied().unwrap_or("")
+        })
+        .map(|i| i + 1)
+        .collect()
+}
+
+/// (start_line, end_line) span of a compiled function prototype, falling back to
+/// the last instruction's line when the `end` keyword line wasn't recorded.
+#[cfg(feature = "hot-swap")]
+fn fn_span(p: Gc<FunctionObject>) -> (usize, usize) {
+    let end = if p.end_line > 0 {
+        p.end_line
+    } else {
+        p.chunk.last_line()
+    };
+    (p.start_line, end)
+}
+
+/// The directly-nested function prototypes of `p`, in definition (CLOSURE) order.
+/// Old and new compilations of the same source list them in the same order, which
+/// lets [`plan_swaps`] pair them positionally.
+#[cfg(feature = "hot-swap")]
+fn child_fns<'gc>(p: Gc<'gc, FunctionObject<'gc>>) -> Vec<Gc<'gc, FunctionObject<'gc>>> {
+    let mut v = vec![];
+    for op in p.chunk.code.iter() {
+        if let crate::code::OpCode::CLOSURE { constant } = op {
+            if let Value::Function(g) = p.chunk.get_constant(*constant) {
+                v.push(*g);
+            }
+        }
+    }
+    v
+}
+
+/// Outcome of planning a hot-swap for one function subtree.
+#[cfg(feature = "hot-swap")]
+enum SwapPlan<'gc> {
+    /// This function's *own* code changed — the caller must treat the function
+    /// itself as changed (swap its global / re-instantiate), not redirect into it.
+    SelfChanged,
+    /// Only nested functions changed. Each entry redirects an old (live) prototype
+    /// to its newly-compiled replacement: `(old_proto, new_proto, name)`.
+    Nested(Vec<(Gc<'gc, FunctionObject<'gc>>, Gc<'gc, FunctionObject<'gc>>, String)>),
+}
+
+/// Recursively determine, for a function whose source span overlaps the diff,
+/// whether its *own* body changed or only nested functions inside it did.
+///
+/// `old` is the live prototype (whose shared `swap` cell we will set), `new` is the
+/// freshly-compiled prototype. `changed` is the set of changed lines that fall
+/// within this function's span. Returns the minimal set of nested redirects, or
+/// `SelfChanged` when the change touches this function's own code, the structure
+/// changed (a nested function was added/removed), or a nested capture layout
+/// changed (so reusing live upvalues would be unsafe).
+#[cfg(feature = "hot-swap")]
+fn plan_swaps<'gc>(
+    old: Gc<'gc, FunctionObject<'gc>>,
+    new: Gc<'gc, FunctionObject<'gc>>,
+    changed: &[usize],
+) -> SwapPlan<'gc> {
+    let new_children = child_fns(new);
+    let old_children = child_fns(old);
+    let (s, e) = fn_span(new);
+
+    // "Own code" changed when a diff line is in this span but inside none of the
+    // direct children's spans.
+    let own_changed = changed.iter().any(|&l| {
+        s <= l
+            && l <= e
+            && !new_children.iter().any(|&c| {
+                let (cs, ce) = fn_span(c);
+                cs <= l && l <= ce
+            })
+    });
+    // A structural change (added/removed nested fn) breaks positional pairing, so
+    // fall back to treating the whole function as changed.
+    if own_changed || new_children.len() != old_children.len() {
+        return SwapPlan::SelfChanged;
+    }
+
+    let mut redirects = vec![];
+    for i in 0..new_children.len() {
+        let new_c = new_children[i];
+        let old_c = old_children[i];
+        let (cs, ce) = fn_span(new_c);
+        let sub: Vec<usize> = changed.iter().copied().filter(|&l| cs <= l && l <= ce).collect();
+        if sub.is_empty() {
+            continue;
+        }
+        // Reusing a live closure's upvalues requires an unchanged capture layout.
+        if new_c.upvalue_count != old_c.upvalue_count {
+            return SwapPlan::SelfChanged;
+        }
+        let name = || new_c.name.clone().unwrap_or_else(|| "anonymous".to_string());
+        match plan_swaps(old_c, new_c, &sub) {
+            SwapPlan::SelfChanged => redirects.push((old_c, new_c, name())),
+            SwapPlan::Nested(sub_r) if sub_r.is_empty() => redirects.push((old_c, new_c, name())),
+            SwapPlan::Nested(sub_r) => redirects.extend(sub_r),
+        }
+    }
+    SwapPlan::Nested(redirects)
+}
+
 pub struct UDVec(pub Vec<WeakWrapper>);
 
 unsafe impl Collect for UDVec {
@@ -257,12 +453,35 @@ impl<'gc> Lua {
         Self { arena }
     }
 
-    pub fn run(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
+    /// Run one increment of incremental garbage collection using gc-arena's default
+    /// debt-based pacing. This is cheap when little has been allocated and advances /
+    /// finishes the current collection cycle as allocation debt accrues. It is invoked
+    /// automatically at the end of each code-executing VM cycle ([`run`](Self::run),
+    /// [`cycle`](Self::cycle), [`call`](Self::call)); call it manually if you drive the
+    /// VM through [`enter`](Self::enter) instead.
+    pub fn collect(&mut self) {
+        self.arena.collect_debt();
+    }
+
+    /// Force a full garbage-collection cycle to completion. More expensive than
+    /// [`collect`](Self::collect) but reclaims *all* currently-unreachable objects.
+    /// Run automatically after a [`hotswap`](Self::hotswap): a surgical swap orphans
+    /// whole prototype/closure subtrees, and we can spare the cycles to reclaim them
+    /// promptly rather than waiting for debt-paced collection to catch up.
+    pub fn collect_full(&mut self) {
+        self.arena.collect_all();
+    }
+
+    /// Total bytes currently tracked as live by the garbage collector. Useful for
+    /// asserting that collection actually reclaims memory.
+    pub fn allocated_bytes(&self) -> usize {
+        self.arena.metrics().total_allocation()
+    }
+
+    pub fn run(&mut self, name: Option<&str>, code: &str, compiler: &mut Compiler) -> LuaResult {
         let out = self.arena.mutate_root(|mc, root| {
-            match compiler.try_compile(mc, None, code) {
+            match compiler.try_compile(mc, name, code) {
                 Ok(f) => {
-                    // let v: &VM=root.borrow();
-                    // f.borrow().print();
                     let res: LuaResult = root.borrow_mut().run(mc, Gc::new(mc, f));
 
                     // let res=root..run(mc, Gc::new(mc,f));
@@ -270,35 +489,70 @@ impl<'gc> Lua {
                 }
                 Err(er) => Err(er),
             }
-
-            // let obj = Gc::new(mc, object);
-            // let ret=root.run(mc, obj);
-            // ret
         });
-        // o
-        // Ok(ExVal::Nil)
+        // End-of-cycle incremental collection (see `collect`).
+        self.arena.collect_debt();
         out
     }
 
-    pub fn compile(&mut self, code: &str, compiler: &mut Compiler) -> LuaResult {
+    pub fn compile(
+        &mut self,
+        name: Option<&str>,
+        code: &str,
+        compiler: &mut Compiler,
+    ) -> LuaResult {
         self.arena
-            .mutate_root(|mc, vm| match compiler.try_compile(mc, None, code) {
+            .mutate_root(|mc, vm| match compiler.try_compile(mc, name, code) {
                 Ok(f) => {
                     vm.borrow_mut().root = Gc::new(mc, f);
                     Ok(ExVal::Nil)
                 }
-                Err(er) => Err(er),
+                Err(err) => Err(err),
             })
     }
 
     pub fn cycle(&mut self) -> LuaResult {
-        self.arena.mutate_root(|mc, vm| vm.borrow_mut().cycle(mc))
+        let out = self.arena.mutate_root(|mc, vm| vm.borrow_mut().cycle(mc));
+        self.arena.collect_debt();
+        out
+    }
+
+    /// Hotswap Lua source code, detecting what changed between `old_source` and `new_source`
+    /// and updating the VM accordingly with minimal disruption to runtime state.
+    ///
+    /// * If only function bodies changed, the root function object tree is updated with the
+    ///   newly-compiled functions without re-executing root-level code, and any changed
+    ///   top-level global functions are swapped live so the new bodies take effect on the
+    ///   next call with all global state preserved — no `cycle()` needed.
+    /// * If root-level code changed (or the diff spans multiple functions / the root scope),
+    ///   the entire source is recompiled and executed – equivalent to calling [`run`](Self::run).
+    /// * If the sources are identical, nothing happens.
+    ///
+    /// The `compiler` is reset between calls; callers should pass the same `Compiler` instance
+    /// they used for the initial compilation.
+    #[cfg(feature = "hot-swap")]
+    pub fn hotswap(
+        &mut self,
+        name: Option<&str>,
+        old_source: &str,
+        new_source: &str,
+        compiler: &mut Compiler,
+    ) -> Result<HotswapResult, ErrorOut> {
+        let out = self.arena.mutate_root(|mc, vm| {
+            vm.borrow_mut()
+                .hotswap(mc, name, old_source, new_source, compiler)
+        });
+        // A hotswap orphans whole prototype/closure subtrees (the replaced code).
+        // Do a full collection so they're reclaimed now — the new code stays live via
+        // the root and the redirect cells, both of which the collector traces.
+        self.arena.collect_all();
+        out
     }
 
     /// enter into the VM state to modify the VM directly
-    pub fn enter<F>(&mut self, closure: F) -> Result<ExVal, Box<dyn std::error::Error>>
+    pub fn enter<F, T>(&mut self, mut closure: F) -> T
     where
-        F: for<'a> Fn(&mut VM<'a>, &Mutation<'a>) -> Result<ExVal, Box<dyn std::error::Error>>,
+        F: for<'a> FnMut(&mut VM<'a>, &Mutation<'a>) -> T,
     {
         self.arena.mutate_root(move |mc, vm| {
             closure(vm, mc)
@@ -312,29 +566,32 @@ impl<'gc> Lua {
     /// vm.call(ref)
     pub fn load_fn(
         &mut self,
-        name: Option<String>,
-        code: &str,
         compiler: &mut Compiler,
-    ) -> Result<usize, Vec<ErrorTuple>> {
+        name: Option<&str>,
+        code: &str,
+    ) -> Result<usize, ErrorOut> {
         self.arena
-            .mutate_root(|mc, vm| vm.load_fn(mc, name, code, compiler))
+            .mutate_root(|mc, vm| vm.load_fn(mc, compiler, name, code))
     }
 
     /// call an internal function by index provided from the load function. Ideally call this after
     /// entering the VM context otherwise calling here will open and close the arena
     /// each time
-    pub fn call(&mut self, index: usize) -> LuaResult {
-        self.call_with_params::<Vec<()>>(index, vec![])
+    pub fn call(&mut self, name: Option<&str>, index: usize) -> LuaResult {
+        self.call_with_params::<Vec<()>>(name, index, vec![])
         // Ok(ExVal::Nil)
     }
 
     /// call an internal function by index with parameters
-    pub fn call_with_params<T>(&mut self, index: usize, params: T) -> LuaResult
+    pub fn call_with_params<T>(&mut self, name: Option<&str>, index: usize, params: T) -> LuaResult
     where
         T: for<'e> ToLuaMulti<'e>,
     {
-        self.arena
-            .mutate_root(|mc, vm| vm.call_fn(mc, index, params))
+        let out = self
+            .arena
+            .mutate_root(|mc, vm| vm.call_fn(mc, name, index, params));
+        self.arena.collect_debt();
+        out
         // rr
         // Ok(ExVal::Nil)
     }
@@ -391,6 +648,7 @@ pub struct VM<'gc> {
     /** Next empty location */
     // stack_top: *mut Value,
     pub globals: Gc<'gc, RefLock<Table<'gc>>>, // TODO store strings as identifer usize and use that as key
+    pub primative_meta_tables: Vec<Gc<'gc, RefLock<Table<'gc>>>>,
     // original CI code uses linked list, most recent closed upvalue is the first and links to previous closed values down the chain
     // allegedly performance of a linked list is heavier then an array and shifting values but is that true here or the opposite?
     // resizing a sequential array is faster then non sequential heap items, BUT since we'll USUALLY resolve the upvalue on the top of the list we're derefencing once to get our Upvalue vs an index lookup which is slightly slower.
@@ -414,8 +672,6 @@ pub struct VM<'gc> {
     external_functions: Vec<Gc<'gc, FunctionObject<'gc>>>,
 }
 
-type ObjectPtr<'gc, T> = Gc<'gc, RefLock<T>>;
-
 pub(crate) struct Ephemeral<'a, 'g> {
     pub(crate) ip: *mut Value<'g>,
     pub(crate) mc: &'a Mutation<'g>,
@@ -427,9 +683,10 @@ impl<'a, 'g> Ephemeral<'a, 'g> {
     }
 }
 
-fn wrap<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> {
-    Gc::new(mc, RefLock::new(value))
-}
+// #[allow(dead_code)]
+// fn wrap<'gc, T: Collect>(mc: &Mutation<'gc>, value: T) -> ObjectPtr<'gc, T> {
+//     Gc::new(mc, RefLock::new(value))
+// }
 
 // fn new_body<'a, 'b>(mc: &Mutation<'a>) -> Gc<'a, RefLock<FunctionObject<'b>>>
 // where
@@ -489,6 +746,7 @@ impl<'gc> VM<'gc> {
             stack,
             // stack_top,
             globals: Gc::new(mc, RefLock::new(Table::new(0))), //Gc::new(mc, gtable),
+            primative_meta_tables: vec![],
             open_upvalues: vec![],
             table_counter: RefCell::new(1),
             userdata_registry: UserDataRegistry::new(),
@@ -502,27 +760,18 @@ impl<'gc> VM<'gc> {
         &mut self,
         mc: &Mutation<'gc>,
         object: Gc<'gc, FunctionObject<'gc>>,
-    ) -> Result<ExVal, Vec<ErrorTuple>> {
-        match self.execute(mc, object) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(vec![ErrorTuple {
-                code: e,
-                location: (0, 0),
-            }]),
-        }
-
-        // Ok(ExVal::Nil)
-        // out
+    ) -> Result<ExVal, ErrorOut> {
+        self.execute(mc, object)
     }
 
     /// compile and run lua once
     pub fn build_and_run(
         &mut self,
         mc: &Mutation<'gc>,
-        name: Option<String>,
+        name: Option<&str>,
         code: &str,
         compiler: &mut Compiler,
-    ) -> Result<ExVal, Vec<ErrorTuple>> {
+    ) -> Result<ExVal, ErrorOut> {
         match compiler.try_compile(mc, name, code) {
             Ok(f) => {
                 let fun = Gc::new(mc, f);
@@ -535,14 +784,257 @@ impl<'gc> VM<'gc> {
     /// run through the full program again, keeping previous state. This will redeclare top level
     /// code too. Ideally you will want to directly run a function via call_by_index after load_fn
     /// or store_fn
-    pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, Vec<ErrorTuple>> {
-        match self.execute(mc, self.root) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(vec![ErrorTuple {
-                code: e,
-                location: (0, 0),
-            }]),
+    pub fn cycle(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, ErrorOut> {
+        self.execute(mc, self.root)
+    }
+
+    /// Hotswap Lua source code with minimal VM disruption.
+    ///
+    /// Computes the diff between `old_source` and `new_source`.  Uses the actual compiler
+    /// output to determine which functions changed: each `CLOSURE` instruction in the
+    /// compiled root chunk is examined; its start line comes from the chunk's location table
+    /// and its end line from the last instruction of the function's own chunk.  Functions
+    /// whose line range overlaps with the diff are treated as changed and kept from the new
+    /// compilation; all other function constants are restored from the original root so that
+    /// GC identity is preserved and only what actually changed is updated.
+    ///
+    /// - **All diff lines inside function bodies** → `FunctionChanged(names)`.  The root is
+    ///   updated but root-level code is NOT re-executed, preserving global state.  Call
+    ///   [`cycle`](Self::cycle) to re-register function globals when ready.
+    /// - **Any diff line outside every function body** → `RootChanged`.  The full source is
+    ///   recompiled and re-executed immediately.
+    /// - **Identical sources** → `NoChange`.
+    ///
+    /// This approach handles named, anonymous, and nested functions correctly because it
+    /// relies on the actual compiler output rather than a secondary parse pass.
+    #[cfg(feature = "hot-swap")]
+    pub fn hotswap(
+        &mut self,
+        mc: &Mutation<'gc>,
+        name: Option<&str>,
+        old_source: &str,
+        new_source: &str,
+        compiler: &mut Compiler,
+    ) -> Result<HotswapResult, ErrorOut> {
+        // 1. Find the set of changed lines (1-indexed).  An empty set means no change.
+        let changed_lines = find_changed_lines(old_source, new_source);
+        if changed_lines.is_empty() {
+            return Ok(HotswapResult::NoChange);
         }
+
+        // 2. Compile the new source fully using the real parser/compiler.
+        let mut new_root = compiler.try_compile(mc, name, new_source)?;
+
+        // 3. Scan every CLOSURE instruction in the new root chunk.
+        //
+        //    For each compiled function we use:
+        //      • `fn_gc.start_line` – the line of the `function` keyword.
+        //      • `fn_gc.end_line`   – the line of the matching `end` keyword, captured
+        //        directly from the lexer token in `block()` during compilation.  This is
+        //        more precise than using the last instruction's line, since the `end`
+        //        keyword itself never generates bytecode.
+        //
+        //    A function "overlaps the diff" when at least one changed line falls within
+        //    [start_line, end_line].  Nested / anonymous functions are handled because
+        //    their containing root-level function's span covers them.
+        let mut changed_fn_names: Vec<String> = vec![];
+        // (start_line, end_line) for every function that overlaps the diff.
+        let mut covered_ranges: Vec<(usize, usize)> = vec![];
+        // Constant indices of root-level functions whose source did NOT change; they will
+        // be restored from `self.root` to preserve GC object identity.
+        let mut unchanged_indices: Vec<usize> = vec![];
+        // (name, new FunctionObject) for every CHANGED root-level *named* function, used by
+        // the stage-1 live swap below to update the matching global closure in place without
+        // re-running root-level code. Anonymous functions are skipped (no global to bind).
+        let mut changed_globals: Vec<(String, Gc<'gc, FunctionObject<'gc>>)> = vec![];
+        // STAGE 2 — (old_proto, new_proto) redirects for nested functions whose body
+        // changed while their enclosing top-level function did not. Applied after the
+        // root is installed; see step 7b.
+        let mut nested_redirects: Vec<(Gc<'gc, FunctionObject<'gc>>, Gc<'gc, FunctionObject<'gc>>)> =
+            vec![];
+        let old_constants_len = self.root.chunk.constants_len();
+
+        for opcode in new_root.chunk.code.iter() {
+            if let crate::code::OpCode::CLOSURE { constant } = opcode {
+                let k = *constant as usize;
+                if let crate::value::Value::Function(fn_gc) = new_root.chunk.get_constant(*constant)
+                {
+                    let new_top = *fn_gc;
+                    let (fn_start_line, fn_end_line) = fn_span(new_top);
+
+                    // A function overlaps the diff when any changed line falls in its span.
+                    let within: Vec<usize> = changed_lines
+                        .iter()
+                        .copied()
+                        .filter(|&line| fn_start_line <= line && line <= fn_end_line)
+                        .collect();
+
+                    if within.is_empty() {
+                        unchanged_indices.push(k);
+                        continue;
+                    }
+                    covered_ranges.push((fn_start_line, fn_end_line));
+
+                    // Decide whether THIS top-level function's own code changed, or only
+                    // nested functions inside it. The redirect anchor is the LIVE prototype
+                    // reachable through the function's global closure — the exact prototype
+                    // every instance's nested closures were spun off from (and thus share),
+                    // not a fresh recompile. (self.root isn't a reliable handle: `run` does
+                    // not install the program as root.)
+                    let live_top = new_top.name.as_ref().and_then(|n| {
+                        match self.globals.borrow().get(n.as_str()) {
+                            Some(Value::Closure(c)) => Some(c.function),
+                            _ => None,
+                        }
+                    });
+                    let plan = match live_top {
+                        Some(old_top) => plan_swaps(old_top, new_top, &within),
+                        // No live global closure to anchor on → treat the wrapper as changed.
+                        None => SwapPlan::SelfChanged,
+                    };
+
+                    match plan {
+                        SwapPlan::Nested(redirects) if !redirects.is_empty() => {
+                            // Only nested functions changed: keep the wrapper as-is
+                            // (restore its old constant, preserving its identity and live
+                            // global) and redirect each changed nested prototype.
+                            unchanged_indices.push(k);
+                            for (old_c, new_c, name) in redirects {
+                                changed_fn_names.push(name);
+                                nested_redirects.push((old_c, new_c));
+                            }
+                        }
+                        // Wrapper's own code changed (or no plan): stage-1 territory.
+                        _ => {
+                            let fn_name = fn_gc
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| "anonymous".to_string());
+                            changed_fn_names.push(fn_name.clone());
+                            // Only named functions can be bound as a global and swapped live.
+                            if fn_gc.name.is_some() {
+                                changed_globals.push((fn_name, new_top));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Decide whether root-level code changed. A changed line forces a full
+        //    reload if either:
+        //      (a) it lies outside every changed function's span, OR
+        //      (b) the ROOT chunk carries genuine root-level code at that line —
+        //          even if a function span also covers it. This catches edits on
+        //          a line *shared* between a function and root code (e.g. the
+        //          unformatted `counter = 5 function tick() … end`), which the
+        //          span check alone would silently mask as a function-only change.
+        //    Function bodies live in their own chunks, so the only root-chunk
+        //    instructions are root statements plus the function-definition
+        //    machinery (CLOSURE / REGISTER_UPVALUE / DEFINE_GLOBAL); we exclude
+        //    that machinery so a pure signature edit still counts as function-scope.
+        let mut root_code_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (i, opcode) in new_root.chunk.code.iter().enumerate() {
+            match opcode {
+                crate::code::OpCode::CLOSURE { .. }
+                | crate::code::OpCode::REGISTER_UPVALUE { .. }
+                | crate::code::OpCode::DEFINE_GLOBAL { .. } => {}
+                _ => {
+                    let (line, _) = new_root.chunk.get_loc(i);
+                    root_code_lines.insert(line);
+                }
+            }
+        }
+        let root_level_changed = changed_lines.iter().any(|&line| {
+            root_code_lines.contains(&line)
+                || !covered_ranges
+                    .iter()
+                    .any(|&(start, end)| start <= line && line <= end)
+        });
+
+        if root_level_changed || changed_fn_names.is_empty() {
+            // A root change is a FULL RESET: wipe all VM state and re-run the new
+            // program from scratch, exactly as a freshly constructed VM would —
+            // no stale globals/userdata from the previous version survive.
+            self.globals = Gc::new(mc, RefLock::new(Table::new(0)));
+            self.stack_count = 0;
+            if let Some(u) = &mut self.userdata_stack {
+                u.0.clear();
+            }
+            self.load_standard_library(mc);
+            let func = Gc::new(mc, new_root);
+            self.root = func;
+            self.execute(mc, func)?;
+            return Ok(HotswapResult::RootChanged);
+        }
+
+        // 5. All changes are inside function bodies.
+        //    Restore unchanged function constants from the original root so that only the
+        //    actually-changed functions differ; this preserves GC object identity and avoids
+        //    unnecessarily replacing live function references.  The constant indices align
+        //    because we compiled the full source (same function order = same constant order).
+        for k in unchanged_indices {
+            if k < old_constants_len {
+                let orig = self.root.chunk.copy_constant(k as u8);
+                new_root.chunk.patch_constant(k, orig);
+            }
+        }
+
+        // 6. Install the patched root without re-executing root-level code, thereby
+        //    preserving all global state.  The patched root keeps the VM's notion of the
+        //    program consistent (used by any later `cycle()` and as the source for nested /
+        //    not-yet-instantiated functions).
+        self.root = Gc::new(mc, new_root);
+
+        // 7. STAGE 1 — live-apply the change. For each changed *named* function that is
+        //    currently bound as a top-level global closure, replace that global with a fresh
+        //    closure wrapping the new code while REUSING the existing upvalue cells. Because
+        //    top-level functions are invoked by global-name lookup, every subsequent call
+        //    picks up the new body immediately — no `cycle()`, so all global/game state is
+        //    preserved. Functions that aren't live global closures (locals, nested methods)
+        //    are left to the patched root tree; truly surgical nested/instance swaps are
+        //    stage 2 (function-slot indirection).
+        for (fn_name, new_fn) in changed_globals {
+            // Capture the live closure's upvalue cells, if this name is a global closure.
+            let old_upvalues = match self.globals.borrow().get(fn_name.as_str()) {
+                Some(Value::Closure(old)) => Some(old.upvalues.clone()),
+                _ => None,
+            };
+            let Some(old_upvalues) = old_upvalues else {
+                continue; // not a live global closure — nothing to swap in place
+            };
+            // Reuse the existing cells only when the capture layout is unchanged (the
+            // body-only edit case). If the new body captures a different number of
+            // upvalues we can't safely rebind here, so leave the live global as-is; the
+            // patched root still carries the new code for a future full cycle.
+            let upvalues = if new_fn.upvalue_count as usize == old_upvalues.len() {
+                old_upvalues
+            } else if new_fn.upvalue_count == 0 {
+                vec![]
+            } else {
+                continue;
+            };
+            let new_closure = Gc::new(mc, Closure::new(new_fn, upvalues));
+            self.globals
+                .borrow_mut(mc)
+                .set(Value::String(fn_name), Value::Closure(new_closure));
+        }
+
+        // 7b. STAGE 2 — live-apply nested function swaps. Each changed nested function
+        //     redirects its OLD (live, shared) prototype to the freshly-compiled one by
+        //     setting the prototype's `swap` cell. Every live closure of that definition
+        //     — across all instances created by the unchanged wrapper — points at the
+        //     same prototype, so on its next call it resolves to the new code while
+        //     keeping its own captured upvalues (instance state preserved). New code is
+        //     kept alive by the `swap` cell, which the GC traces.
+        for (old_proto, new_proto) in nested_redirects {
+            // Mutate the `swap` cell through the write barrier (it lives inside an
+            // already-allocated Gc, so a new Gc pointer stored here needs the barrier).
+            let cell = gc_arena::barrier::unlock!(Gc::write(mc, old_proto), FunctionObject, swap);
+            cell.replace(Some(new_proto));
+        }
+
+        Ok(HotswapResult::FunctionChanged(changed_fn_names))
     }
 
     /// Identical to run (mostly), set a built Function Object as root and run it
@@ -550,7 +1042,7 @@ impl<'gc> VM<'gc> {
         &mut self,
         mc: &Mutation<'gc>,
         object: Gc<'gc, FunctionObject<'gc>>,
-    ) -> Result<ExVal, SiltError> {
+    ) -> Result<ExVal, ErrorOut> {
         // TODO param is a reference of &'a
         // self.ip = object.chunk.code.as_ptr();
         // frame.ip = object.chunk.code.as_ptr();
@@ -558,12 +1050,18 @@ impl<'gc> VM<'gc> {
         // let rstack = self.stack.as_ptr();
         #[cfg(feature = "dev-out")]
         object.chunk.print_chunk(&None);
+        // Each top-level execute is a fresh invocation on an empty stack (ep starts
+        // at the base, the root frame's snapshot is 0). stack_count must match, or
+        // it creeps up ~1 per call (the pushed function slot is never reclaimed)
+        // and after ~255 calls the position math runs off the [Value; 256] array,
+        // corrupting state and hanging the VM.
+        self.stack_count = 0;
         let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr() as *mut Value);
         self.body = object;
         // *root = new_body(mc, object.clone());
         let closure = Gc::new(mc, Closure::new(object, vec![]));
 
-        let mut frame = CallFrame::new(closure, 0, 0);
+        let mut frame = CallFrame::new(closure, 0, 0, 0);
         frame.ip = object.chunk.code.as_ptr();
         frame.local_stack = ep.ip;
         // frame.stack.resize(256, Value::Nil); // TODO
@@ -585,10 +1083,10 @@ impl<'gc> VM<'gc> {
     pub fn load_fn<'a>(
         &mut self,
         mc: &'a Mutation<'gc>,
-        name: Option<String>,
-        code: &str,
         compiler: &mut Compiler,
-    ) -> Result<usize, Vec<ErrorTuple>> {
+        name: Option<&str>,
+        code: &str,
+    ) -> Result<usize, ErrorOut> {
         match compiler.try_compile(mc, name, code) {
             Ok(f) => {
                 let fun = Gc::new(mc, f);
@@ -605,18 +1103,15 @@ impl<'gc> VM<'gc> {
         u
     }
 
-    pub(crate) fn yank(&mut self, offset: usize) -> Value<'gc> {
-        let i = self.stack_count - offset;
-        self.stack[i].clone()
-    }
-
     /// push value to stack
+    #[inline]
     pub(crate) fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
         VM::push_raw(ep, value);
         self.stack_count += 1;
     }
 
     /// push value to stack without stack adjustment (convenience for mutable reference hiccups)
+    #[inline]
     fn push_raw<'e>(ep: &mut Ephemeral<'e, 'gc>, value: Value<'gc>) {
         devout!(" | push: {}", value);
         unsafe { ep.ip.write(value) };
@@ -640,32 +1135,53 @@ impl<'gc> VM<'gc> {
     pub(crate) fn pushn(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
-        values: Vec<Value<'gc>>,
+        values: &[Value<'gc>],
         need: usize,
+        is_rev: bool,
     ) {
         devout!(" | push_n: values x {}, need {}", values.len(), need);
         // for v in values.iter() {
         //     println!("we have {}", v);
         // }
-        let n = values.len();
+        let _n = values.len();
         let c = need;
-        let mut vv = values.into_iter();
-        for _ in 0..c {
-            // TODO pushing nil is stupid, right? popping always writes nils so we shouldnt leak?
-            // let v= match vv.next(){
-            //     Some(v)=>v,
-            //     None=>Value::Nil
-            // }
+        if is_rev {
+            // TODO this is sloppy make this DRYer
+            let mut vv = values.iter().rev();
+            for _ in 0..c {
+                // TODO pushing nil is stupid, right? popping always writes nils so we shouldnt leak?
+                // let v= match vv.next(){
+                //     Some(v)=>v,
+                //     None=>Value::Nil
+                // }
 
-            if let Some(v) = vv.next() {
-                devout!("pushn -> {}", v);
-                unsafe { ep.ip.write(v) };
-            };
-            ep.ip = unsafe { ep.ip.add(1) };
+                if let Some(v) = vv.next() {
+                    devout!("pushn -> {}", v);
+                    unsafe { ep.ip.write(v.clone()) };
+                };
+                ep.ip = unsafe { ep.ip.add(1) };
+            }
+        } else {
+            let mut vv = values.into_iter();
+            for _ in 0..c {
+                // TODO pushing nil is stupid, right? popping always writes nils so we shouldnt leak?
+                // let v= match vv.next(){
+                //     Some(v)=>v,
+                //     None=>Value::Nil
+                // }
+
+                if let Some(v) = vv.next() {
+                    devout!("pushn -> {}", v);
+                    unsafe { ep.ip.write(v.clone()) };
+                };
+                ep.ip = unsafe { ep.ip.add(1) };
+            }
         }
+
         self.stack_count += need;
     }
 
+    #[allow(dead_code)]
     fn reserve(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> *mut Value<'gc> {
         self.stack_count += 1;
         let old = ep.ip;
@@ -679,6 +1195,7 @@ impl<'gc> VM<'gc> {
         self.stack_count -= n as usize;
     }
 
+    #[cfg(feature = "dev-out")]
     fn print_upvalues(&self) {
         self.open_upvalues.iter().enumerate().for_each(|(i, up)| {
             // let m=unsafe{};
@@ -694,7 +1211,7 @@ impl<'gc> VM<'gc> {
             self.open_upvalues
                 .drain(self.open_upvalues.len() - n as usize..)
                 .rev()
-                .for_each(|mut up| {
+                .for_each(|up| {
                     let mut upvalue = up.borrow_mut(ep.mc);
                     upvalue.close_around(unsafe { ep.ip.replace(Value::Nil) });
                 });
@@ -706,24 +1223,30 @@ impl<'gc> VM<'gc> {
         }
     }
 
-    fn close_upvalues_by_return(&mut self, last: *mut Value<'gc>) {
-        // devout!("value: {}", unsafe { &*last });
+    /// Close every open upvalue that points at or above `last` (the returning
+    /// frame's base slot) and drop it from `open_upvalues`. Closing copies the
+    /// captured value off the soon-to-be-reclaimed stack into the UpValue's own
+    /// heap cell, so surviving closures keep seeing the right value after the
+    /// frame is gone. We must `borrow_mut` the actual Gc cell here — reading a
+    /// copy of the UpValue and closing that leaves the real cell open, pointing
+    /// at dead stack memory.
+    fn close_upvalues_by_return(&mut self, mc: &Mutation<'gc>, last: *mut Value<'gc>) {
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
-        for upvalue in self.open_upvalues.iter().rev() {
-            let mut up = unsafe { upvalue.as_ptr().read() }; // TODO more bad practice
-                                                             // let upv = unsafe { &*up.get_location() };
-                                                             // let vv = unsafe { &*last };
-                                                             // let b = up.get_location() < last;
-                                                             // println!("upvalue {} less than {} is {} ", upv, vv, b);
-            if up.get_location() < last {
-                break;
+        let mut i = 0;
+        while i < self.open_upvalues.len() {
+            let loc = self.open_upvalues[i].borrow().location;
+            if loc >= last {
+                let up = self.open_upvalues.remove(i);
+                up.borrow_mut(mc).close();
+            } else {
+                i += 1;
             }
-            up.close();
         }
     }
 
     /** pop and return top of stack */
+    #[inline]
     fn pop(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
         self.stack_count -= 1;
         unsafe { ep.ip = ep.ip.sub(1) };
@@ -760,6 +1283,7 @@ impl<'gc> VM<'gc> {
         values
     }
 
+    #[allow(dead_code)]
     fn safe_pop(&mut self) -> Value<'gc> {
         // let v3 = take(&mut self.stack[3]);
         // println!("we took {}", v3);
@@ -780,22 +1304,20 @@ impl<'gc> VM<'gc> {
     }
 
     /** Dangerous!  */
+    #[allow(dead_code)]
     fn read_top(&self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
         unsafe { ep.ip.sub(1).read() }
     }
 
-    /** Safer but clones! */
-    fn duplicate(&self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
-        unsafe { (*ep.ip.sub(1)).clone() }
-    }
-
     /** Look and get immutable reference to top of stack */
+    #[inline]
     fn peek(&self, ep: &mut Ephemeral<'_, 'gc>) -> &Value<'gc> {
         // self.stack.last()
         unsafe { &*ep.ip.sub(1) }
     }
 
     /** Look and get mutable reference to top of stack */
+    #[inline]
     fn peek_mut(&self, ep: &mut Ephemeral<'_, 'gc>) -> &mut Value<'gc> {
         unsafe { &mut *ep.ip.sub(1) }
     }
@@ -822,21 +1344,102 @@ impl<'gc> VM<'gc> {
     /// The actual crawl through the entire root function object until it completes. This does not
     /// clear state on subsequent re-runs so variables could get redefined without any checks ( if
     /// x~=nil then x=1 end for instance )
+    /// Call `func` with `args` in protected mode (for `pcall`): run it to completion
+    /// on a nested interpreter loop that begins at the current stack top, so the
+    /// caller's stack and frames are left intact. Returns the function's first result
+    /// on success, or the error it raised — the error never propagates past here.
+    ///
+    /// Results round-trip through `ExVal`, so a returned *table* is copied (reference
+    /// identity is not preserved); adequate for pcall's error-handling and scalar
+    /// return cases, which is the overwhelming majority of usage.
+    pub(crate) fn call_protected(
+        &mut self,
+        mc: &Mutation<'gc>,
+        func: Value<'gc>,
+        args: &[Value<'gc>],
+    ) -> Result<Value<'gc>, SiltError> {
+        match func {
+            Value::Closure(c) => {
+                // The nested run starts exactly where the outer `ep` points (the
+                // ep.ip == stack[stack_count] invariant), so it cannot disturb the
+                // caller's live values below this point.
+                let snapshot = self.stack_count;
+                let base = unsafe { self.stack.as_mut_ptr().add(snapshot) };
+                let mut ep = Ephemeral::new(mc, base);
+                // Lay down [closure, args...] exactly as a normal CALL leaves the stack
+                // (verified: function value at local_stack[0], args above).
+                Self::push_raw(&mut ep, Value::Closure(c));
+                self.stack_count += 1;
+                for a in args {
+                    Self::push_raw(&mut ep, a.clone());
+                    self.stack_count += 1;
+                }
+                let mut frame = CallFrame::new(c, snapshot, args.len() as u8, 1);
+                frame.local_stack = base;
+                // Every function body begins with a placeholder POP that the main loop
+                // skips via its trailing `iterate()` right after a CALL (it never runs).
+                // A freshly-entered nested loop would otherwise execute it and eat the
+                // top argument, so advance past it here exactly as a normal call does.
+                frame.iterate();
+                // DEFINE_GLOBAL/SET_GLOBAL read constants from `self.body`; point it at
+                // the running function for the duration, then restore.
+                let saved_body = self.body;
+                self.body = c.function;
+                let result = self.process(&mut ep, vec![frame]);
+                self.body = saved_body;
+                // Reclaim everything the protected run left above the entry point and
+                // close any upvalues it opened, on both success and failure.
+                self.close_upvalues_by_return(mc, base);
+                self.stack_count = snapshot;
+                match result {
+                    Ok(ex) => ex.into_value(self, mc),
+                    Err(mut eo) => Err(eo
+                        .errors
+                        .pop()
+                        .map(|t| t.code)
+                        .unwrap_or(SiltError::VmRuntimeError)),
+                }
+            }
+            // A native callee can be invoked directly; it still reports errors, which
+            // pcall turns into `(false, msg)`.
+            Value::NativeFunction(nf) => match nf.f.call(self, mc, args)? {
+                NativeReturn::Single(v) => Ok(v),
+                NativeReturn::Multi(mut vs) => {
+                    Ok(if vs.is_empty() { Value::Nil } else { vs.remove(0) })
+                }
+            },
+            other => Err(SiltError::NotCallable(format!("{}", other))),
+        }
+    }
+
     fn process(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
         mut frames: Vec<CallFrame<'gc>>,
-    ) -> Result<ExVal, SiltError> {
+    ) -> Result<ExVal, ErrorOut> {
         // let mut last = Value::Nil; // TODO temporary for testing
         // let stack_pointer = self.stack.as_mut_ptr();
         // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
         let mut frame = frames.last_mut().unwrap();
         let mut frame_count = 1;
+        // When the previous instruction was a trailing multiret call (Lua's `f(g())`),
+        // this records the stack index where that call's return values begin, so the
+        // immediately-following outer CALL can spread them. Consumed (taken) by that CALL.
+        let mut pending_multiret: Option<usize> = None;
+        // monkey patch for variadic as an argument since CALL op tries to count varibles used
         // body.chunk.print_chunk(None);
-        loop {
+        #[cfg(feature = "dev-out")]
+        let mut step_count = 0;
+        let results: Result<ExVal, SiltError> = loop {
             let instruction = frame.current_instruction();
 
             // devout!("ip: {:p} | {}", self.ip, instruction);
+
+            #[cfg(feature = "dev-out")]
+            {
+                step_count += 1;
+                println!("[ {step_count} ]============");
+            }
             devout!(" | {}", instruction);
 
             // TODO how much faster would it be to order these ops in order of usage, does match hash? probably.
@@ -845,10 +1448,11 @@ impl<'gc> VM<'gc> {
                     let count = *c;
                     frame_count -= 1;
                     if frame_count <= 0 {
-                        if self.stack_count <= 1 {
-                            return Ok(ExVal::Nil);
-                        }
-                        let out: ExVal = self.safe_pop().into();
+                        let out = self.pop(ep).into();
+                        // if self.stack_count <= 1 {
+                        //     return Ok(ExVal::Nil);
+                        // }
+                        // let out: ExVal = self.safe_pop().into();
                         return Ok(out);
                     }
 
@@ -859,43 +1463,76 @@ impl<'gc> VM<'gc> {
                     );
                     let multi_return = frame.multi_return;
                     // if  || frame.need>1 {
-                    if multi_return > 1 && count > 1 {
-                        let vres = self.popn(ep, count);
+                    if multi_return == crate::code::MULTIRET {
+                        // Trailing multiret call (`outer(inner())`): leave ALL `count`
+                        // return values on the stack and record where they start so the
+                        // immediately-following outer CALL can spread them as arguments.
+                        let vres = &self.popn(ep, count);
+                        let snapshot = frame.stack_snapshot;
+                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
+                        self.close_upvalues_by_return(ep.mc, ep.ip);
+                        self.stack_count = snapshot;
+                        frames.pop();
+                        frame = frames.last_mut().unwrap();
+                        pending_multiret = Some(snapshot);
+                        self.pushn(ep, vres, count as usize, false);
+                    } else if multi_return > 1 && count > 1 {
+                        // TODO seriously stupid to make a Vec and then slice it
+                        let vres = &self.popn(ep, count);
 
                         // TODO this paragraph is a dupe of the one below, i hate this whole logic
                         // segment. Pushing stack values to a new vec, reversing it, then iterating
                         // one by one back on to the stack but further down? Literally wasteful!
                         // so we will rewrite eventually
 
-                        ep.ip = frame.local_stack;
-                        self.close_upvalues_by_return(ep.ip);
+                        // Truncate to the original function slot (== local_stack for
+                        // plain calls, but below it for variadic calls where the
+                        // fixed params were copied above the overflow). Deriving it
+                        // from the snapshot reclaims that overflow + copies too.
+                        let snapshot = frame.stack_snapshot;
+                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
+                        self.close_upvalues_by_return(ep.mc, ep.ip);
                         devout!("stack top {}", unsafe { &*ep.ip });
-                        self.stack_count = frame.stack_snapshot;
+                        self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
                         devout!("next instruction {}", frame.current_instruction());
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
 
-                        self.pushn(ep, vres, multi_return as usize);
+                        self.pushn(ep, vres, multi_return as usize, false);
                     } else {
-                        let res = if count > 1 {
-                            self.pop_offset(ep, count as usize)
-                        } else {
-                            self.pop(ep)
+                        // The function returned 0 or 1 value (count <= 1). Capture it
+                        // before truncating the stack; a bare `return` (count 0) yields nil.
+                        let res = match count {
+                            0 => Value::Nil,
+                            1 => self.pop(ep),
+                            _ => self.pop_offset(ep, count as usize),
                         };
 
-                        ep.ip = frame.local_stack;
-                        self.close_upvalues_by_return(ep.ip);
+                        // Truncate to the original function slot (== local_stack for
+                        // plain calls, but below it for variadic calls where the
+                        // fixed params were copied above the overflow). Deriving it
+                        // from the snapshot reclaims that overflow + copies too.
+                        let snapshot = frame.stack_snapshot;
+                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
+                        self.close_upvalues_by_return(ep.mc, ep.ip);
                         devout!("stack top {}", unsafe { &*ep.ip });
-                        self.stack_count = frame.stack_snapshot;
+                        self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
                         devout!("next instruction {}", frame.current_instruction());
+                        // println!("yeah push {}", res);
+                        self.push(ep, res);
+                        // The caller wanted `multi_return` values (e.g. `local a,b,c = f()`)
+                        // but only one was produced — pad the remaining targets with nil so
+                        // they aren't left holding stale stack slots.
+                        if (multi_return as usize) > 1 {
+                            self.push_nils(ep, multi_return as usize - 1);
+                        }
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
 
-                        self.push(ep, res);
                         // if frame.need > 1 {
                         //     for _ in 1..frame.need {
                         //         self.push(ep, Value::Nil);
@@ -923,16 +1560,17 @@ impl<'gc> VM<'gc> {
                 OpCode::DEFINE_GLOBAL { constant } => {
                     let value = self.body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
-                        devout!("\"{}\"", s);
+                        // devout!("\"{}\"", _);
                         // DEV inline pop due to self lifetime nonsense
                         self.stack_count -= 1;
                         unsafe { ep.ip = ep.ip.sub(1) };
                         let v = unsafe { ep.ip.read() };
 
                         // let v = self.pop();
-                        self.globals.borrow_mut(ep.mc).insert(s.into(), v);
+                        // self.globals.borrow_mut(ep.mc).set::< K:Value<'gc>, V:Value<'gc>>(s.into(), v);
+                        self.globals.borrow_mut(ep.mc).set(s, v);
                     } else {
-                        return Err(SiltError::VmCorruptConstant);
+                        break Err(SiltError::VmCorruptConstant);
                     }
                 }
 
@@ -943,49 +1581,89 @@ impl<'gc> VM<'gc> {
                     // devout!("ident: {}", value);
                     if let Value::String(s) = value {
                         devout!("\"{}\"", s);
-                        let v = self.duplicate(ep);
-                        // TODO we could take, expr statements send pop, this is a hack of sorts, ideally the compiler only sends a pop for nonassigment
-                        // alternatively we can peek the value, that might be better to prevent side effects
-                        // do we want expressions to evaluate to a value? probably? is this is ideal for implicit returns?
-
-                        // if let Some(_) = self.globals.get(&**s) {
-                        //     self.globals.insert(s.to_string(), v);
-                        // } else {
-                        //     self.globals.insert(s.to_string(), v);
-                        // }
-                        // devout!("set original: {}", value);
-                        self.globals.borrow_mut(ep.mc).insert(s.into(), v);
+                        // Assignment consumes its value (no trailing POP from the
+                        // compiler), so pop rather than clone-and-leave.
+                        let v = self.pop(ep);
+                        self.globals.borrow_mut(ep.mc).set(s, v);
                     } else {
                         // devout!("0SET_GLOBAL: {}", value);
                         #[cfg(feature = "dev-out")]
                         self.body.chunk.print_constants();
-                        return Err(SiltError::VmCorruptConstant);
+                        break Err(SiltError::VmCorruptConstant);
                     }
                 }
                 OpCode::GET_GLOBAL { constant } => {
                     let value = Self::get_chunk(frame).get_constant(*constant);
                     // devout!("ident: {}", value);
+                    // println!(" we have keys {}",self.globals.borrow().list_keys());
                     if let Value::String(s) = value {
                         devout!("\"{}\"", s);
+
                         if let Some(v) = self.globals.borrow_mut(ep.mc).get(s) {
                             self.push(ep, v.clone());
                         } else {
                             self.push(ep, Value::Nil);
                         }
                     } else {
-                        return Err(SiltError::VmCorruptConstant);
+                        break Err(SiltError::VmCorruptConstant);
                     }
                 }
                 OpCode::SET_LOCAL { index } => {
-                    let value = self.duplicate(ep);
-                    // frame.stack[*index as usize] = value;
+                    // Assignment consumes its value (the compiler no longer emits a
+                    // trailing POP), so pop rather than clone-and-leave.
+                    let value = self.pop(ep);
                     frame.set_val(*index, value)
                 }
                 OpCode::GET_LOCAL { index } => {
+                    #[cfg(feature = "dev-out")]
+                    {
+                        println!("before {}", self.stack_count);
+                        frame.print_local_stack();
+                    }
+                    // For variadic functions the frame base already sits past the
+                    // variadic range (the fixed params are copied above the
+                    // overflow at call time), so locals are addressed uniformly.
                     self.push(ep, frame.get_val(*index).clone());
+
+                    #[cfg(feature = "dev-out")]
+                    {
+                        println!("after {}", self.stack_count);
+                        frame.print_local_stack();
+                    }
                     // self.push(frame.stack[*index as usize].clone());
                     // TODO ew cloning, is our cloning optimized yet?
                     // TODO also we should convert from stack to register based so we can use the index as a reference instead
+                }
+                OpCode::VARARG { is_arg, count } => {
+                    // `nextra` = how many variadic overflow values this call actually
+                    // received (call arity minus the number of fixed params).
+                    let numfixed = frame.proto.varidic_index;
+                    let nextra = frame.call_arity.saturating_sub(numfixed);
+
+                    // When spread as a call/return argument we forward every overflow
+                    // value; otherwise the compiler tells us how many slots to fill
+                    // (e.g. `local a = ...` wants exactly one, padding nils if short).
+                    let val_count = if *is_arg { nextra } else { *count };
+                    let take = val_count.min(nextra);
+
+                    #[cfg(feature = "dev-out")]
+                    {
+                        println!("before {}", self.stack_count);
+                        frame.print_local_stack();
+                    }
+
+                    let raw = frame.get_varargs(nextra);
+                    self.pushn(ep, &raw[..take as usize], take as usize, false);
+                    if val_count > nextra {
+                        // not enough overflow values to satisfy the requested count
+                        self.push_nils(ep, (val_count - nextra) as usize);
+                    }
+
+                    #[cfg(feature = "dev-out")]
+                    {
+                        println!("after {}", self.stack_count);
+                        frame.print_local_stack();
+                    }
                 }
                 OpCode::NEED(_) => {}
                 OpCode::DEFINE_LOCAL { constant: _ } => todo!(),
@@ -1023,12 +1701,172 @@ impl<'gc> VM<'gc> {
                             self.push(ep, v);
                         }
                         (l, r) => {
-                            return Err(SiltError::ExpOpValueWithValue(
+                            break Err(SiltError::ExpOpValueWithValue(
                                 l.to_error(),
                                 MetaMethod::Div,
                                 r.to_error(),
                             ))
                         }
+                    }
+                }
+
+                OpCode::MODULUS => {
+                    let right = self.pop(ep);
+                    let left = self.pop(ep);
+                    match (left, right) {
+                        (Value::Integer(a), Value::Integer(b)) => {
+                            if b == 0 {
+                                break Err(SiltError::ExpOpValueWithValue(
+                                    Value::Integer(a).to_error(),
+                                    MetaMethod::Mod,
+                                    Value::Integer(b).to_error(),
+                                ));
+                            }
+                            // Lua's `%` is floored: the result takes the sign of
+                            // the divisor (Rust's `%` is truncated toward zero).
+                            let r = a % b;
+                            let m = if r != 0 && (r < 0) != (b < 0) { r + b } else { r };
+                            self.push(ep, Value::Integer(m));
+                        }
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                        }
+                        (Value::Number(a), Value::Integer(b)) => {
+                            let b = b as f64;
+                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                        }
+                        (Value::Integer(a), Value::Number(b)) => {
+                            let a = a as f64;
+                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                        }
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, rr, Mod
+                            );
+                            self.push(ep, v);
+                        }
+                        (l, r) => {
+                            break Err(SiltError::ExpOpValueWithValue(
+                                l.to_error(),
+                                MetaMethod::Mod,
+                                r.to_error(),
+                            ))
+                        }
+                    }
+                }
+                OpCode::POWER => {
+                    // `^` always yields a float, per Lua.
+                    let right = self.pop(ep);
+                    let left = self.pop(ep);
+                    match (left, right) {
+                        (Value::Integer(a), Value::Integer(b)) => {
+                            self.push(ep, Value::Number((a as f64).powf(b as f64)))
+                        }
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number(a.powf(b)))
+                        }
+                        (Value::Number(a), Value::Integer(b)) => {
+                            self.push(ep, Value::Number(a.powf(b as f64)))
+                        }
+                        (Value::Integer(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number((a as f64).powf(b)))
+                        }
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, rr, Pow
+                            );
+                            self.push(ep, v);
+                        }
+                        (l, r) => {
+                            break Err(SiltError::ExpOpValueWithValue(
+                                l.to_error(),
+                                MetaMethod::Pow,
+                                r.to_error(),
+                            ))
+                        }
+                    }
+                }
+                OpCode::FLOOR_DIVIDE => {
+                    let right = self.pop(ep);
+                    let left = self.pop(ep);
+                    match (left, right) {
+                        (Value::Integer(a), Value::Integer(b)) => {
+                            if b == 0 {
+                                break Err(SiltError::ExpOpValueWithValue(
+                                    Value::Integer(a).to_error(),
+                                    MetaMethod::IDiv,
+                                    Value::Integer(b).to_error(),
+                                ));
+                            }
+                            // floored integer division (rounds toward -inf),
+                            // consistent with the floored `%` above.
+                            let q = a / b;
+                            let r = a % b;
+                            let q = if r != 0 && (r < 0) != (b < 0) { q - 1 } else { q };
+                            self.push(ep, Value::Integer(q));
+                        }
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number((a / b).floor()))
+                        }
+                        (Value::Number(a), Value::Integer(b)) => {
+                            self.push(ep, Value::Number((a / b as f64).floor()))
+                        }
+                        (Value::Integer(a), Value::Number(b)) => {
+                            self.push(ep, Value::Number((a as f64 / b).floor()))
+                        }
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, rr, IDiv
+                            );
+                            self.push(ep, v);
+                        }
+                        (l, r) => {
+                            break Err(SiltError::ExpOpValueWithValue(
+                                l.to_error(),
+                                MetaMethod::IDiv,
+                                r.to_error(),
+                            ))
+                        }
+                    }
+                }
+                // Bitwise binary ops. Operands must have an integer representation
+                // (Lua); tables are not yet dispatched to __band/etc and error.
+                OpCode::BIT_AND
+                | OpCode::BIT_OR
+                | OpCode::BIT_XOR
+                | OpCode::SHIFT_LEFT
+                | OpCode::SHIFT_RIGHT => {
+                    let r = self.pop(ep);
+                    let l = self.pop(ep);
+                    match (bit_int(&l), bit_int(&r)) {
+                        (Some(a), Some(b)) => {
+                            let res = match instruction {
+                                OpCode::BIT_AND => a & b,
+                                OpCode::BIT_OR => a | b,
+                                OpCode::BIT_XOR => a ^ b,
+                                OpCode::SHIFT_LEFT => lua_shl(a, b),
+                                _ => lua_shr(a, b),
+                            };
+                            self.push(ep, Value::Integer(res));
+                        }
+                        (None, _) => break Err(SiltError::ExpInvalidBitwise(l.to_error())),
+                        (_, None) => break Err(SiltError::ExpInvalidBitwise(r.to_error())),
+                    }
+                }
+                OpCode::BIT_NOT => {
+                    let v = self.pop(ep);
+                    match bit_int(&v) {
+                        Some(a) => self.push(ep, Value::Integer(!a)),
+                        None => break Err(SiltError::ExpInvalidBitwise(v.to_error())),
+                    }
+                }
+                OpCode::DUP_N(n) => {
+                    // Duplicate the top `n` values, preserving order: [a,b] -> [a,b,a,b].
+                    // After each push the window shifts up by one, so grab(n) keeps
+                    // yielding the next original value.
+                    for _ in 0..*n {
+                        let v = self.grab(ep, *n as usize).clone();
+                        self.push(ep, v);
                     }
                 }
 
@@ -1045,7 +1883,7 @@ impl<'gc> VM<'gc> {
                             self.push(ep, Value::Integer(f))
                         }
                         // None => Err(SiltError::EarlyEndOfFile)?,
-                        c => Err(SiltError::ExpInvalidNegation(c.to_error()))?,
+                        c => break Err(SiltError::ExpInvalidNegation(c.to_error())),
                     }
                     // TODO  test this vs below: unsafe { *ep.ip = -*ep.ip };
                 }
@@ -1060,7 +1898,29 @@ impl<'gc> VM<'gc> {
                 OpCode::EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(Self::is_equal(&l, &r)));
+                    // Lua only consults `__eq` when both operands are tables that are
+                    // not the same object; a missing `__eq` falls back to raw (reference)
+                    // equality rather than erroring.
+                    let meta_eq = match (&l, &r) {
+                        (Value::Table(a), Value::Table(b)) if !Gc::ptr_eq(*a, *b) => {
+                            let t = *a;
+                            if t.borrow().by_meta_method(MetaMethod::Eq).is_ok() {
+                                Some(t)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    match meta_eq {
+                        Some(table) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, r, Eq
+                            );
+                            self.push(ep, v);
+                        }
+                        None => self.push(ep, Value::Bool(Self::is_equal(&l, &r))),
+                    }
                 }
                 OpCode::NOT_EQUAL => {
                     let r = self.pop(ep);
@@ -1070,22 +1930,57 @@ impl<'gc> VM<'gc> {
                 OpCode::LESS => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(Self::is_less(&l, &r)?));
+                    match (l, r) {
+                        (Value::Table(table), rr) => {
+                            let v =
+                                table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Lt);
+                            self.push(ep, v);
+                        }
+                        (l, r) => self.push(ep, Value::Bool(bubble!(Self::is_less(&l, &r)))),
+                    }
                 }
                 OpCode::LESS_EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(!Self::is_greater(&l, &r)?));
+                    match (l, r) {
+                        (Value::Table(table), rr) => {
+                            let v =
+                                table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Le);
+                            self.push(ep, v);
+                        }
+                        (l, r) => {
+                            self.push(ep, Value::Bool(!bubble!(Self::is_greater(&l, &r))))
+                        }
+                    }
                 }
                 OpCode::GREATER => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(Self::is_greater(&l, &r)?));
+                    // `l > r` is evaluated as `r < l`, so a table dispatches `__lt`
+                    // with operands swapped (matching Lua's comparison rewrite).
+                    match (r, l) {
+                        (Value::Table(table), ll) => {
+                            let v =
+                                table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Lt);
+                            self.push(ep, v);
+                        }
+                        (rr, ll) => self.push(ep, Value::Bool(bubble!(Self::is_less(&rr, &ll)))),
+                    }
                 }
                 OpCode::GREATER_EQUAL => {
                     let r = self.pop(ep);
                     let l = self.pop(ep);
-                    self.push(ep, Value::Bool(!Self::is_less(&l, &r)?));
+                    // `l >= r` is evaluated as `r <= l` → `__le` with swapped operands.
+                    match (r, l) {
+                        (Value::Table(table), ll) => {
+                            let v =
+                                table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Le);
+                            self.push(ep, v);
+                        }
+                        (rr, ll) => {
+                            self.push(ep, Value::Bool(!bubble!(Self::is_greater(&rr, &ll))))
+                        }
+                    }
                 }
                 OpCode::CONCAT => {
                     let r = self.pop(ep);
@@ -1096,6 +1991,13 @@ impl<'gc> VM<'gc> {
                         }
                         (Value::String(left), v2) => {
                             self.push(ep, Value::String(left + &v2.to_string()))
+                        }
+                        // A table operand dispatches to its `__concat` metamethod.
+                        (Value::Table(table), rr) => {
+                            let v = table_meta_op!(
+                                self, ep, frame, frames, frame_count, table, rr, Concat
+                            );
+                            self.push(ep, v);
                         }
                         (v1, Value::String(right)) => {
                             self.push(ep, Value::String(v1.to_string() + &right))
@@ -1147,25 +2049,92 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::FOR_NUMERIC(skip) => {
-                    // for needs it's own version of the stack for upvalues?
-                    // compare, if greater then we skip, if less or equal we continue and then increment AFTER block
-                    // let increment = self.grab(1);
-                    let iterator = unsafe { &mut *ep.ip.sub(3) };
-                    let compare = self.grab(ep, 2);
-                    if Self::is_greater(iterator, compare)? {
+                    // Stack layout: [iterator, limit, step] with step on top. The
+                    // loop-continue test depends on the step's sign: ascending ends
+                    // once iterator > limit, descending once iterator < limit.
+                    let iterator = unsafe { &*ep.ip.sub(3) };
+                    let compare = unsafe { &*ep.ip.sub(2) };
+                    let step = unsafe { &*ep.ip.sub(1) };
+                    let descending = match step {
+                        Value::Integer(i) => *i < 0,
+                        Value::Number(n) => *n < 0.0,
+                        _ => false,
+                    };
+                    let done = if descending {
+                        bubble!(Self::is_less(iterator, compare))
+                    } else {
+                        bubble!(Self::is_greater(iterator, compare))
+                    };
+                    if done {
                         frame.forward(*skip);
                     } else {
-                        self.push(ep, iterator.clone())
+                        let it = iterator.clone();
+                        self.push(ep, it);
                     }
-                    // self.push(iterator.clone());
-                    // if iterator > compare {
-                    //     frame.forward(*skip);
-                    // }
+                }
+                OpCode::FORLOOP(rewind) => {
+                    // Loop tail: the loop variable has already been popped, so the
+                    // stack top is [iterator, limit, step] again. Increment the
+                    // iterator by the step, re-test the bound, and either push the
+                    // new loop variable and jump back to the body, or fall through.
+                    let step = unsafe { &*ep.ip.sub(1) }.clone();
+                    let descending = match step {
+                        Value::Integer(i) => i < 0,
+                        Value::Number(n) => n < 0.0,
+                        _ => false,
+                    };
+                    let iter_slot = unsafe { &mut *ep.ip.sub(3) };
+                    bubble!(iter_slot.increment(&step));
+                    let iterator = unsafe { &*ep.ip.sub(3) };
+                    let compare = unsafe { &*ep.ip.sub(2) };
+                    let done = if descending {
+                        bubble!(Self::is_less(iterator, compare))
+                    } else {
+                        bubble!(Self::is_greater(iterator, compare))
+                    };
+                    if !done {
+                        let it = iterator.clone();
+                        self.push(ep, it);
+                        frame.rewind(*rewind);
+                    }
                 }
                 OpCode::INCREMENT { index } => {
                     let value = frame.get_val_mut(*index);
                     let step = self.peek(ep);
-                    value.increment(step)?;
+                    bubble!(value.increment(step));
+                }
+
+                OpCode::FOR_GENERIC { count, exit } => {
+                    // The top three stack values are the iterator triple
+                    // (iterator f, state s, control). Call f(s, control).
+                    let f_val = unsafe { &*ep.ip.sub(3) }.clone();
+                    let s = unsafe { &*ep.ip.sub(2) }.clone();
+                    let control = unsafe { &*ep.ip.sub(1) }.clone();
+                    let results = match &f_val {
+                        Value::NativeFunction(nf) => {
+                            match bubble!(nf.f.call(self, ep.mc, &[s, control])) {
+                                NativeReturn::Single(v) => vec![v],
+                                NativeReturn::Multi(vals) => vals,
+                            }
+                        }
+                        _ => {
+                            break Err(SiltError::Custom(
+                                "'for' iterator must be a function (custom closures not yet supported)"
+                                    .into(),
+                            ))
+                        }
+                    };
+                    let first = results.first().cloned().unwrap_or(Value::Nil);
+                    if matches!(first, Value::Nil) {
+                        frame.forward(*exit);
+                    } else {
+                        // advance the control variable, then push the loop vars
+                        unsafe { *ep.ip.sub(1) = first };
+                        for i in 0..*count {
+                            let v = results.get(i as usize).cloned().unwrap_or(Value::Nil);
+                            self.push(ep, v);
+                        }
+                    }
                 }
 
                 OpCode::CLOSURE { constant } => {
@@ -1211,7 +2180,7 @@ impl<'gc> VM<'gc> {
                         //     frame.shift(f.upvalue_count as usize);
                         // }
 
-                        FunctionObject::push_closure(f.clone(), self, frame, ep)?;
+                        bubble!(FunctionObject::push_closure(f.clone(), self, frame, ep));
                     }
                 }
 
@@ -1230,47 +2199,73 @@ impl<'gc> VM<'gc> {
                     self.push(ep, value);
                 }
                 OpCode::SET_UPVALUE { index } => {
-                    let value = self.peek(ep); // TODO pop and set would be faster, less cloning
-                    let ff = &frame.function.upvalues;
-                    ff[*index as usize]
+                    // Assignment consumes its value (no trailing POP from the compiler).
+                    let value = self.pop(ep);
+                    frame.function.upvalues[*index as usize]
                         .borrow_mut(ep.mc)
-                        .set_value(value.clone());
-                    // unsafe { *upvalue.value = value };
+                        .set_value(value);
                 }
 
-                OpCode::CALL(arity, multi) => {
-                    let value = self.peekn(ep, *arity);
+                OpCode::CALL(arity, multi,variadic) => {
+                    // Resolve the true argument count. When the call spreads `...`
+                    // the trailing arg expands to the caller's variadic overflow, so
+                    // the compile-time count (which counts `...` as a single arg) is
+                    // adjusted by the caller's own overflow.
+                    let ar = if let Some(base) = pending_multiret.take() {
+                        // The trailing argument was a multiret call that left its values
+                        // from `base` upward. The real arg count is the fixed args
+                        // (arity - 1, the trailing call counted as one) plus however many
+                        // values it produced (stack_count - base).
+                        (((self.stack_count - base) as u8).wrapping_add(*arity)).wrapping_sub(1)
+                    } else if *variadic {
+                        (*arity - 1) + (frame.call_arity - frame.proto.varidic_index)
+                    } else {
+                        *arity
+                    };
+                    let value = self.peekn(ep, ar);
                     devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
-                            // TODO this logic is identical to function, but to make this a function causes some lifetime issues. A macro would work but we're already a little macro heavy aren't we?
-                            // let frame_top = unsafe { ep.ip.sub((*param_count as usize) + 1) };
-                            // let new_frame = CallFrame::new(
-                            //     c.clone(),
-                            //     self.stack_count - (*param_count as usize) - 1,
-                            // );
-                            // frames.push(new_frame);
-                            // frame = frames.last_mut().unwrap();
-                            //
-                            // frame.local_stack = frame_top;
-
-                            // let frame_top = unsafe { ep.ip.sub((*arity as usize) + 1) };
-                            // let new_frame =
-                            //     CallFrame::new(c.clone(), self.stack_count - (*arity as usize) - 1);
-                            // frames.push(new_frame);
-                            // frame = frames.last_mut().unwrap();
-                            // frame.local_stack = frame_top;
-                            let arity = *arity as usize;
-                            // println!("arity {}",arity);
-
-                            let frame_top = unsafe { ep.ip.sub(arity + 1) };
-                            let new_frame =
-                                CallFrame::new(c.clone(), self.stack_count - arity - 1, *multi);
-                            frames.push(new_frame);
-                            frame = frames.last_mut().unwrap();
-                            frame.local_stack = frame_top;
+                            let cc = *c;
+                            if cc.is_variadic() {
+                                // Lua-style variadic adjust: the overflow args stay
+                                // where they are and we copy the function slot plus
+                                // the fixed params *above* them. The new frame base
+                                // begins just past the variadic range so body locals
+                                // address contiguously and the overflow is reachable
+                                // below the base via CallFrame::get_varargs.
+                                let total = ar as usize;
+                                let numfixed = cc.get_variadic() as usize;
+                                let snapshot = self.stack_count - total - 1;
+                                // original function slot, start of the copy source
+                                let func_ptr = unsafe { ep.ip.sub(total + 1) };
+                                // copies land at the current top -> this is the new base
+                                let frame_top = ep.ip;
+                                // clone function + fixed params before pushing so we
+                                // never read and write the stack at the same time
+                                let copies: Vec<Value<'gc>> = (0..=numfixed)
+                                    .map(|i| unsafe { (*func_ptr.add(i)).clone() })
+                                    .collect();
+                                for v in copies {
+                                    self.push(ep, v);
+                                }
+                                let new_frame = CallFrame::new(cc, snapshot, ar, *multi);
+                                frames.push(new_frame);
+                                frame = frames.last_mut().unwrap();
+                                frame.local_stack = frame_top;
+                            } else {
+                                let frame_top = unsafe { ep.ip.sub((ar as usize) + 1) };
+                                let new_frame = CallFrame::new(
+                                    cc,
+                                    self.stack_count - (ar as usize) - 1,
+                                    ar,
+                                    *multi,
+                                );
+                                frames.push(new_frame);
+                                frame = frames.last_mut().unwrap();
+                                frame.local_stack = frame_top;
+                            }
                             frame_count += 1;
-                            devout!("top of frame stack {}", unsafe { &*frame.local_stack });
                         }
                         Value::Function(_func) => {
                             // let frame_top =
@@ -1294,19 +2289,55 @@ impl<'gc> VM<'gc> {
                         Value::NativeFunction(_) => {
                             // get args including the function value at index 0. We do it here so don't have mutability issues with native fn
                             // TODO get a reference instead of the a-pop-olypse
-                            let mut args = self.popn(ep, *arity + 1);
+                            // Use the resolved arity (`ar`) so spread `...` arguments
+                            // pop the actual count, not the compile-time placeholder.
+                            let mut args = self.popn(ep, ar + 1);
                             // todo!("Hi there! we need to set arity of userdata functions to include self! At least this is hirting our abstraction, we could force it but that's dangerous! Let's perhas make userdata methods Option<Self>");
 
                             if let Value::NativeFunction(f) = args.remove(0) {
-                                let res = f.f.call(self, ep.mc, &args);
-                                // self.popn_drop(*param_count);
-                                self.push(ep, res?);
+                                let res = bubble!(f.f.call(self, ep.mc, &args));
+                                // A native in trailing multiret position leaves ALL its
+                                // values and records where they start (like a Lua multiret
+                                // call), so the enclosing CALL can spread them.
+                                let multiret = *multi == crate::code::MULTIRET;
+                                let base = self.stack_count;
+                                match res {
+                                    NativeReturn::Single(v) => {
+                                        self.push(ep, v);
+                                        if multiret {
+                                            pending_multiret = Some(base);
+                                        }
+                                    }
+                                    NativeReturn::Multi(vals) => {
+                                        let n = vals.len();
+                                        for v in vals {
+                                            self.push(ep, v);
+                                        }
+                                        if multiret {
+                                            pending_multiret = Some(base);
+                                        } else {
+                                            // adjust to the caller's wanted count
+                                            // (`multi`): >1 keeps that many (nil-padded),
+                                            // else just one.
+                                            let want = if *multi > 1 { *multi as usize } else { 1 };
+                                            if n < want {
+                                                for _ in 0..(want - n) {
+                                                    self.push(ep, Value::Nil);
+                                                }
+                                            } else {
+                                                for _ in 0..(n - want) {
+                                                    self.pop(ep);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
                                 unreachable!();
                             }
                         }
                         _ => {
-                            return Err(SiltError::NotCallable(format!("Value: {}", value)));
+                            break Err(SiltError::NotCallable(format!("Value: {}", value)));
                         }
                     }
                 }
@@ -1324,7 +2355,7 @@ impl<'gc> VM<'gc> {
                     match value {
                         Value::String(s) => self.push(ep, Value::Integer(s.len() as i64)),
                         Value::Table(t) => self.push(ep, Value::Integer(t.borrow().len() as i64)),
-                        _ => Err(SiltError::ExpInvalidLength(value.to_error()))?,
+                        _ => break Err(SiltError::ExpInvalidLength(value.to_error())),
                     }
                 }
                 OpCode::NEW_TABLE => {
@@ -1332,14 +2363,18 @@ impl<'gc> VM<'gc> {
                     *self.table_counter.borrow_mut() += 1;
                 }
                 OpCode::TABLE_INSERT { offset } => {
-                    self.insert_immediate_table(ep, *offset)?;
+                    if let Err(e) = self.insert_immediate_table(ep, *offset) {
+                        break Err(e);
+                    }
                 }
                 OpCode::TABLE_BUILD(n) => {
-                    self.build_table(ep, *n)?;
+                    if let Err(e) = self.build_table(ep, *n) {
+                        break Err(e);
+                    }
                 }
                 OpCode::TABLE_SET { depth } => {
                     let value = self.pop(ep);
-                    match self.grab(ep, *depth as usize + 1) {
+                    bubble!(match self.grab(ep, *depth as usize + 1) {
                         Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
                         Value::UserData(u) => {
                             let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
@@ -1360,7 +2395,7 @@ impl<'gc> VM<'gc> {
                             }
                         }
                         _ => Err(SiltError::MetaMethodMissing(MetaMethod::Index)),
-                    }?;
+                    });
                 }
                 // OpCode::TABLE_SET_BY_CONSTANT { constant } => {
                 //     let value = self.pop();
@@ -1373,6 +2408,44 @@ impl<'gc> VM<'gc> {
                 //         return Err(SiltError::VmNonTableOperations(table.to_error()));
                 //     }
                 // }
+                OpCode::METHOD_GET { constant } => {
+                    // `obj:method(...)` — the receiver is already on top of the
+                    // stack (any expression: variable, t.a.b chain, call result).
+                    // Look up the method and leave [method, receiver] so the
+                    // receiver is passed as the implicit `self` first argument.
+                    let key = Self::get_chunk(&frame).get_constant(*constant);
+                    let receiver = self.peek(ep).clone();
+                    let method = match &receiver {
+                        Value::Table(t) => Self::meta_index_get(*t, &key),
+                        // Strings dispatch methods through the `string` library
+                        // (Lua's string metatable: `("x"):upper()` == string.upper("x")).
+                        Value::String(_) => match self.globals.borrow().get("string") {
+                            Some(Value::Table(t)) => t.borrow().get_value(&key),
+                            _ => Value::Nil,
+                        },
+                        // `ud:method(...)` — resolve the method off the userdata's
+                        // registry (same lookup as `ud.method`), leaving [method,
+                        // receiver] so the userdata is passed as the implicit `self`.
+                        Value::UserData(ud) => {
+                            let name = key.pure_string();
+                            let mut mu = (*ud).borrow_mut(ep.mc);
+                            let rud = mu.deref_mut();
+                            match crate::userdata::vm_integration::get_field(
+                                self,
+                                &self.userdata_registry,
+                                ep.mc,
+                                rud,
+                                &name,
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => break Err(e),
+                            }
+                        }
+                        _ => break Err(SiltError::VmNonTableOperations(receiver.to_error())),
+                    };
+                    *self.peek_mut(ep) = method;
+                    self.push(ep, receiver);
+                }
                 OpCode::TABLE_GET { depth } => {
                     let u = *depth as usize + 1;
                     let table_point = unsafe { ep.ip.sub(u) };
@@ -1382,7 +2455,7 @@ impl<'gc> VM<'gc> {
                     match value {
                         Value::Table(_) => match self.operate_table(ep, *depth, None) {
                             Ok(_) => {}
-                            Err(e) => return Err(e),
+                            Err(e) => break Err(e),
                         },
                         Value::UserData(ud) => {
                             let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
@@ -1402,10 +2475,10 @@ impl<'gc> VM<'gc> {
                                     unsafe { ep.ip = ep.ip.sub(u - 1) };
                                     unsafe { table_point.replace(value) };
                                 }
-                                Err(e) => return Err(e),
+                                Err(e) => break Err(e),
                             }
                         }
-                        _ => return Err(SiltError::VmNonTableOperations(value.to_error())),
+                        _ => break Err(SiltError::VmNonTableOperations(value.to_error())),
                     }
                 }
                 OpCode::TABLE_GET_FROM { index: _ } => {
@@ -1425,13 +2498,10 @@ impl<'gc> VM<'gc> {
                     let key = Self::get_chunk(&frame).get_constant(*constant);
                     let table = self.peek_mut(ep);
                     if let Value::Table(t) = table {
-                        // let tt= t.borrow();
-
-                        let v: Value = (*t).borrow().get_value(&key);
-                        // let v:Value = t.borrow().get_value(&key);
+                        let v: Value = Self::meta_index_get(*t, &key);
                         self.push(ep, v);
                     } else {
-                        return Err(SiltError::VmNonTableOperations(table.to_error()));
+                        break Err(SiltError::VmNonTableOperations(table.to_error()));
                     }
                 }
             }
@@ -1442,13 +2512,43 @@ impl<'gc> VM<'gc> {
                 self.print_stack();
                 println!("--------------------------------------");
             }
+        };
+        match results {
+            Ok(o) => Ok(o),
+            Err(e) => {
+                let t = ErrorTuple {
+                    code: e,
+                    location: frame.get_loc_by_count(self.stack_count),
+                };
+                // The frame that faulted carries the source index of the code it was
+                // compiled from (a nested closure keeps its defining source's index,
+                // not the caller's). Copy it out before `frames` is borrowed again.
+                let faulted_source_index = frame.proto.source_index;
+                let stack = frames
+                    .iter()
+                    .map(|f| f.function.function.name.as_deref().unwrap_or("~"))
+                    .collect::<Vec<&str>>()
+                    .join("::");
+                // let source = frame.function.function.name.clone();
+                // let e = source.clone().unwrap_or("unknown".to_string());
+
+                Err(ErrorOut {
+                    errors: vec![t],
+                    source: Some(stack),
+                    source_index: faulted_source_index,
+                })
+            }
         }
     }
 
     // TODO is having a default empty chunk cheaper?
     /** We're operating on the assumption a chunk is always present when using this */
+    #[inline]
     fn get_chunk<'a>(frame: &'a CallFrame<'gc>) -> &'a crate::chunk::Chunk<'gc> {
-        &frame.function.function.chunk
+        // Route through the effective prototype so a hot-swapped body's code and
+        // constants are used (stage 2). `proto` equals the closure's prototype
+        // unless a redirect is set.
+        &frame.proto.chunk
     }
 
     // pub fn reset_stack(&mut self) {
@@ -1458,6 +2558,7 @@ impl<'gc> VM<'gc> {
     //     ep.ip = unsafe { self.stack.as_mut_ptr() };
     // }
 
+    #[inline]
     fn is_truthy(v: &Value) -> bool {
         match v {
             Value::Bool(b) => *b,
@@ -1466,7 +2567,7 @@ impl<'gc> VM<'gc> {
         }
     }
 
-    fn is_equal(l: &Value, r: &Value) -> bool {
+    fn is_equal(l: &Value<'gc>, r: &Value<'gc>) -> bool {
         match (l, r) {
             (Value::Number(left), Value::Number(right)) => left == right,
             (Value::Integer(left), Value::Integer(right)) => left == right,
@@ -1476,16 +2577,24 @@ impl<'gc> VM<'gc> {
             (Value::Bool(left), Value::Bool(right)) => left == right,
             (Value::Nil, Value::Nil) => true,
             (Value::Infinity(left), Value::Infinity(right)) => left == right,
+            // Reference types compare by identity (same allocation).
+            (Value::Table(a), Value::Table(b)) => Gc::ptr_eq(*a, *b),
+            (Value::Closure(a), Value::Closure(b)) => Gc::ptr_eq(*a, *b),
+            (Value::Function(a), Value::Function(b)) => Gc::ptr_eq(*a, *b),
+            (Value::UserData(a), Value::UserData(b)) => Gc::ptr_eq(*a, *b),
             (_, _) => false,
         }
     }
 
+    #[inline]
     fn is_less(l: &Value, r: &Value) -> Result<bool, SiltError> {
         Ok(match (l, r) {
             (Value::Number(left), Value::Number(right)) => left < right,
             (Value::Integer(left), Value::Integer(right)) => left < right,
             (Value::Number(left), Value::Integer(right)) => *left < *right as f64,
             (Value::Integer(left), Value::Number(right)) => (*left as f64) < (*right),
+            // strings compare lexicographically by byte order (Lua's default)
+            (Value::String(left), Value::String(right)) => left < right,
             (Value::Infinity(left), Value::Infinity(right)) => left != right && *left,
             (_, _) => Err(SiltError::ExpOpValueWithValue(
                 l.to_error(),
@@ -1495,6 +2604,7 @@ impl<'gc> VM<'gc> {
         })
     }
 
+    #[inline]
     fn is_greater(l: &Value, r: &Value) -> Result<bool, SiltError> {
         Ok(match (l, r) {
             (Value::Number(left), Value::Number(right)) => left > right,
@@ -1504,6 +2614,7 @@ impl<'gc> VM<'gc> {
             }
             (Value::Number(left), Value::Integer(right)) => *left > *right as f64,
             (Value::Integer(left), Value::Number(right)) => (*left as f64) > (*right),
+            (Value::String(left), Value::String(right)) => left > right,
             (Value::Infinity(left), Value::Infinity(right)) => left != right && !*left,
             (_, _) => Err(SiltError::ExpOpValueWithValue(
                 l.to_error(),
@@ -1538,35 +2649,71 @@ impl<'gc> VM<'gc> {
     // }
 
     /// call a previously stored function by it's index with optional parameters
-    pub fn call_fn<T>(&mut self, mc: &Mutation<'gc>, u: usize, params: T) -> LuaResult
+    pub fn call_fn<T>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        name: Option<&str>,
+        u: usize,
+        params: T,
+    ) -> LuaResult
     where
         T: for<'e> ToLuaMulti<'e>,
     {
+        let source = name.map(|o| o.to_string());
+
         let res = match params.to_lua_multi(self, mc) {
             Ok(v) => v,
             Err(e) => {
-                return Err(vec![ErrorTuple {
-                    code: e,
-                    location: (0, 0),
-                }])
+                return Err(ErrorOut {
+                    errors: vec![ErrorTuple {
+                        code: e,
+                        location: (0, 0),
+                    }],
+                    source,
+                    source_index: crate::error::SOURCE_INDEX_UNKNOWN,
+                })
             }
         };
 
-        let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr());
-        self.stack_count += res.len();
-        match self.external_functions.get(u) {
-            Some(f) => {
-                for param in res {
-                    VM::push_raw(&mut ep, param);
-                }
-
-                self.run(mc, *f)
+        let obj = match self.external_functions.get(u) {
+            Some(f) => *f,
+            None => {
+                return Err(ErrorOut {
+                    errors: vec![ErrorTuple {
+                        code: SiltError::Unknown,
+                        location: (0, 0),
+                    }],
+                    source,
+                    source_index: crate::error::SOURCE_INDEX_UNKNOWN,
+                })
             }
-            None => Err(vec![ErrorTuple {
-                code: SiltError::Unknown,
-                location: (0, 0),
-            }]),
+        };
+
+        // A loaded chunk is a vararg function, so runtime args arrive as `...`. Lay
+        // them out like a variadic call: the args occupy the vararg region BELOW the
+        // frame base, and the function value sits at the frame base (local_stack[0]).
+        // `frame.call_arity = n` (with the chunk's varidic_index 0) is what makes
+        // `VARARG`/`get_varargs` surface them. We build the frame and run `process`
+        // directly rather than going through `execute`, which re-seats the stack at
+        // the base and hardcodes call_arity = 0 (dropping the args).
+        let n = res.len();
+        let base = self.stack.as_mut_ptr();
+        let mut ep = Ephemeral::new(mc, base);
+        for param in res {
+            VM::push_raw(&mut ep, param);
         }
+        let frame_top = ep.ip; // base + n — the args are the vararg overflow below this
+        VM::push_raw(&mut ep, Value::Function(obj)); // frame base / self slot
+        self.stack_count = n + 1;
+        self.body = obj;
+        let closure = Gc::new(mc, Closure::new(obj, vec![]));
+        let mut frame = CallFrame::new(closure, 0, n.min(u8::MAX as usize) as u8, 0);
+        frame.ip = obj.chunk.code.as_ptr();
+        frame.local_stack = frame_top;
+        let out = self.process(&mut ep, vec![frame]);
+        // Top-level entry: leave the stack empty for the next call regardless of outcome.
+        self.stack_count = 0;
+        out
         // Ok(ExVal::Nil)
 
         // if !params.is_empty() {
@@ -1620,26 +2767,27 @@ impl<'gc> VM<'gc> {
         devout!("2capture_upvalue at index {} : {}", index, unsafe {
             &*value
         });
-        let mut ind = None;
+        // `open_upvalues` is kept sorted ASCENDING by stack address (lowest
+        // first). That ordering is load-bearing: `close_n_upvalues` drains the
+        // tail (the most-recently-declared locals, which sit at the highest
+        // addresses). So to find or insert we scan upward and stop at the first
+        // entry whose address is >= ours: equal means an upvalue already exists
+        // for this slot and MUST be shared (so two closures over the same local
+        // see each other's writes); greater is the insertion point.
+        let mut insert_at = self.open_upvalues.len();
         for (i, up) in self.open_upvalues.iter().enumerate() {
-            let u = *up;
-            let upvalue = u.borrow();
-            if upvalue.location == value {
-                return u.clone();
+            let loc = up.borrow().location;
+            if loc == value {
+                return *up;
             }
-
-            if upvalue.location < value {
+            if loc > value {
+                insert_at = i;
                 break;
             }
-            ind = Some(i);
         }
 
         let u = Gc::new(ep.mc, RefLock::new(UpValue::new(index, value)));
-
-        match ind {
-            Some(i) => self.open_upvalues.insert(i, u.clone()),
-            None => self.open_upvalues.push(u.clone()),
-        }
+        self.open_upvalues.insert(insert_at, u);
 
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
@@ -1667,8 +2815,9 @@ impl<'gc> VM<'gc> {
         // unsafe { prev.read() }
     }
 
-    fn close_upvalue(&mut self, value: Value) {
-        devout!("close_upvalue: {}", value);
+    #[allow(dead_code)]
+    fn close_upvalue(&mut self, _value: Value) {
+        devout!("close_upvalue: {}", _value);
         todo!()
 
         // for up in
@@ -1708,7 +2857,20 @@ impl<'gc> VM<'gc> {
     pub fn convert_table(&mut self, mc: &Mutation<'gc>, data: &ExTable) -> InnerResult<'gc> {
         let id = *self.table_counter.borrow();
         let t = Table::wrap_map(self, mc, id, data)?;
+        *self.table_counter.borrow_mut() += 1;
         Ok(Value::Table(Gc::new(mc, RefLock::new(t))))
+    }
+
+    pub fn table_from_array<A, I>(&self, mc: &Mutation<'gc>, array: I) -> Value<'gc>
+    where
+        I: IntoIterator<Item = A>,
+        A: Into<Value<'gc>>,
+    {
+        let mut t = Table::new(*self.table_counter.borrow());
+        *self.table_counter.borrow_mut() += 1;
+        t.concat_array(array);
+
+        Value::Table(Gc::new(mc, RefLock::new(t)))
     }
 
     pub fn raw_table(&self) -> Table<'gc> {
@@ -1737,7 +2899,7 @@ impl<'gc> VM<'gc> {
             // push in reverse
             for i in (0..n).rev() {
                 let value = unsafe { ep.ip.sub(i as usize + 1).replace(Value::Nil) };
-                b.push(value);
+                b.raw_push(value);
             }
 
             self.stack_count -= offset - 1;
@@ -1759,7 +2921,7 @@ impl<'gc> VM<'gc> {
         if let Value::Table(t) = table {
             let value = self.pop(ep);
             let key = self.pop(ep);
-            (*t).borrow_mut(ep.mc).insert(key, value);
+            (*t).borrow_mut(ep.mc).set(key, value);
             Ok(())
         } else {
             Err(SiltError::ChunkCorrupt) // shouldn't happen unless our compiler really screwed up
@@ -1770,6 +2932,31 @@ impl<'gc> VM<'gc> {
      * Compares indexes on stack by depth amount, if set value not passed we act as a getter and push value at index on to stack
      * Unintentional pun
      */
+    /// Resolve `table[key]` with Lua `__index` semantics: return the raw value if the
+    /// key is present, otherwise follow a table-valued `__index` metafield (chaining
+    /// through nested metatables, the basis of class inheritance). A function-valued
+    /// `__index` would require invoking a closure mid-lookup and is not yet handled
+    /// here — such a key resolves to `Nil` for now.
+    fn meta_index_get(
+        mut current: Gc<'gc, RefLock<Table<'gc>>>,
+        key: &Value<'gc>,
+    ) -> Value<'gc> {
+        // Bound the metatable chain to avoid spinning on a cyclic `__index`.
+        for _ in 0..100 {
+            let raw = current.borrow().get_value(key);
+            if !matches!(raw, Value::Nil) {
+                return raw;
+            }
+            // Bind before matching so the table borrow releases before we reassign.
+            let next = current.borrow().meta_index();
+            match next {
+                Some(Value::Table(idx)) => current = idx,
+                _ => return Value::Nil,
+            }
+        }
+        Value::Nil
+    }
+
     fn operate_table(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
@@ -1789,7 +2976,12 @@ impl<'gc> VM<'gc> {
         if let Value::Table(t) = table {
             let mut current = *t;
             for i in 1..=depth {
-                let key = unsafe { ep.ip.sub(i as usize).replace(Value::Nil) };
+                // Keys sit on the stack in source order above the table:
+                // [table, key1, key2, ... keyN] with keyN on top (ip.sub(1)).
+                // Navigation must consume them left-to-right, so step i reads
+                // key i at ip.sub(depth - i + 1) — NOT ip.sub(i), which would
+                // walk the chain backwards (t[keyN] first → nil for depth >= 2).
+                let key = unsafe { ep.ip.sub((depth - i + 1) as usize).replace(Value::Nil) };
                 devout!("get from table with key: {}", key);
                 if i == depth {
                     // let offset = depth as usize;
@@ -1798,11 +2990,11 @@ impl<'gc> VM<'gc> {
                     // assert!(ep.ip == table_point);
                     match set {
                         Some(value) => {
-                            current.borrow_mut(ep.mc).insert(key, value);
+                            current.borrow_mut(ep.mc).set(key, value);
                             unsafe { table_point.replace(Value::Nil) };
                         }
                         None => {
-                            let out = current.borrow().get_value(&key);
+                            let out = Self::meta_index_get(current, &key);
                             unsafe { table_point.replace(out) };
                         }
                     }
@@ -1900,6 +3092,36 @@ impl<'gc> VM<'gc> {
         )
     }
 
+    /// Create a UserData wrapper without creating a value object
+    pub fn create_userdata_raw<T: UserData>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        data: T,
+    ) -> UserDataWrapper {
+        crate::userdata::vm_integration::create_userdata_raw(
+            &mut self.userdata_registry,
+            mc,
+            data,
+            &mut self.userdata_stack,
+        )
+    }
+
+    /// Create a UserData wrapper without creating a value object
+    pub fn create_userdata_tuple<T: UserData>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        data: T,
+    ) -> (Value<'gc>, WeakWrapper) {
+        let (ud, weak) = crate::userdata::vm_integration::create_userdata_tuple(
+            &mut self.userdata_registry,
+            mc,
+            data,
+        );
+
+        let ud_gc = Gc::new(mc, RefLock::new(ud));
+        (Value::UserData(ud_gc), weak)
+    }
+
     /** Load standard library functions */
     pub fn load_standard_library<'a>(&'a mut self, mc: &Mutation<'gc>) {
         // macro_rules! register_native_fn {
@@ -1921,22 +3143,87 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "getmetatable", crate::standard::getmetatable);
         self.register_native_function(mc, "test_ent", crate::standard::test_ent);
 
+        // base functions
+        self.register_native_function(mc, "type", crate::standard::lua_type);
+        self.register_native_function(mc, "tostring", crate::standard::tostring);
+        self.register_native_function(mc, "tonumber", crate::standard::tonumber);
+        self.register_native_function(mc, "assert", crate::standard::assert);
+        self.register_native_function(mc, "error", crate::standard::error);
+        self.register_native_multi_function(mc, "pcall", crate::standard::lua_pcall);
+        self.register_native_multi_function(mc, "next", crate::standard::lua_next);
+        self.register_native_multi_function(mc, "pairs", crate::standard::lua_pairs);
+        self.register_native_multi_function(mc, "ipairs", crate::standard::lua_ipairs);
+
+        let mut table = self.raw_table();
+        self.register_native_function_to(mc, &mut table, "insert", crate::standard::table_insert);
+        self.register_native_function_to(mc, &mut table, "remove", crate::standard::table_remove);
+        self.register_native_multi_function_to(mc, &mut table, "concat", crate::standard::table_concat);
+        self.register_native_multi_function_to(mc, &mut table, "unpack", crate::standard::table_unpack);
+        let t = self.wrap_table(mc, table);
+        self.globals.borrow_mut(mc).set("table", t);
+
+        // math library
+        let mut math = self.raw_table();
+        self.register_native_function_to(mc, &mut math, "floor", crate::standard::math_floor);
+        self.register_native_function_to(mc, &mut math, "ceil", crate::standard::math_ceil);
+        self.register_native_function_to(mc, &mut math, "abs", crate::standard::math_abs);
+        self.register_native_function_to(mc, &mut math, "sqrt", crate::standard::math_sqrt);
+        self.register_native_function_to(mc, &mut math, "sin", crate::standard::math_sin);
+        self.register_native_function_to(mc, &mut math, "cos", crate::standard::math_cos);
+        self.register_native_function_to(mc, &mut math, "tan", crate::standard::math_tan);
+        self.register_native_function_to(mc, &mut math, "min", crate::standard::math_min);
+        self.register_native_function_to(mc, &mut math, "max", crate::standard::math_max);
+        self.register_native_function_to(mc, &mut math, "random", crate::standard::math_random);
+        self.register_native_function_to(
+            mc,
+            &mut math,
+            "randomseed",
+            crate::standard::math_randomseed,
+        );
+        math.set("pi", Value::Number(std::f64::consts::PI));
+        math.set("huge", Value::Number(f64::INFINITY));
+        math.set("maxinteger", Value::Integer(i64::MAX));
+        math.set("mininteger", Value::Integer(i64::MIN));
+        let math_t = self.wrap_table(mc, math);
+        self.globals.borrow_mut(mc).set("math", math_t);
+
+        // string library
+        let mut string = self.raw_table();
+        self.register_native_function_to(mc, &mut string, "len", crate::standard::string_len);
+        self.register_native_function_to(mc, &mut string, "sub", crate::standard::string_sub);
+        self.register_native_function_to(mc, &mut string, "upper", crate::standard::string_upper);
+        self.register_native_function_to(mc, &mut string, "lower", crate::standard::string_lower);
+        self.register_native_function_to(mc, &mut string, "rep", crate::standard::string_rep);
+        self.register_native_function_to(
+            mc,
+            &mut string,
+            "reverse",
+            crate::standard::string_reverse,
+        );
+        self.register_native_function_to(mc, &mut string, "byte", crate::standard::string_byte);
+        self.register_native_function_to(mc, &mut string, "char", crate::standard::string_char);
+        self.register_native_function_to(mc, &mut string, "format", crate::standard::string_format);
+        let string_t = self.wrap_table(mc, string);
+        self.globals.borrow_mut(mc).set("string", string_t);
+
         // Example of closure without turbofish
         // let test = Box::new(5);
         // register_fn!("test_closure", move |_, _, _: ()| {
         //     Ok((*test).into())
         // }, ());
     }
-    pub fn register_native_function3<T, F, R>(
-        // vm: &VM<'gc>,
-        function: F,
-    ) where
-        R: ToLua<'gc> + 'gc,
-        T: for<'a> FromLuaMulti<'gc> + 'gc,
-        F: Fn(&mut VM<'gc>, T) -> R,
-    {
-        // Value::NativeFunction(Gc::new(mc, f))
-    }
+
+    // pub fn register_native_function3<T, F, R>(
+    //     // vm: &VM<'gc>,
+    //     _function: F,
+    // ) where
+    //     R: ToLua<'gc> + 'gc,
+    //     T: for<'a> FromLuaMulti<'gc> + 'gc,
+    //     F: Fn(&mut VM<'gc>, T) -> R,
+    // {
+    //     // Value::NativeFunction(Gc::new(mc, f))
+    // }
+
     pub fn register_native_function<A, F, R>(
         &mut self,
         // vm: &VM<'gc>,
@@ -1954,7 +3241,58 @@ impl<'gc> VM<'gc> {
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
-        self.globals.borrow_mut(mc).insert(name.into(), v);
+        // println!("add native {}, {}", name,v);
+        self.globals.borrow_mut(mc).set(name, v);
+    }
+
+    /// Register a multi-return native function (raw arg slice in, `Vec<Value>` out).
+    pub fn register_native_multi_function<F>(&mut self, mc: &Mutation<'gc>, name: &str, function: F)
+    where
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> Result<Vec<Value<'gc>>, SiltError>
+            + 'gc,
+    {
+        let raw = NativeFunctionRaw::new_multi(function);
+        let f = WrappedFn { f: Rc::new(raw) };
+        let v = Value::NativeFunction(Gc::new(mc, f));
+        self.globals.borrow_mut(mc).set(name, v);
+    }
+
+    /// Like [`register_native_multi_function`] but binds the multi-return native into
+    /// the given table (e.g. `table.unpack`) rather than the global scope.
+    pub fn register_native_multi_function_to<F>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        table: &mut Table<'gc>,
+        name: &str,
+        function: F,
+    ) where
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, &[Value<'gc>]) -> Result<Vec<Value<'gc>>, SiltError>
+            + 'gc,
+    {
+        let raw = NativeFunctionRaw::new_multi(function);
+        let f = WrappedFn { f: Rc::new(raw) };
+        table.set(name, Value::NativeFunction(Gc::new(mc, f)));
+    }
+    //
+    pub fn register_native_function_to<A, F, R>(
+        &mut self,
+        // vm: &VM<'gc>,
+        mc: &Mutation<'gc>,
+        table: &mut Table<'gc>,
+        name: &str,
+        function: F,
+    ) where
+        A: FromLuaMulti<'gc>,
+        // <T as FromLuaMulti<'gc>>::Output
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, A) -> R + 'gc,
+        R: ToLua<'gc> + 'gc,
+    {
+        let raw = NativeFunctionRaw::new::<A, _, _>(function);
+
+        let f = WrappedFn { f: Rc::new(raw) };
+        // Value::NativeFunction(Gc::new(mc, f))
+        let v = Value::NativeFunction(Gc::new(mc, f));
+        table.set(name, v);
     }
     // pub fn register_native_function<T, R>(
     //     &mut self,
@@ -1999,6 +3337,7 @@ impl<'gc> VM<'gc> {
     // }
     //
     //
+    #[allow(dead_code)]
     fn print_raw_stack(&self) {
         println!("=== Stack ({}) ===", self.stack_count);
         // 0 to stack_top
@@ -2029,4 +3368,8 @@ impl<'gc> VM<'gc> {
         println!("▒░");
         // println!("---");
     }
+}
+
+pub(crate) fn to_op_string(name: Option<&str>) -> Option<String> {
+    name.map(|o| o.to_string())
 }

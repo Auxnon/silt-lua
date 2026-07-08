@@ -1,5 +1,4 @@
 use core::fmt::Display;
-use std::fmt::write;
 // implement clone
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +28,7 @@ pub enum Token {
 
     // symbols
     Dot,
+    VarArg, // ...
     Assign, //Equal
 
     // operator
@@ -55,6 +55,9 @@ pub enum Token {
     MultiplyAssign,
     DivideAssign,
     ModulusAssign,
+    PowerAssign,
+    FloorDivideAssign,
+    ConcatAssign,
     Colon,                     //:
     ColonColon,                //::
     ColonIdentifier(Box<str>), // :ident (for types and calls)
@@ -108,6 +111,10 @@ pub enum Operator {
     GreaterEqual,
     Length,
     ColonEquals,
+    BitAnd,
+    BitOr,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,6 +170,9 @@ impl Display for Token {
             Token::MultiplyAssign => write!(f, "*="),
             Token::DivideAssign => write!(f, "/="),
             Token::ModulusAssign => write!(f, "%="),
+            Token::PowerAssign => write!(f, "^="),
+            Token::FloorDivideAssign => write!(f, "//="),
+            Token::ConcatAssign => write!(f, "..="),
             Token::Colon => write!(f, ":"),
             Token::ColonColon => write!(f, "::"),
             Token::Class => write!(f, "class"),
@@ -180,12 +190,13 @@ impl Display for Token {
             Token::CloseBracket => write!(f, "]"),
             // Token::EOF => write!(f, "EOF"),
             Token::Dot => write!(f, "call"),
+            Token::VarArg => write!(f, "..."),
             // Token::Bang => write!(f, "!"),
             Token::Type => write!(f, "type"),
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
             Token::Global => write!(f, "global"),
             Token::Flag(ref flag) => write!(f, "flag({})", flag),
-            Self::Comment=> write!(f, "--"),
+            Self::Comment => write!(f, "--"),
             Self::EOF => write!(f, "EOF"),
         }
     }
@@ -214,6 +225,10 @@ impl Display for Operator {
             Operator::Tilde => write!(f, "~"),
             Operator::Length => write!(f, "#"),
             Operator::ColonEquals => write!(f, ":="),
+            Operator::BitAnd => write!(f, "&"),
+            Operator::BitOr => write!(f, "|"),
+            Operator::ShiftLeft => write!(f, "<<"),
+            Operator::ShiftRight => write!(f, ">>"),
         }
     }
 }
