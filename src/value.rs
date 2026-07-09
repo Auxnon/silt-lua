@@ -7,8 +7,8 @@ use std::{
 
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
 
-#[cfg(feature = "vectors")]
-use crate::vec::{Vec2, Vec3};
+#[cfg(feature = "vector")]
+use crate::vec::{Vec2, Vec3, Vec4};
 use crate::{
     error::{SiltError, ValueTypes},
     function::{Closure, FunctionObject, WrappedFn},
@@ -32,10 +32,12 @@ macro_rules! binary_self_op {
                 // (Value::Integer(left), Value::Number(right)) => Some(Value::Number((*left as f64) $fallback right)),
                 (Value::Integer(left), Value::Number(right)) =>  *$l= Value::Number((*left as f64) $fallback right),
 
-                #[cfg(feature = "vectors")]
-                (Value::Vec3(left), Value::Vec3(right)) => *left $op *right,
-                #[cfg(feature = "vectors")]
-                (Value::Vec2(left), Value::Vec2(right)) => *left $op *right,
+                #[cfg(feature = "vector")]
+                (Value::Vec2(left), Value::Vec2(right)) => *$l = Value::Vec2(*left $fallback *right),
+                #[cfg(feature = "vector")]
+                (Value::Vec3(left), Value::Vec3(right)) => *$l = Value::Vec3(*left $fallback *right),
+                #[cfg(feature = "vector")]
+                (Value::Vec4(left), Value::Vec4(right)) => *$l = Value::Vec4(*left $fallback *right),
 
                 // TODO
                 (ll,rr) => return Err(SiltError::ExpOpValueWithValue(ll.to_error(), MetaMethod::$opp, rr.to_error()))
@@ -76,10 +78,12 @@ pub enum Value<'gc> {
     // NativeFunction(Gc<'gc, WrappedFn<'gc>>),
     NativeFunction(Gc<'gc, WrappedFn<'gc>>),
     UserData(Gc<'gc, RefLock<UserDataWrapper>>),
-    #[cfg(feature = "vectors")]
-    Vec3(Vec3),
-    #[cfg(feature = "vectors")]
+    #[cfg(feature = "vector")]
     Vec2(Vec2),
+    #[cfg(feature = "vector")]
+    Vec3(Vec3),
+    #[cfg(feature = "vector")]
+    Vec4(Vec4),
 }
 
 #[derive(Debug, Clone)]
@@ -93,10 +97,12 @@ pub enum ExVal {
     Table(crate::table::ExTable),
     Meta(String),
     UserData(String),
-    #[cfg(feature = "vectors")]
-    Vec3(Vec3),
-    #[cfg(feature = "vectors")]
+    #[cfg(feature = "vector")]
     Vec2(Vec2),
+    #[cfg(feature = "vector")]
+    Vec3(Vec3),
+    #[cfg(feature = "vector")]
+    Vec4(Vec4),
 }
 
 impl ExVal {
@@ -115,6 +121,12 @@ impl ExVal {
             ExVal::Infinity(b) => Value::Infinity(*b),
             ExVal::UserData(_) => return Err(SiltError::VmValBadConvert(ValueTypes::UserData)),
             ExVal::Meta(_) => return Err(SiltError::VmValBadConvert(ValueTypes::Function)),
+            #[cfg(feature = "vector")]
+            ExVal::Vec2(v) => Value::Vec2(*v),
+            #[cfg(feature = "vector")]
+            ExVal::Vec3(v) => Value::Vec3(*v),
+            #[cfg(feature = "vector")]
+            ExVal::Vec4(v) => Value::Vec4(*v),
         })
     }
     pub fn coerce_string(&self) -> String {
@@ -128,6 +140,12 @@ impl ExVal {
             ExVal::Bool(b) => b.to_string(),
             ExVal::Nil => "nil".to_string(),
             ExVal::Table(_) => "table".to_string(),
+            #[cfg(feature = "vector")]
+            ExVal::Vec2(v) => v.to_string(),
+            #[cfg(feature = "vector")]
+            ExVal::Vec3(v) => v.to_string(),
+            #[cfg(feature = "vector")]
+            ExVal::Vec4(v) => v.to_string(),
         }
     }
 }
@@ -182,10 +200,12 @@ impl From<Value<'_>> for ExVal {
             Value::Closure(c) => ExVal::Meta(format!("=>({})", c.function)),
             Value::NativeFunction(_) => ExVal::Meta("native_function".to_string()),
             Value::UserData(u) => ExVal::UserData(format!("{} userdata", u.borrow().type_name())),
-            #[cfg(feature = "vectors")]
-            Value::Vec3(v) => ExVal::Vec3(v),
-            #[cfg(feature = "vectors")]
+            #[cfg(feature = "vector")]
             Value::Vec2(v) => ExVal::Vec2(v),
+            #[cfg(feature = "vector")]
+            Value::Vec3(v) => ExVal::Vec3(v),
+            #[cfg(feature = "vector")]
+            Value::Vec4(v) => ExVal::Vec4(v),
         }
     }
 }
@@ -218,10 +238,12 @@ impl std::fmt::Display for ExVal {
             ExVal::Infinity(b) => write!(f, "{}inf", if *b { "-" } else { "" }),
             ExVal::Table(t) => write!(f, "{}", t.to_string()),
             ExVal::UserData(u) => write!(f, "{}", u.to_string()),
-            #[cfg(feature = "vectors")]
-            ExVal::Vec3(v) => write!(f, "{}", v),
-            #[cfg(feature = "vectors")]
+            #[cfg(feature = "vector")]
             ExVal::Vec2(v) => write!(f, "{}", v),
+            #[cfg(feature = "vector")]
+            ExVal::Vec3(v) => write!(f, "{}", v),
+            #[cfg(feature = "vector")]
+            ExVal::Vec4(v) => write!(f, "{}", v),
         }
     }
 }
@@ -248,10 +270,12 @@ impl std::fmt::Display for Value<'_> {
             Value::Function(ff) => write!(f, "{}", ff),
             Value::Table(t) => write!(f, "table[;{}]", t.borrow().len()),
             Value::UserData(_) => write!(f, "userdata"), // TODO
-            #[cfg(feature = "vectors")]
-            Value::Vec3(v) => write!(f, "{}", v),
-            #[cfg(feature = "vectors")]
+            #[cfg(feature = "vector")]
             Value::Vec2(v) => write!(f, "{}", v),
+            #[cfg(feature = "vector")]
+            Value::Vec3(v) => write!(f, "{}", v),
+            #[cfg(feature = "vector")]
+            Value::Vec4(v) => write!(f, "{}", v),
             // Value::UserData(u) => write!(f, "{}", v),
         }
     }
@@ -279,10 +303,12 @@ impl<'v> Value<'v> {
             Value::Closure(_) => ValueTypes::Closure,
             Value::Table(_) => ValueTypes::Table,
             Value::UserData(_) => ValueTypes::UserData,
-            #[cfg(feature = "vectors")]
-            Value::Vec3(_) => ValueTypes::Vec3,
-            #[cfg(feature = "vectors")]
+            #[cfg(feature = "vector")]
             Value::Vec2(_) => ValueTypes::Vec2,
+            #[cfg(feature = "vector")]
+            Value::Vec3(_) => ValueTypes::Vec3,
+            #[cfg(feature = "vector")]
+            Value::Vec4(_) => ValueTypes::Vec4,
         }
     }
     /// Lua `type()` name. Integers/floats/infinity are all "number"; any callable
@@ -296,8 +322,12 @@ impl<'v> Value<'v> {
             Value::Table(_) => "table",
             Value::Function(_) | Value::Closure(_) | Value::NativeFunction(_) => "function",
             Value::UserData(_) => "userdata",
-            #[cfg(feature = "vectors")]
-            Value::Vec3(_) | Value::Vec2(_) => "userdata",
+            #[cfg(feature = "vector")]
+            Value::Vec2(_) => "vec2",
+            #[cfg(feature = "vector")]
+            Value::Vec3(_) => "vec3",
+            #[cfg(feature = "vector")]
+            Value::Vec4(_) => "vec4",
         }
     }
 
@@ -334,6 +364,12 @@ impl<'v> Value<'v> {
             Value::Bool(b) => b.to_string(),
             Value::Nil => "nil".to_string(),
             Value::Table(_) => "table".to_string(),
+            #[cfg(feature = "vector")]
+            Value::Vec2(v) => v.to_string(),
+            #[cfg(feature = "vector")]
+            Value::Vec3(v) => v.to_string(),
+            #[cfg(feature = "vector")]
+            Value::Vec4(v) => v.to_string(),
         }
     }
 
@@ -440,10 +476,12 @@ impl<'v> Value<'v> {
             // }),
             Value::Table(t) => Value::Table(Gc::clone(t)),
             Value::UserData(u) => Value::UserData(Gc::clone(u)),
-            #[cfg(feature = "vectors")]
-            Value::Vec3(v) => Value::Vec3(*v),
-            #[cfg(feature = "vectors")]
+            #[cfg(feature = "vector")]
             Value::Vec2(v) => Value::Vec2(*v),
+            #[cfg(feature = "vector")]
+            Value::Vec3(v) => Value::Vec3(*v),
+            #[cfg(feature = "vector")]
+            Value::Vec4(v) => Value::Vec4(*v),
         }
     }
 }
@@ -467,6 +505,12 @@ impl PartialEq for Value<'_> {
             (Value::Function(i), Value::Function(j)) => Gc::ptr_eq(*i, *j), // Rc::ptr_eq(i, j),
 
             (Value::Table(i), Value::Table(j)) => Gc::ptr_eq(*i, *j),
+            #[cfg(feature = "vector")]
+            (Value::Vec2(i), Value::Vec2(j)) => i == j,
+            #[cfg(feature = "vector")]
+            (Value::Vec3(i), Value::Vec3(j)) => i == j,
+            #[cfg(feature = "vector")]
+            (Value::Vec4(i), Value::Vec4(j)) => i == j,
             _ => false,
         }
     }
@@ -1868,3 +1912,65 @@ where
 //         self.values.len()
 //     }
 // }
+
+// ---- vector conversions (feature `vector`) ---------------------------------
+// `ToLua`/`FromLua` for the silt wrappers AND the raw `glam` types, so userdata field
+// getters/setters (and embedder code) can produce/consume vectors with zero ceremony:
+//   fields.add_field_method_get("pos", |_,_,e| Ok(e.pos));            // glam::Vec3 -> Value
+//   fields.add_field_method_set("pos", |_,_,e, v: glam::Vec3| ...);   // Value -> glam::Vec3
+// These are the entity-interop glue (no coercion metamethod needed).
+#[cfg(feature = "vector")]
+mod vector_conversions {
+    use super::*;
+
+    macro_rules! vec_conv {
+        ($wrap:ident, $glam:ty, $variant:ident, $tyname:expr) => {
+            impl<'a> ToLua<'a> for $wrap {
+                fn to_lua(self, _: &VM<'a>, _: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
+                    Ok(Value::$variant(self))
+                }
+            }
+            impl<'a> ToLua<'a> for $glam {
+                fn to_lua(self, _: &VM<'a>, _: &Mutation<'a>) -> Result<Value<'a>, SiltError> {
+                    Ok(Value::$variant($wrap(self)))
+                }
+            }
+            impl<'a> FromLua<'a> for $wrap {
+                fn from_lua(
+                    val: &Value<'a>,
+                    _: &VM<'a>,
+                    _: &Mutation<'a>,
+                ) -> Result<Self, SiltError> {
+                    match val {
+                        Value::$variant(v) => Ok(*v),
+                        other => Err(SiltError::Custom(format!(
+                            "expected {}, got {}",
+                            $tyname,
+                            other.type_name()
+                        ))),
+                    }
+                }
+            }
+            impl<'a> FromLua<'a> for $glam {
+                fn from_lua(
+                    val: &Value<'a>,
+                    _: &VM<'a>,
+                    _: &Mutation<'a>,
+                ) -> Result<Self, SiltError> {
+                    match val {
+                        Value::$variant(v) => Ok(v.0),
+                        other => Err(SiltError::Custom(format!(
+                            "expected {}, got {}",
+                            $tyname,
+                            other.type_name()
+                        ))),
+                    }
+                }
+            }
+        };
+    }
+
+    vec_conv!(Vec2, glam::Vec2, Vec2, "vec2");
+    vec_conv!(Vec3, glam::Vec3, Vec3, "vec3");
+    vec_conv!(Vec4, glam::Vec4, Vec4, "vec4");
+}

@@ -553,6 +553,29 @@ emit), not a separate pass. Types are compile-time only and never reach the VM.
 - **Deferred:** multi-value single-expression returns (use a `do` block); recording arrow param
   types on their locals.
 
+## 3.7 Vectors (glam-backed 2D/3D/4D) — landed, behind `vector` feature (off by default)
+First-class immutable f32 vector value type for game/math scripting, replacing the old broken
+`vectors` stub. `vector = ["dep:glam"]`.
+- **Types** (`src/vec.rs`): newtype wrappers `Vec2/Vec3/Vec4` around `glam::Vec{2,3,4}` — needed
+  for the orphan rule (`Collect` via manual `unsafe impl`, model `UDVec`) and a Lua `Display`.
+  `Copy`, `Deref` to glam, operator impls. Re-exported: `silt_lua::{Vec2,Vec3,Vec4}` and
+  `pub extern crate glam` (so embedders name the types without their own glam dep).
+- **`Value`/`ExVal`** gained `Vec2/Vec3/Vec4` variants (`src/value.rs`), extended across every
+  match (conversions, both `Display`s, `to_error`, `type_name`→`"vec2/3/4"`, clone, `PartialEq`,
+  `is_equal`). `ToLua`/`FromLua` for the wrappers AND raw `glam::Vec*` — the entity-interop glue.
+- **VM** (`src/lua.rs`): `binary_op!` gets vec·vec (`+ - *`) + scalar·vec (`*` only, via the
+  op-matching `scalar_vec_mul!` — `+`/`-` with scalars intentionally error); DIVIDE gets vec·vec
+  and vec/scalar; NEGATE gets unary `-`. `TABLE_GET` returns `.x/.y/.z/.w`; `METHOD_GET` dispatches
+  through a global `vec` table (mirrors the `string` library). Registered in `load_standard_library`.
+- **API:** `vec2/vec3/vec4(...)` constructors; `.x/.y/.z/.w`; `+ - * /`, unary `-`, `==`;
+  `:length() :length_squared() :dot() :normalize() :distance() :cross()` (`src/vector_lib.rs`).
+  `type(v)` → `"vec2"/"vec3"/"vec4"`.
+- **Entity interop, no metamethod:** a userdata field getter returns a vector, a setter accepts
+  one (`v: glam::Vec3`), so `entity.pos = entity.pos + vec3(0,10,0)` works. Tests: `tests/vectors.rs`.
+- **Out of scope (future):** swizzling (`v.xy`), `DVec` f64 family, `%`/`^`/`//`, matrices/quats,
+  flexible constructors (splat / `vec3(v2, z)`). NOTE: `(expr).field` / `expr():field` (field
+  access on a grouped/call result) is a *pre-existing* parser gap — assign to a local first.
+
 ## 4. Known deviations (documented, lower priority)
 
 - **`#` on tables returns hashmap length, not a border** (README limitation). Lua's `#`

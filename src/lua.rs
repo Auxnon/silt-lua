@@ -197,6 +197,21 @@ macro_rules! binary_op_push {
     }};
 }
 
+// Scalar·vector scaling: only `*` mixes a scalar and a vector (per the vector-feature
+// design — `+`/`-` do not broadcast). Matches on the operator token so the shared
+// `binary_op!` macro stays correct: `*` scales, anything else errors.
+#[cfg(feature = "vector")]
+macro_rules! scalar_vec_mul {
+    (*, $wrap:ident, $a:expr, $b:expr) => {
+        Value::$wrap($a * $b)
+    };
+    ($op:tt, $wrap:ident, $a:expr, $b:expr) => {
+        break Err(SiltError::Custom(
+            "a scalar and a vector combine only with '*' (or vector/scalar with '/')".into(),
+        ))
+    };
+}
+
 macro_rules! binary_op  {
     ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $l:ident, $op:tt, $r:ident, $opp:tt) => {
         match ($l, $r) {
@@ -209,6 +224,37 @@ macro_rules! binary_op  {
             (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp),
             (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
             (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
+            // Component-wise vector arithmetic (`+`/`-`/`*`), then scalar scaling (`*`).
+            #[cfg(feature = "vector")]
+            (Value::Vec2(l), Value::Vec2(r)) => Value::Vec2(l $op r),
+            #[cfg(feature = "vector")]
+            (Value::Vec3(l), Value::Vec3(r)) => Value::Vec3(l $op r),
+            #[cfg(feature = "vector")]
+            (Value::Vec4(l), Value::Vec4(r)) => Value::Vec4(l $op r),
+            #[cfg(feature = "vector")]
+            (Value::Number(l), Value::Vec2(r)) => scalar_vec_mul!($op, Vec2, l as f32, r),
+            #[cfg(feature = "vector")]
+            (Value::Number(l), Value::Vec3(r)) => scalar_vec_mul!($op, Vec3, l as f32, r),
+            #[cfg(feature = "vector")]
+            (Value::Number(l), Value::Vec4(r)) => scalar_vec_mul!($op, Vec4, l as f32, r),
+            #[cfg(feature = "vector")]
+            (Value::Integer(l), Value::Vec2(r)) => scalar_vec_mul!($op, Vec2, l as f32, r),
+            #[cfg(feature = "vector")]
+            (Value::Integer(l), Value::Vec3(r)) => scalar_vec_mul!($op, Vec3, l as f32, r),
+            #[cfg(feature = "vector")]
+            (Value::Integer(l), Value::Vec4(r)) => scalar_vec_mul!($op, Vec4, l as f32, r),
+            #[cfg(feature = "vector")]
+            (Value::Vec2(l), Value::Number(r)) => scalar_vec_mul!($op, Vec2, l, r as f32),
+            #[cfg(feature = "vector")]
+            (Value::Vec3(l), Value::Number(r)) => scalar_vec_mul!($op, Vec3, l, r as f32),
+            #[cfg(feature = "vector")]
+            (Value::Vec4(l), Value::Number(r)) => scalar_vec_mul!($op, Vec4, l, r as f32),
+            #[cfg(feature = "vector")]
+            (Value::Vec2(l), Value::Integer(r)) => scalar_vec_mul!($op, Vec2, l, r as f32),
+            #[cfg(feature = "vector")]
+            (Value::Vec3(l), Value::Integer(r)) => scalar_vec_mul!($op, Vec3, l, r as f32),
+            #[cfg(feature = "vector")]
+            (Value::Vec4(l), Value::Integer(r)) => scalar_vec_mul!($op, Vec4, l, r as f32),
             (Value::Table(left), rr ) => {
                 table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left,  rr, $opp)
             },
@@ -1692,6 +1738,26 @@ impl<'gc> VM<'gc> {
                         (Value::Integer(left), Value::Number(right)) => {
                             self.push(ep, Value::Number(left as f64 / right))
                         }
+                        // Component-wise vector division and vector/scalar (scalar/vector
+                        // is intentionally unsupported).
+                        #[cfg(feature = "vector")]
+                        (Value::Vec2(l), Value::Vec2(r)) => self.push(ep, Value::Vec2(l / r)),
+                        #[cfg(feature = "vector")]
+                        (Value::Vec3(l), Value::Vec3(r)) => self.push(ep, Value::Vec3(l / r)),
+                        #[cfg(feature = "vector")]
+                        (Value::Vec4(l), Value::Vec4(r)) => self.push(ep, Value::Vec4(l / r)),
+                        #[cfg(feature = "vector")]
+                        (Value::Vec2(l), Value::Number(r)) => self.push(ep, Value::Vec2(l / r as f32)),
+                        #[cfg(feature = "vector")]
+                        (Value::Vec3(l), Value::Number(r)) => self.push(ep, Value::Vec3(l / r as f32)),
+                        #[cfg(feature = "vector")]
+                        (Value::Vec4(l), Value::Number(r)) => self.push(ep, Value::Vec4(l / r as f32)),
+                        #[cfg(feature = "vector")]
+                        (Value::Vec2(l), Value::Integer(r)) => self.push(ep, Value::Vec2(l / r as f32)),
+                        #[cfg(feature = "vector")]
+                        (Value::Vec3(l), Value::Integer(r)) => self.push(ep, Value::Vec3(l / r as f32)),
+                        #[cfg(feature = "vector")]
+                        (Value::Vec4(l), Value::Integer(r)) => self.push(ep, Value::Vec4(l / r as f32)),
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
                                 self,
@@ -1886,6 +1952,24 @@ impl<'gc> VM<'gc> {
                             let f = -i;
                             self.pop(ep);
                             self.push(ep, Value::Integer(f))
+                        }
+                        #[cfg(feature = "vector")]
+                        Value::Vec2(v) => {
+                            let nv = -*v;
+                            self.pop(ep);
+                            self.push(ep, Value::Vec2(nv))
+                        }
+                        #[cfg(feature = "vector")]
+                        Value::Vec3(v) => {
+                            let nv = -*v;
+                            self.pop(ep);
+                            self.push(ep, Value::Vec3(nv))
+                        }
+                        #[cfg(feature = "vector")]
+                        Value::Vec4(v) => {
+                            let nv = -*v;
+                            self.pop(ep);
+                            self.push(ep, Value::Vec4(nv))
                         }
                         // None => Err(SiltError::EarlyEndOfFile)?,
                         c => break Err(SiltError::ExpInvalidNegation(c.to_error())),
@@ -2534,6 +2618,15 @@ impl<'gc> VM<'gc> {
                             Some(Value::Table(t)) => t.borrow().get_value(&key),
                             _ => Value::Nil,
                         },
+                        // Vectors dispatch methods through the global `vec` library,
+                        // exactly like strings: `v:length()` == vec.length(v).
+                        #[cfg(feature = "vector")]
+                        Value::Vec2(_) | Value::Vec3(_) | Value::Vec4(_) => {
+                            match self.globals.borrow().get("vec") {
+                                Some(Value::Table(t)) => t.borrow().get_value(&key),
+                                _ => Value::Nil,
+                            }
+                        }
                         // `ud:method(...)` — resolve the method off the userdata's
                         // registry (same lookup as `ud.method`), leaving [method,
                         // receiver] so the userdata is passed as the implicit `self`.
@@ -2587,6 +2680,40 @@ impl<'gc> VM<'gc> {
                                     unsafe { table_point.replace(value) };
                                 }
                                 Err(e) => break Err(e),
+                            }
+                        }
+                        // Vector field access `.x/.y/.z/.w` → the component as a number.
+                        // Mirrors the userdata write-back: collapse [vec, key] into the
+                        // single component value at the receiver slot.
+                        #[cfg(feature = "vector")]
+                        Value::Vec2(_) | Value::Vec3(_) | Value::Vec4(_) => {
+                            let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
+                            let field_name = field.pure_string();
+                            let component = match (value, field_name.as_str()) {
+                                (Value::Vec2(v), "x") => Some(v.0.x),
+                                (Value::Vec2(v), "y") => Some(v.0.y),
+                                (Value::Vec3(v), "x") => Some(v.0.x),
+                                (Value::Vec3(v), "y") => Some(v.0.y),
+                                (Value::Vec3(v), "z") => Some(v.0.z),
+                                (Value::Vec4(v), "x") => Some(v.0.x),
+                                (Value::Vec4(v), "y") => Some(v.0.y),
+                                (Value::Vec4(v), "z") => Some(v.0.z),
+                                (Value::Vec4(v), "w") => Some(v.0.w),
+                                _ => None,
+                            };
+                            match component {
+                                Some(c) => {
+                                    self.stack_count -= u - 1;
+                                    unsafe { ep.ip = ep.ip.sub(u - 1) };
+                                    unsafe { table_point.replace(Value::Number(c as f64)) };
+                                }
+                                None => {
+                                    break Err(SiltError::Custom(format!(
+                                        "'{}' is not a field of {}",
+                                        field_name,
+                                        value.type_name()
+                                    )))
+                                }
                             }
                         }
                         _ => break Err(SiltError::VmNonTableOperations(value.to_error())),
@@ -2693,6 +2820,13 @@ impl<'gc> VM<'gc> {
             (Value::Closure(a), Value::Closure(b)) => Gc::ptr_eq(*a, *b),
             (Value::Function(a), Value::Function(b)) => Gc::ptr_eq(*a, *b),
             (Value::UserData(a), Value::UserData(b)) => Gc::ptr_eq(*a, *b),
+            // Vectors compare by value (component-wise), unlike other reference-ish types.
+            #[cfg(feature = "vector")]
+            (Value::Vec2(a), Value::Vec2(b)) => a == b,
+            #[cfg(feature = "vector")]
+            (Value::Vec3(a), Value::Vec3(b)) => a == b,
+            #[cfg(feature = "vector")]
+            (Value::Vec4(a), Value::Vec4(b)) => a == b,
             (_, _) => false,
         }
     }
@@ -3333,6 +3467,29 @@ impl<'gc> VM<'gc> {
         self.register_native_function_to(mc, &mut string, "format", crate::standard::string_format);
         let string_t = self.wrap_table(mc, string);
         self.globals.borrow_mut(mc).set("string", string_t);
+
+        // Vector library (feature `vector`): global `vec2`/`vec3`/`vec4` constructors and
+        // the `vec` method table (`v:length()` etc., dispatched like the string library).
+        #[cfg(feature = "vector")]
+        {
+            self.register_native_function(mc, "vec2", crate::vector_lib::vec2);
+            self.register_native_function(mc, "vec3", crate::vector_lib::vec3);
+            self.register_native_function(mc, "vec4", crate::vector_lib::vec4);
+            let mut vec = self.raw_table();
+            self.register_native_function_to(mc, &mut vec, "length", crate::vector_lib::length);
+            self.register_native_function_to(
+                mc,
+                &mut vec,
+                "length_squared",
+                crate::vector_lib::length_squared,
+            );
+            self.register_native_function_to(mc, &mut vec, "normalize", crate::vector_lib::normalize);
+            self.register_native_function_to(mc, &mut vec, "dot", crate::vector_lib::dot);
+            self.register_native_function_to(mc, &mut vec, "distance", crate::vector_lib::distance);
+            self.register_native_function_to(mc, &mut vec, "cross", crate::vector_lib::cross);
+            let vec_t = self.wrap_table(mc, vec);
+            self.globals.borrow_mut(mc).set("vec", vec_t);
+        }
 
         // Example of closure without turbofish
         // let test = Box::new(5);
