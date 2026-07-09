@@ -866,13 +866,11 @@ impl UserDataWrapper {
     //     //.downcast_mut::<T>()
     // }
     // pub fn
-    pub fn downcast_mut<'a, 'b: 'a, T: UserData, F, R>(
-        &'a mut self,
-        apply: F,
-    ) -> Result<R, SiltError>
+    // No `R: ToLua` bound — the body just returns the closure's result; the
+    // bound was spurious and blocked generic wrappers (e.g. petrichor's EntRef).
+    pub fn downcast_mut<'a, T: UserData, F, R>(&'a mut self, apply: F) -> Result<R, SiltError>
     where
         F: FnOnce(&mut T) -> Result<R, SiltError>,
-        R: ToLua<'b>,
     {
         let mut i = Self::to_silt(self.data.lock(), SiltError::UDNoMap)?;
         let ud = (*i).downcast_mut::<T>().ok_or(SiltError::UDBadCall)?;
