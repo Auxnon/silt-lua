@@ -2490,7 +2490,18 @@ impl<'gc> VM<'gc> {
                                 &field_name,
                                 value,
                             ) {
-                                Ok(_) => Ok(()),
+                                Ok(_) => {
+                                    // Mirror operate_table's set cleanup: pop the
+                                    // userdata receiver + its `depth` field keys off
+                                    // the stack. Without this the receiver leaks every
+                                    // assignment, desyncing the stack from the
+                                    // compiler's fixed local slots.
+                                    let dec = *depth as usize + 1;
+                                    self.stack_count -= dec;
+                                    unsafe { ep.ip = ep.ip.sub(dec) };
+                                    unsafe { ep.ip.replace(Value::Nil) };
+                                    Ok(())
+                                }
                                 Err(e) => Err(e),
                             }
                         }
