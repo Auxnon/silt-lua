@@ -1069,7 +1069,10 @@ fn set_trailing_vararg(&mut self,bool: bool){
             Token::Identifier(_) => rule!(variable, void, None),
             Token::Function => rule!(function_expression, void, None),
             Token::VarArg => rule!(vararg_variable, void, None),
-            // Token::OpenBracket => rule!(void, indexer, Call),
+            // Postfix field/index access on any expression (grouped, call result, …).
+            // Bare variables are still handled eagerly by `named_variable`.
+            Token::Dot => rule!(void, dot_infix, Call),
+            Token::OpenBracket => rule!(void, index_infix, Call),
             Token::Integer(_) => rule!(integer, void, None),
             Token::Number(_) => rule!(number, void, None),
             Token::StringLiteral(_) => rule!(string, void, None),
@@ -3780,6 +3783,52 @@ fn method_infix<'c>(
     let constant = this.identifer_constant(f, name);
     this.emit_at(f, OpCode::METHOD_GET { constant });
     this.self_arg = true;
+    Ok(())
+}
+
+/// Pratt infix for `.field` — field access on ANY preceding expression (a grouped
+/// expression, a call result, etc.), not just a bare variable (those are handled
+/// eagerly inside `named_variable`). The receiver is already on the stack and the `.`
+/// has been consumed by the infix loop; pop the field name and emit a single
+/// `TABLE_GET`. Chained `.a.b` runs this once per link. This is what makes
+/// `(a + b).x` / `f().field` parse.
+fn dot_infix<'c>(
+    this: &mut Compiler,
+    _mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
+    devnote!(this it "dot_infix");
+    let (res, loc) = this.pop(it);
+    this.current_location = loc;
+    match res? {
+        Token::Identifier(ident) => this.emit_identifer_constant_at(f, ident),
+        _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
+    }
+    this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
+    Ok(())
+}
+
+/// Pratt infix for `[key]` — index access on any preceding expression. The `[` has
+/// been consumed by the infix loop; parse the key expression, expect `]`, and emit a
+/// single `TABLE_GET`. Companion to `dot_infix` for `(expr)[k]` / `f()[k]`.
+fn index_infix<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
+    devnote!(this it "index_infix");
+    expression(this, mc, f, it, false)?;
+    expect_token!(
+        this,
+        it,
+        CloseBracket,
+        this.error_at(SiltError::UnterminatedBracket(0, 0))
+    );
+    this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
     Ok(())
 }
 

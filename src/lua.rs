@@ -197,21 +197,6 @@ macro_rules! binary_op_push {
     }};
 }
 
-// Scalar·vector scaling: only `*` mixes a scalar and a vector (per the vector-feature
-// design — `+`/`-` do not broadcast). Matches on the operator token so the shared
-// `binary_op!` macro stays correct: `*` scales, anything else errors.
-#[cfg(feature = "vector")]
-macro_rules! scalar_vec_mul {
-    (*, $wrap:ident, $a:expr, $b:expr) => {
-        Value::$wrap($a * $b)
-    };
-    ($op:tt, $wrap:ident, $a:expr, $b:expr) => {
-        break Err(SiltError::Custom(
-            "a scalar and a vector combine only with '*' (or vector/scalar with '/')".into(),
-        ))
-    };
-}
-
 macro_rules! binary_op  {
     ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $l:ident, $op:tt, $r:ident, $opp:tt) => {
         match ($l, $r) {
@@ -224,7 +209,7 @@ macro_rules! binary_op  {
             (Value::Integer(left), Value::String(right)) => int_op_str!(left $op right $opp),
             (Value::String(left), Value::Number(right)) => str_op_num!(left $op right $opp),
             (Value::Number(left), Value::String(right)) => num_op_str!(left $op right $opp),
-            // Component-wise vector arithmetic (`+`/`-`/`*`), then scalar scaling (`*`).
+            // Component-wise vector arithmetic and scalar broadcast (`+`/`-`/`*`).
             #[cfg(feature = "vector")]
             (Value::Vec2(l), Value::Vec2(r)) => Value::Vec2(l $op r),
             #[cfg(feature = "vector")]
@@ -232,29 +217,29 @@ macro_rules! binary_op  {
             #[cfg(feature = "vector")]
             (Value::Vec4(l), Value::Vec4(r)) => Value::Vec4(l $op r),
             #[cfg(feature = "vector")]
-            (Value::Number(l), Value::Vec2(r)) => scalar_vec_mul!($op, Vec2, l as f32, r),
+            (Value::Number(l), Value::Vec2(r)) => Value::Vec2((l as f32) $op r),
             #[cfg(feature = "vector")]
-            (Value::Number(l), Value::Vec3(r)) => scalar_vec_mul!($op, Vec3, l as f32, r),
+            (Value::Number(l), Value::Vec3(r)) => Value::Vec3((l as f32) $op r),
             #[cfg(feature = "vector")]
-            (Value::Number(l), Value::Vec4(r)) => scalar_vec_mul!($op, Vec4, l as f32, r),
+            (Value::Number(l), Value::Vec4(r)) => Value::Vec4((l as f32) $op r),
             #[cfg(feature = "vector")]
-            (Value::Integer(l), Value::Vec2(r)) => scalar_vec_mul!($op, Vec2, l as f32, r),
+            (Value::Integer(l), Value::Vec2(r)) => Value::Vec2((l as f32) $op r),
             #[cfg(feature = "vector")]
-            (Value::Integer(l), Value::Vec3(r)) => scalar_vec_mul!($op, Vec3, l as f32, r),
+            (Value::Integer(l), Value::Vec3(r)) => Value::Vec3((l as f32) $op r),
             #[cfg(feature = "vector")]
-            (Value::Integer(l), Value::Vec4(r)) => scalar_vec_mul!($op, Vec4, l as f32, r),
+            (Value::Integer(l), Value::Vec4(r)) => Value::Vec4((l as f32) $op r),
             #[cfg(feature = "vector")]
-            (Value::Vec2(l), Value::Number(r)) => scalar_vec_mul!($op, Vec2, l, r as f32),
+            (Value::Vec2(l), Value::Number(r)) => Value::Vec2(l $op (r as f32)),
             #[cfg(feature = "vector")]
-            (Value::Vec3(l), Value::Number(r)) => scalar_vec_mul!($op, Vec3, l, r as f32),
+            (Value::Vec3(l), Value::Number(r)) => Value::Vec3(l $op (r as f32)),
             #[cfg(feature = "vector")]
-            (Value::Vec4(l), Value::Number(r)) => scalar_vec_mul!($op, Vec4, l, r as f32),
+            (Value::Vec4(l), Value::Number(r)) => Value::Vec4(l $op (r as f32)),
             #[cfg(feature = "vector")]
-            (Value::Vec2(l), Value::Integer(r)) => scalar_vec_mul!($op, Vec2, l, r as f32),
+            (Value::Vec2(l), Value::Integer(r)) => Value::Vec2(l $op (r as f32)),
             #[cfg(feature = "vector")]
-            (Value::Vec3(l), Value::Integer(r)) => scalar_vec_mul!($op, Vec3, l, r as f32),
+            (Value::Vec3(l), Value::Integer(r)) => Value::Vec3(l $op (r as f32)),
             #[cfg(feature = "vector")]
-            (Value::Vec4(l), Value::Integer(r)) => scalar_vec_mul!($op, Vec4, l, r as f32),
+            (Value::Vec4(l), Value::Integer(r)) => Value::Vec4(l $op (r as f32)),
             (Value::Table(left), rr ) => {
                 table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left,  rr, $opp)
             },
@@ -1738,8 +1723,20 @@ impl<'gc> VM<'gc> {
                         (Value::Integer(left), Value::Number(right)) => {
                             self.push(ep, Value::Number(left as f64 / right))
                         }
-                        // Component-wise vector division and vector/scalar (scalar/vector
-                        // is intentionally unsupported).
+                        // Component-wise vector division and scalar broadcast (both
+                        // vector/scalar and scalar/vector).
+                        #[cfg(feature = "vector")]
+                        (Value::Number(l), Value::Vec2(r)) => self.push(ep, Value::Vec2(l as f32 / r)),
+                        #[cfg(feature = "vector")]
+                        (Value::Number(l), Value::Vec3(r)) => self.push(ep, Value::Vec3(l as f32 / r)),
+                        #[cfg(feature = "vector")]
+                        (Value::Number(l), Value::Vec4(r)) => self.push(ep, Value::Vec4(l as f32 / r)),
+                        #[cfg(feature = "vector")]
+                        (Value::Integer(l), Value::Vec2(r)) => self.push(ep, Value::Vec2(l as f32 / r)),
+                        #[cfg(feature = "vector")]
+                        (Value::Integer(l), Value::Vec3(r)) => self.push(ep, Value::Vec3(l as f32 / r)),
+                        #[cfg(feature = "vector")]
+                        (Value::Integer(l), Value::Vec4(r)) => self.push(ep, Value::Vec4(l as f32 / r)),
                         #[cfg(feature = "vector")]
                         (Value::Vec2(l), Value::Vec2(r)) => self.push(ep, Value::Vec2(l / r)),
                         #[cfg(feature = "vector")]

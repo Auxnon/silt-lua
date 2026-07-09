@@ -1,4 +1,5 @@
 //! glam-backed vector value type (`vector` feature). Run with `--features vector`.
+#![cfg(feature = "vector")]
 
 use silt_lua::gc_arena::Mutation;
 use silt_lua::glam;
@@ -52,19 +53,16 @@ fn component_wise_arithmetic() {
 }
 
 #[test]
-fn scalar_scaling() {
+fn scalar_broadcast_all_ops() {
+    // The scalar applies to every component (GLSL/glam style), both operand orders.
     assert_eq!(num("local c = vec3(1,2,3) * 2 return c.y"), 4.0);
     assert_eq!(num("local c = 2 * vec3(1,2,3) return c.z"), 6.0);
     assert_eq!(num("local c = vec3(2,4,6) / 2 return c.x"), 1.0);
-}
-
-#[test]
-fn scalar_add_is_rejected() {
-    // Only `*`/`/` mix scalars with vectors (per the feature's design).
-    match simple("return 1 + vec3(1,1,1)") {
-        ExVal::String(s) => assert!(s.contains("failed with:"), "expected error, got {s}"),
-        other => panic!("expected an error for scalar + vector, got {other:?}"),
-    }
+    assert_eq!(num("local c = 12 / vec3(2,3,4) return c.z"), 3.0);
+    assert_eq!(num("local c = 2 + vec3(1,1,1) return c.x"), 3.0);
+    assert_eq!(num("local c = vec3(1,2,3) + 10 return c.z"), 13.0);
+    assert_eq!(num("local c = 10 - vec3(1,2,3) return c.y"), 8.0);
+    assert_eq!(num("local c = vec3(5,6,7) - 1 return c.x"), 4.0);
 }
 
 #[test]

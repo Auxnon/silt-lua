@@ -76,6 +76,41 @@ fn deep_chain_read_write() {
     valeq!("local t = {a = {b = {}}} t.a.b.c = 5 return t.a.b.c", ExVal::Integer(5));
 }
 
+// Field/index access on a grouped or call-result expression — previously a parser
+// gap ("Invalid token placement"); `.`/`[` are now Pratt infix operators.
+
+#[test]
+fn field_access_on_grouped_expression() {
+    valeq!("local t = {x = 5} return (t).x", ExVal::Integer(5));
+    valeq!(r#"local t = {x = 5} return (t)["x"]"#, ExVal::Integer(5));
+}
+
+#[test]
+fn field_access_on_conditional_expression() {
+    valeq!(
+        "local t = {x = 1} local u = {x = 2} return (true and t or u).x",
+        ExVal::Integer(1)
+    );
+}
+
+#[test]
+fn call_result_field_and_call() {
+    // `f()` returns a table; index it, and also call a function field off a group.
+    valeq!(
+        "local function mk() return {v = 7} end return mk().v",
+        ExVal::Integer(7)
+    );
+    valeq!(
+        "local t = {f = function() return 9 end} return (t).f()",
+        ExVal::Integer(9)
+    );
+}
+
+#[test]
+fn chained_access_after_group() {
+    valeq!("local a = {b = {c = 42}} return (a).b.c", ExVal::Integer(42));
+}
+
 #[test]
 fn iteration_with_pairs() {
     valeq!(

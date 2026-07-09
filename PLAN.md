@@ -563,18 +563,25 @@ First-class immutable f32 vector value type for game/math scripting, replacing t
 - **`Value`/`ExVal`** gained `Vec2/Vec3/Vec4` variants (`src/value.rs`), extended across every
   match (conversions, both `Display`s, `to_error`, `type_name`→`"vec2/3/4"`, clone, `PartialEq`,
   `is_equal`). `ToLua`/`FromLua` for the wrappers AND raw `glam::Vec*` — the entity-interop glue.
-- **VM** (`src/lua.rs`): `binary_op!` gets vec·vec (`+ - *`) + scalar·vec (`*` only, via the
-  op-matching `scalar_vec_mul!` — `+`/`-` with scalars intentionally error); DIVIDE gets vec·vec
-  and vec/scalar; NEGATE gets unary `-`. `TABLE_GET` returns `.x/.y/.z/.w`; `METHOD_GET` dispatches
-  through a global `vec` table (mirrors the `string` library). Registered in `load_standard_library`.
-- **API:** `vec2/vec3/vec4(...)` constructors; `.x/.y/.z/.w`; `+ - * /`, unary `-`, `==`;
-  `:length() :length_squared() :dot() :normalize() :distance() :cross()` (`src/vector_lib.rs`).
-  `type(v)` → `"vec2"/"vec3"/"vec4"`.
+- **VM** (`src/lua.rs`): `binary_op!` gets vec·vec (`+ - *`) + scalar broadcast (`+ - *`, both
+  operand orders — the scalar applies to every component, GLSL/glam-style); DIVIDE gets vec·vec,
+  vec/scalar, and scalar/vec; NEGATE gets unary `-`. `TABLE_GET` returns `.x/.y/.z/.w`;
+  `METHOD_GET` dispatches through a global `vec` table (mirrors the `string` library). Registered
+  in `load_standard_library`.
+- **API:** `vec2/vec3/vec4(...)` constructors; `.x/.y/.z/.w`; `+ - * /` (component-wise and with
+  scalars in either order), unary `-`, `==`; `:length() :length_squared() :dot() :normalize()
+  :distance() :cross()` (`src/vector_lib.rs`). `type(v)` → `"vec2"/"vec3"/"vec4"`.
 - **Entity interop, no metamethod:** a userdata field getter returns a vector, a setter accepts
   one (`v: glam::Vec3`), so `entity.pos = entity.pos + vec3(0,10,0)` works. Tests: `tests/vectors.rs`.
 - **Out of scope (future):** swizzling (`v.xy`), `DVec` f64 family, `%`/`^`/`//`, matrices/quats,
-  flexible constructors (splat / `vec3(v2, z)`). NOTE: `(expr).field` / `expr():field` (field
-  access on a grouped/call result) is a *pre-existing* parser gap — assign to a local first.
+  flexible constructors (splat / `vec3(v2, z)`).
+
+**Parser: field/index access on grouped/call results (2026-07).** `.`/`[` are now Pratt infix
+operators (`dot_infix`/`index_infix`, `Call` precedence, `src/compiler.rs`), so `(a + b).x`,
+`(t)["k"]`, `f().field`, and `(cond and t or u).x` parse — previously "Invalid token placement"
+(field access lived only inside `named_variable`'s eager loop for bare variables, which still
+handles `t.a.b`). Grouped/call results are rvalues, so `(t).x = 5` correctly errors. Tests:
+`tests/tables.rs` (grouped/conditional/call-result/chained access).
 
 ## 4. Known deviations (documented, lower priority)
 

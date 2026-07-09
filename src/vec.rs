@@ -75,7 +75,20 @@ macro_rules! vec_wrapper {
                 Self(-self.0)
             }
         }
-        // Scalar multiply/divide, both operand orders.
+        // Scalar broadcast for all four ops, both operand orders (GLSL/glam style:
+        // the scalar applies to every component).
+        impl Add<f32> for $name {
+            type Output = Self;
+            fn add(self, s: f32) -> Self {
+                Self(self.0 + s)
+            }
+        }
+        impl Sub<f32> for $name {
+            type Output = Self;
+            fn sub(self, s: f32) -> Self {
+                Self(self.0 - s)
+            }
+        }
         impl Mul<f32> for $name {
             type Output = Self;
             fn mul(self, s: f32) -> Self {
@@ -88,10 +101,28 @@ macro_rules! vec_wrapper {
                 Self(self.0 / s)
             }
         }
+        impl Add<$name> for f32 {
+            type Output = $name;
+            fn add(self, v: $name) -> $name {
+                $name(self + v.0)
+            }
+        }
+        impl Sub<$name> for f32 {
+            type Output = $name;
+            fn sub(self, v: $name) -> $name {
+                $name(self - v.0)
+            }
+        }
         impl Mul<$name> for f32 {
             type Output = $name;
             fn mul(self, v: $name) -> $name {
                 $name(self * v.0)
+            }
+        }
+        impl Div<$name> for f32 {
+            type Output = $name;
+            fn div(self, v: $name) -> $name {
+                $name(self / v.0)
             }
         }
     };
