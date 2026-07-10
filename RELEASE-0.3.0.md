@@ -107,7 +107,8 @@ Immutable f32 `Vec2`/`Vec3`/`Vec4` backed by glam.
 - **Fixes**: `elseif` parsing; grouping operator-order; string comparison + escapes;
   `if … end` edge cases; table-set that didn't set; method-call chaining with `self`;
   upvalue/off-by-one issues from the vararg work; `for`-loop params treated as single
-  expressions (not multi-value); vararg offsets and trailing values.
+  expressions (not multi-value); a non-literal numeric-`for` start (`for i = #a, 5`) whose
+  separator comma was swallowed by multi-assign detection; vararg offsets and trailing values.
 - **Embedding fixes**: `u64`/`usize` ↔ `Value` conversions used swapped/overflowing bounds;
   f32 clamping; userdata colon self-calls `ud:method(param)`; `UserDataWrapper` bounds; a
   table getter/setter that leaked `self` onto the stack; `call_fn`/`call_with_params` now

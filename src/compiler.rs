@@ -2420,6 +2420,11 @@ fn for_statement<'c>(
         expect_token!(this it Assign);
         add_local_placeholder(this)?; // reserve end value with placeholder
         add_local_placeholder(this)?; // reserve step value with placeholder
+        // The `,` separating start/limit/step is the loop's own, NOT a multi-assign
+        // target list — disable multivar detection so `named_variable` (a variable or
+        // `#a` start) doesn't gobble the comma. Restored before the body.
+        let prev_multivar = this.can_multivar_set;
+        this.set_can_multivar_set(false);
         expression_single(this, mc, f, it, false)?; // expression for iterator
         expect_token!(this it Comma);
         expression_single(this, mc, f, it, false)?; // expression for end value
@@ -2433,6 +2438,7 @@ fn for_statement<'c>(
         } else {
             this.constant_at(f, Value::Integer(1))
         };
+        this.set_can_multivar_set(prev_multivar);
         let for_start = this.emit_index(f, OpCode::FOR_NUMERIC(0));
         // this.emit_at(OpCode::GET_LOCAL { index: iterator });
         // let loop_start = this.get_chunk_size();
