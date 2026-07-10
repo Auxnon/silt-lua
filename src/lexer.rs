@@ -91,15 +91,26 @@ impl<'c> Lexer<'c> {
     }
 
     fn eat(&mut self) {
-        self.current += 1;
-        self.column += 1;
-        self.iterator.next();
+        // `current`/`start_token` are BYTE offsets (they index `source`, a &str,
+        // in the slicing below), so advance by the char's UTF-8 width. `column`
+        // is a per-line CHARACTER counter for error display. Conflating the two
+        // (advancing `current` by 1 per char) desynced them on any multi-byte
+        // char, mis-slicing every following token.
+        if let Some(c) = self.iterator.next() {
+            self.current += c.len_utf8();
+            self.column += 1;
+        }
     }
 
     fn eat_out(&mut self) -> Option<char> {
-        self.current += 1;
-        self.column += 1;
-        self.iterator.next()
+        match self.iterator.next() {
+            Some(c) => {
+                self.current += c.len_utf8();
+                self.column += 1;
+                Some(c)
+            }
+            None => None,
+        }
     }
 
     fn peek(&mut self) -> Option<&char> {
@@ -109,7 +120,9 @@ impl<'c> Lexer<'c> {
     fn _error(&mut self, code: SiltError) -> TokenTripleResult {
         Err(ErrorTuple {
             code,
-            location: (self.line_number, self.start_token),
+            // Report the per-line column (matching `_send`), not `start_token`
+            // (an absolute byte offset — which read like "everything on one line").
+            location: (self.line_number, self.column_start + 1),
         })
     }
 
