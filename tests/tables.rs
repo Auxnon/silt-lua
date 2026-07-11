@@ -76,6 +76,28 @@ fn deep_chain_read_write() {
     valeq!("local t = {a = {b = {}}} t.a.b.c = 5 return t.a.b.c", ExVal::Integer(5));
 }
 
+// Table constructor separators: `,` and `;` are interchangeable, and a trailing one is
+// allowed. Regression: a trailing separator errored ("Invalid token placement: }").
+
+#[test]
+fn trailing_comma_in_constructor() {
+    valeq!("local a = {1, 2, 3,} return a[3]", ExVal::Integer(3));
+    valeq!("local a = {1, 2, 3, 4,} return #a", ExVal::Integer(4));
+    valeq!("local a = {x = 1, y = 2,} return a.y", ExVal::Integer(2));
+}
+
+#[test]
+fn trailing_comma_in_nested_constructor() {
+    valeq!("local a = {{1, 2, 3}, {4, 5, 6},} return a[2][1]", ExVal::Integer(4));
+}
+
+#[test]
+fn semicolon_separators() {
+    valeq!("local a = {1; 2; 3} return a[2]", ExVal::Integer(2));
+    // `;` and `,` may be mixed, including a trailing one.
+    valeq!("local a = {1, 2; 3,} return #a", ExVal::Integer(3));
+}
+
 // Field/index access on a grouped or call-result expression — previously a parser
 // gap ("Invalid token placement"); `.`/`[` are now Pratt infix operators.
 

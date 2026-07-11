@@ -3644,15 +3644,15 @@ fn tabulate<'c>(
             }
 
             match this.peek(it)? {
-                Token::Comma => {
+                // `,` and `;` are interchangeable field separators (Lua allows both). A
+                // trailing separator is legal, so after eating one we stop if the next
+                // token closes the table: `{1, 2, 3,}` / `{1; 2; 3}`.
+                Token::Comma | Token::SemiColon => {
                     this.eat(it);
-                    true
+                    !matches!(this.peek(it)?, Token::CloseBrace)
                 }
                 Token::CloseBrace => false,
-                a => {
-                    println!("---------------------------------------here? 2 {}", a);
-                    return Err(this.error_at(SiltError::TableExpectedCommaOrCloseBrace));
-                }
+                _ => return Err(this.error_at(SiltError::TableExpectedCommaOrCloseBrace)),
             }
         } {
             // if args >= 255 {
@@ -3665,7 +3665,6 @@ fn tabulate<'c>(
         this.set_arg_mode(false);
     }
 
-    println!("here? 1");
     expect_token!(
         this,
         it,

@@ -34,6 +34,8 @@ defensible subset of Lua 5.3/5.4 (coroutines still out of scope).
 - **Static typing** (`typing`, off by default): Phase 1 parses and tracks Luau-style
   annotations (no checking yet).
 - **Field/index access on grouped & call results**: `(a + b).x`, `(t)["k"]`, `f().field`.
+- **Table constructors** accept a trailing separator and `;` as a field separator:
+  `{1, 2, 3,}`, `{1; 2; 3}`, `{{1,2},{3,4},}`.
 
 ## Standard library
 
