@@ -529,6 +529,41 @@ impl<'c> Lexer<'c> {
                                 // flag
                                 self.eat();
                                 self.get_flag()
+                            } else if self.peek() == Some(&'[') {
+                                self.eat(); // first '['
+                                if self.peek() == Some(&'[') {
+                                    // `--[[ … ]]` block comment: can be inline (code after
+                                    // it on the same line) or span multiple lines. Consume
+                                    // to the closing `]]` (mirrors `multi_line_string`).
+                                    self.eat(); // second '['
+                                    loop {
+                                        match self.peek() {
+                                            Some('\n') => {
+                                                self.new_line();
+                                                self.eat();
+                                            }
+                                            Some(']') => {
+                                                self.eat();
+                                                if self.peek() == Some(&']') {
+                                                    self.eat();
+                                                    break;
+                                                }
+                                            }
+                                            Some(_) => self.eat(),
+                                            None => break, // unterminated → treat rest as comment
+                                        }
+                                    }
+                                    self.send(Token::Comment)
+                                } else {
+                                    // `--[` not a block opener: an ordinary line comment.
+                                    while self.current < self.end {
+                                        if let Some('\n') = self.eat_out() {
+                                            self.new_line();
+                                            break;
+                                        }
+                                    }
+                                    self.send(Token::Comment)
+                                }
                             } else {
                                 while self.current < self.end {
                                     if let Some('\n') = self.eat_out() {
@@ -536,11 +571,7 @@ impl<'c> Lexer<'c> {
                                         break;
                                     }
                                 }
-
-                                // self.current-=1;
-                                let t = self.send(Token::Comment);
-                                // self.current+=1;
-                                t
+                                self.send(Token::Comment)
                             }
                         }
                         #[cfg(feature = "compound-assignment")]

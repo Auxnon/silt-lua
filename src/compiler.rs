@@ -592,7 +592,20 @@ impl Compiler {
     }
 
     /** Tokens, not stack. Pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
+    /// Discard any pending `Comment` tokens from the parse stream. Comments are real
+    /// lexer tokens (the LSP's separate lexer pass uses them for highlighting), but they
+    /// are transparent to parsing — skipping them here makes every accessor comment-aware
+    /// so a comment can appear anywhere (mid-expression, inside a table constructor, …),
+    /// not just at a statement boundary.
+    #[inline]
+    fn skip_comments(iter: &mut Peekable<Lexer>) {
+        while matches!(iter.peek(), Some(Ok((Token::Comment, _)))) {
+            iter.next();
+        }
+    }
+
     fn pop(&mut self, iter: &mut Peekable<Lexer>) -> (Result<Token, ErrorTuple>, TokenCell) {
+        Self::skip_comments(iter);
         self.current_index += 1;
         match iter.next() {
             Some(Ok(t)) => {
@@ -631,6 +644,7 @@ impl Compiler {
 
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
     fn eat(&mut self, iter: &mut Peekable<Lexer>) {
+        Self::skip_comments(iter);
         self.current_index += 1;
         let _t = iter.next();
         #[cfg(feature = "dev-out")]
@@ -645,6 +659,7 @@ impl Compiler {
 
     /** pop and store on to self as current token tuple */
     fn store(&mut self, iter: &mut Peekable<Lexer>) {
+        Self::skip_comments(iter);
         self.current_index += 1;
         (self.current, self.current_location) = match iter.next() {
             Some(Ok(t)) => (Ok(t.0), (t.1.line, t.1.col)),
@@ -722,6 +737,7 @@ impl Compiler {
 
     /** return the peeked token result */
     fn peek<'c>(&mut self, iter: &'c mut Peekable<Lexer>) -> Result<&'c Token, ErrorTuple> {
+        Self::skip_comments(iter);
         match iter.peek() {
             Some(Ok(t)) => {
                 // devout!("peek {}", t.0);
@@ -743,6 +759,7 @@ impl Compiler {
         &mut self,
         iter: &'c mut Peekable<Lexer>,
     ) -> Result<&'c (Token, TokenTriple), ErrorTuple> {
+        Self::skip_comments(iter);
         match iter.peek() {
             Some(Ok(t)) => {
                 // devout!("peek {}", t.0);

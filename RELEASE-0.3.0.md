@@ -36,6 +36,9 @@ defensible subset of Lua 5.3/5.4 (coroutines still out of scope).
 - **Field/index access on grouped & call results**: `(a + b).x`, `(t)["k"]`, `f().field`.
 - **Table constructors** accept a trailing separator and `;` as a field separator:
   `{1, 2, 3,}`, `{1; 2; 3}`, `{{1,2},{3,4},}`.
+- **Comments anywhere**: line comments (`--`) are accepted mid-expression and inside table
+  constructors, and `--[[ … ]]` **block comments** (inline or multi-line) are now lexed —
+  `{1, --[[x]] 2}`, `f(a, --[[n]] b)`, `1 + --[[k]] 2`.
 
 ## Standard library
 
@@ -118,7 +121,12 @@ Immutable f32 `Vec2`/`Vec3`/`Vec4` backed by glam.
   f32 clamping; userdata colon self-calls `ud:method(param)`; `UserDataWrapper` bounds; a
   table getter/setter that leaked `self` onto the stack; `call_fn`/`call_with_params` now
   deliver runtime args to a loaded chunk as `...`.
-- **Lexer**: tracked char counts but byte-sliced the source (multibyte-safe now).
+- **Lexer**: tracked char counts but byte-sliced the source (multibyte-safe now); `--[[ … ]]`
+  block comments are now recognized (previously `--[[` was read as a line comment to EOL,
+  swallowing the rest of the line, e.g. everything after `{1, --[[x]] 2` up to EOF).
+- **Comments in expressions/tables**: the parser's token accessors now skip `Token::Comment`,
+  so a comment between table fields or mid-expression no longer errors with "Invalid token
+  placement" (LSP highlighting is unaffected — it lexes on a separate pass).
 - **wasm** build compatibility corrections.
 
 ## Feature flags
