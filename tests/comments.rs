@@ -71,3 +71,38 @@ fn dash_bracket_is_not_a_block_comment() {
 fn plain_line_comment_still_works() {
     valeq!("local a = 5 -- normal\nreturn a", ExVal::Integer(5));
 }
+
+// --- block bodies that contain only comments -------------------------------
+// Regression: `block` peeks the raw iterator (to read `end`'s line for hotswap) and
+// didn't skip comments, so a function body or `do` block of only comments fell through
+// to `declaration` and tripped on the `end` ("Invalid token placement: end").
+
+#[test]
+fn function_body_only_line_comment() {
+    valeq!(
+        "local f = function() -- 1\nend f() return 0",
+        ExVal::Integer(0)
+    );
+}
+
+#[test]
+fn function_body_only_block_comment() {
+    valeq!(
+        "local f = function() --[[ x ]] end f() return 0",
+        ExVal::Integer(0)
+    );
+}
+
+#[test]
+fn function_body_only_mixed_comments() {
+    valeq!(
+        "local f = function() -- 1\n-- 2\n--[[ 3 ]]\nend f() return 0",
+        ExVal::Integer(0)
+    );
+}
+
+#[test]
+fn do_block_only_comment() {
+    valeq!("do -- c\nend return 0", ExVal::Integer(0));
+    valeq!("do --[[x]] end return 0", ExVal::Integer(0));
+}

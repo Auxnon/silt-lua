@@ -2170,6 +2170,12 @@ fn block<'c>(
                 this.eat(it);
                 break;
             }
+            Some(Ok((Token::Comment, _))) => {
+                // This loop peeks the raw iterator (to read `end`'s line for hotswap),
+                // so it must skip comments itself — otherwise a body of only comments
+                // falls through to `declaration` and trips on the `end`.
+                it.next();
+            }
             Some(Ok((Token::EOF, _))) | None => {
                 return Err(this.error_at(SiltError::UnterminatedBlock));
             }
