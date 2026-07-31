@@ -50,6 +50,44 @@ fn negative_index() {
     valeq!("local t = {} t[-1] = 5 return t[-1]", ExVal::Integer(5));
 }
 
+// --- key hashing ------------------------------------------------------------
+// Regression: `Hash for Value` hashed only the enum discriminant, so every key of a
+// given type (all integers, all strings, …) collided into one bucket and `HashMap::get`
+// degraded to an O(n) linear scan — every table access was O(table size). Now the
+// payload is hashed. These assert correctness across key types and sizes; the payoff is
+// performance (a 1000-entry table read went ~772ns → ~50ns, ~16x on array-heavy code).
+
+#[test]
+fn many_integer_keys_resolve() {
+    valeq!(
+        "local t = {} for i=1,1000 do t[i] = i*2 end return t[1] + t[500] + t[1000]",
+        ExVal::Integer(3002) // 2 + 1000 + 2000
+    );
+}
+
+#[test]
+fn many_string_keys_resolve() {
+    valeq!(
+        r#"local t = {} for i=1,200 do t["k"..i] = i end return t.k1 + t.k100 + t.k200"#,
+        ExVal::Integer(301)
+    );
+}
+
+#[test]
+fn assorted_key_types_resolve() {
+    // negative, zero, and non-integer float keys all coexist
+    valeq!("local t={} t[-5]=9 t[0]=8 t[1.5]=7 return t[-5]+t[0]+t[1.5]", ExVal::Integer(24));
+    // bool keys
+    valeq!("local t={[true]=1,[false]=2} return t[true]+t[false]", ExVal::Integer(3));
+}
+
+#[test]
+fn signed_zero_is_one_key() {
+    // 0.0 == -0.0 in PartialEq, so they must hash equal and address the same slot.
+    valeq!("local t={} t[0.0]=1 t[-0.0]=2 return t[0.0]", ExVal::Integer(2));
+    valeq!("local t={} t[0.0]=1 t[-0.0]=2 return t[-0.0]", ExVal::Integer(2));
+}
+
 // =====================================================================================
 // BROKEN — see PLAN.md
 // =====================================================================================

@@ -97,6 +97,12 @@ Immutable f32 `Vec2`/`Vec3`/`Vec4` backed by glam.
 
 ## Performance
 
+- **Table access is O(1) again.** `Hash for Value` hashed only the enum discriminant, so
+  every key of a given type (all integers, all strings, …) collided into a single hash
+  bucket and `HashMap::get` degraded to an O(n) linear scan — every table read/write was
+  O(table size). Now the key payload is hashed (reference types by Gc identity, staying
+  consistent with `PartialEq`). A 1000-entry table read dropped from ~772 ns to ~50 ns and
+  is now flat regardless of table size; an array-read-bound loop went **~16× faster**.
 - Release profile tuned for speed; hot helpers inlined; adjacent stack pops merged.
 - Numeric-for loop control fused into a single tail `FORLOOP` opcode.
 - Assignment setters consume their value (dropped a trailing `POP` and a clone).

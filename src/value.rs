@@ -524,7 +524,36 @@ impl Clone for Value<'_> {
 
 impl Hash for Value<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash the payload, not just the discriminant. The old impl hashed only
+        // `discriminant(self)`, so every `Integer`/`String`/etc. key collided into a
+        // single bucket and `HashMap::get` degraded to an O(n) linear scan — making
+        // every table access O(table size). This must stay consistent with `PartialEq`
+        // (a == b ⇒ hash(a) == hash(b)); reference types hash by Gc identity to match
+        // the `ptr_eq` comparisons.
         core::mem::discriminant(self).hash(state);
+        match self {
+            Value::Integer(i) => i.hash(state),
+            Value::Number(n) => {
+                // PartialEq compares floats with `==`, where 0.0 == -0.0 but their bit
+                // patterns differ — normalize zero so equal keys hash equal.
+                if *n == 0.0 {
+                    0u64.hash(state)
+                } else {
+                    n.to_bits().hash(state)
+                }
+            }
+            Value::Bool(b) => b.hash(state),
+            Value::Infinity(b) => b.hash(state),
+            Value::String(s) => s.hash(state),
+            Value::Table(t) => (Gc::as_ptr(*t) as usize).hash(state),
+            Value::Function(f) => (Gc::as_ptr(*f) as usize).hash(state),
+            Value::Closure(c) => (Gc::as_ptr(*c) as usize).hash(state),
+            Value::NativeFunction(nf) => (Gc::as_ptr(*nf) as usize).hash(state),
+            Value::UserData(u) => (Gc::as_ptr(*u) as usize).hash(state),
+            // Nil (and vectors, which are exotic as keys) carry no extra key state
+            // beyond the discriminant.
+            _ => {}
+        }
     }
 }
 
