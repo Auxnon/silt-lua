@@ -3462,6 +3462,16 @@ impl<'gc> VM<'gc> {
         self.register_native_function_to(mc, &mut string, "byte", crate::standard::string_byte);
         self.register_native_function_to(mc, &mut string, "char", crate::standard::string_char);
         self.register_native_function_to(mc, &mut string, "format", crate::standard::string_format);
+        // Pattern-matching functions return a variable number of values, so they use the
+        // multi-return registration path.
+        self.register_native_multi_function_to(mc, &mut string, "find", crate::standard::string_find);
+        self.register_native_multi_function_to(
+            mc,
+            &mut string,
+            "match",
+            crate::standard::string_match,
+        );
+        self.register_native_multi_function_to(mc, &mut string, "gsub", crate::standard::string_gsub);
         let string_t = self.wrap_table(mc, string);
         self.globals.borrow_mut(mc).set("string", string_t);
 

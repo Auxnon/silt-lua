@@ -52,6 +52,12 @@ defensible subset of Lua 5.3/5.4 (coroutines still out of scope).
 - **`string`**: `len`, `sub`, `upper`, `lower`, `rep`, `reverse`, `byte`, `char`, `format`,
   plus method-call sugar (`s:upper()`) via the string metatable, and decoded escape
   sequences. String delimiters are no longer included in the value.
+- **`string` pattern matching**: `find`, `match`, and `gsub` with a full Lua pattern engine
+  (character classes `%a %d %s %w …` and complements, sets `[...]`, anchors `^ $`, the
+  quantifiers `* + - ?`, captures incl. position captures `()`, `%b`, `%f`, back-references
+  `%1`–`%9`). `gsub` supports string (`%0`–`%9`), table, and function replacements. Verified
+  byte-identical to reference Lua across a differential suite. (`gmatch` — the stateful
+  iterator form — is the remaining follow-up.)
 
 ## Metatables & userdata
 

@@ -4,6 +4,7 @@ mod compiler;
 pub mod error;
 mod function;
 mod lexer;
+pub(crate) mod lua_pattern;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod lua;

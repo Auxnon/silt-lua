@@ -954,3 +954,304 @@ fn pad_number(sign: &str, mag: &str, width: usize, left: bool, zero: bool) -> St
         format!("{}{}{}", " ".repeat(pad), sign, mag)
     }
 }
+
+// =====================================================================================
+// Pattern-matching string functions: find / match / gsub
+// (Lua patterns implemented in `crate::lua_pattern`.)
+// =====================================================================================
+
+use crate::lua_pattern::{self, Capture};
+
+/// Convert a resolved capture into a Lua value (substring or 1-based position).
+fn cap_to_value<'lua>(cap: &Capture, bytes: &[u8]) -> Value<'lua> {
+    match cap {
+        Capture::Str(a, b) => {
+            Value::String(String::from_utf8_lossy(&bytes[*a..*b]).into_owned())
+        }
+        Capture::Pos(p) => Value::Integer(*p as i64),
+    }
+}
+
+/// Resolve Lua's 1-based, possibly-negative `init` argument to a 0-based byte offset.
+/// Returns `None` when `init` is past the end (caller yields no match).
+fn resolve_init(init: i64, len: i64) -> Option<usize> {
+    let i = if init < 0 {
+        (len + init + 1).max(1)
+    } else if init == 0 {
+        1
+    } else {
+        init
+    };
+    if i > len + 1 {
+        None
+    } else {
+        Some((i - 1) as usize)
+    }
+}
+
+/// `string.find(s, pattern [, init [, plain]])` → start, end, captures… | nil
+pub fn string_find<'lua>(
+    _: &mut VM<'lua>,
+    _: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let s = args
+        .first()
+        .ok_or_else(|| SiltError::Custom("bad argument #1 to 'find' (string expected)".into()))?
+        .coerce_string();
+    let pat = args
+        .get(1)
+        .ok_or_else(|| SiltError::Custom("bad argument #2 to 'find' (string expected)".into()))?
+        .coerce_string();
+    let bytes = s.as_bytes();
+    let pat_bytes = pat.as_bytes();
+    let len = bytes.len() as i64;
+    let init = args.get(2).map(|v| v.coerce_int()).unwrap_or(1);
+    let start = match resolve_init(init, len) {
+        Some(s) => s,
+        None => return Ok(vec![Value::Nil]),
+    };
+    let plain = matches!(args.get(3), Some(Value::Bool(true)));
+
+    if plain {
+        // literal substring search — magic characters are inert
+        if pat_bytes.is_empty() {
+            return Ok(vec![
+                Value::Integer((start + 1) as i64),
+                Value::Integer(start as i64),
+            ]);
+        }
+        if let Some(pos) = bytes[start..]
+            .windows(pat_bytes.len())
+            .position(|w| w == pat_bytes)
+        {
+            let mstart = start + pos;
+            return Ok(vec![
+                Value::Integer((mstart + 1) as i64),
+                Value::Integer((mstart + pat_bytes.len()) as i64),
+            ]);
+        }
+        return Ok(vec![Value::Nil]);
+    }
+
+    match lua_pattern::find(bytes, pat_bytes, start)? {
+        Some(m) => {
+            let mut out = Vec::with_capacity(2 + m.caps.len());
+            out.push(Value::Integer((m.start + 1) as i64));
+            out.push(Value::Integer(m.end as i64));
+            for c in &m.caps {
+                out.push(cap_to_value(c, bytes));
+            }
+            Ok(out)
+        }
+        None => Ok(vec![Value::Nil]),
+    }
+}
+
+/// `string.match(s, pattern [, init])` → captures… (or whole match) | nil
+pub fn string_match<'lua>(
+    _: &mut VM<'lua>,
+    _: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let s = args
+        .first()
+        .ok_or_else(|| SiltError::Custom("bad argument #1 to 'match' (string expected)".into()))?
+        .coerce_string();
+    let pat = args
+        .get(1)
+        .ok_or_else(|| SiltError::Custom("bad argument #2 to 'match' (string expected)".into()))?
+        .coerce_string();
+    let bytes = s.as_bytes();
+    let len = bytes.len() as i64;
+    let init = args.get(2).map(|v| v.coerce_int()).unwrap_or(1);
+    let start = match resolve_init(init, len) {
+        Some(s) => s,
+        None => return Ok(vec![Value::Nil]),
+    };
+    match lua_pattern::find(bytes, pat.as_bytes(), start)? {
+        Some(m) => {
+            if m.caps.is_empty() {
+                Ok(vec![Value::String(
+                    String::from_utf8_lossy(&bytes[m.start..m.end]).into_owned(),
+                )])
+            } else {
+                Ok(m.caps.iter().map(|c| cap_to_value(c, bytes)).collect())
+            }
+        }
+        None => Ok(vec![Value::Nil]),
+    }
+}
+
+/// The capture `idx` (0-based) as bytes, following Lua's `push_onecapture`: an out-of-range
+/// index 0 means "whole match" (patterns with no explicit captures), anything else errors.
+fn one_capture(idx: usize, m: &lua_pattern::MatchResult, bytes: &[u8]) -> Result<Vec<u8>, SiltError> {
+    if idx >= m.caps.len() {
+        if idx == 0 {
+            Ok(bytes[m.start..m.end].to_vec())
+        } else {
+            Err(SiltError::Custom(format!("invalid capture index %{}", idx + 1)))
+        }
+    } else {
+        match &m.caps[idx] {
+            Capture::Str(a, b) => Ok(bytes[*a..*b].to_vec()),
+            Capture::Pos(p) => Ok(p.to_string().into_bytes()),
+        }
+    }
+}
+
+/// `string.gsub(s, pattern, repl [, n])` → result, count.
+/// `repl` may be a string (with `%0`–`%9` back-refs), a table (keyed by the first capture),
+/// or a function (called with the captures; its first return replaces the match).
+pub fn string_gsub<'lua>(
+    vm: &mut VM<'lua>,
+    mc: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let s = args
+        .first()
+        .ok_or_else(|| SiltError::Custom("bad argument #1 to 'gsub' (string expected)".into()))?
+        .coerce_string();
+    let pat = args
+        .get(1)
+        .ok_or_else(|| SiltError::Custom("bad argument #2 to 'gsub' (string expected)".into()))?
+        .coerce_string();
+    let repl = args.get(2).cloned().unwrap_or(Value::Nil);
+    let max_n = args.get(3).and_then(|v| match v {
+        Value::Nil => None,
+        other => Some(other.coerce_int()),
+    });
+
+    let bytes = s.as_bytes();
+    let pat_bytes = pat.as_bytes();
+    let anchor = pat_bytes.first() == Some(&b'^');
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut count: i64 = 0;
+    let mut s_idx = 0usize;
+
+    loop {
+        if let Some(n) = max_n {
+            if count >= n {
+                break;
+            }
+        }
+        match lua_pattern::match_at(bytes, pat_bytes, s_idx)? {
+            Some(m) => {
+                count += 1;
+                append_replacement(&mut out, &m, bytes, &repl, vm, mc)?;
+                if m.end > s_idx {
+                    s_idx = m.end;
+                } else {
+                    // empty match: emit one source byte and step past it
+                    if s_idx < bytes.len() {
+                        out.push(bytes[s_idx]);
+                    }
+                    s_idx += 1;
+                }
+            }
+            None => {
+                if s_idx < bytes.len() {
+                    out.push(bytes[s_idx]);
+                    s_idx += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        if anchor || s_idx > bytes.len() {
+            break;
+        }
+    }
+    if s_idx < bytes.len() {
+        out.extend_from_slice(&bytes[s_idx..]);
+    }
+
+    Ok(vec![
+        Value::String(String::from_utf8_lossy(&out).into_owned()),
+        Value::Integer(count),
+    ])
+}
+
+/// Append the replacement for one match `m` to `out`, per the `repl` type.
+fn append_replacement<'lua>(
+    out: &mut Vec<u8>,
+    m: &lua_pattern::MatchResult,
+    bytes: &[u8],
+    repl: &Value<'lua>,
+    vm: &mut VM<'lua>,
+    mc: &Mutation<'lua>,
+) -> Result<(), SiltError> {
+    let whole = &bytes[m.start..m.end];
+    match repl {
+        // --- string replacement with %0..%9 back-references ---
+        Value::String(_) | Value::Integer(_) | Value::Number(_) => {
+            let r = repl.coerce_string();
+            let rb = r.as_bytes();
+            let mut i = 0;
+            while i < rb.len() {
+                if rb[i] == b'%' && i + 1 < rb.len() {
+                    let c = rb[i + 1];
+                    if c == b'%' {
+                        out.push(b'%');
+                    } else if c == b'0' {
+                        out.extend_from_slice(whole);
+                    } else if c.is_ascii_digit() {
+                        out.extend_from_slice(&one_capture((c - b'1') as usize, m, bytes)?);
+                    } else {
+                        return Err(SiltError::Custom(
+                            "invalid use of '%' in replacement string".into(),
+                        ));
+                    }
+                    i += 2;
+                } else {
+                    out.push(rb[i]);
+                    i += 1;
+                }
+            }
+        }
+        // --- table replacement: key = first capture (or whole match) ---
+        Value::Table(t) => {
+            let key = one_capture(0, m, bytes)?;
+            let key = Value::String(String::from_utf8_lossy(&key).into_owned());
+            let v = t.borrow().get_value(&key);
+            append_repl_result(out, v, whole)?;
+        }
+        // --- function replacement: call with the captures ---
+        Value::Closure(_) | Value::Function(_) | Value::NativeFunction(_) => {
+            let call_args: Vec<Value<'lua>> = if m.caps.is_empty() {
+                vec![Value::String(String::from_utf8_lossy(whole).into_owned())]
+            } else {
+                m.caps.iter().map(|c| cap_to_value(c, bytes)).collect()
+            };
+            let v = vm.call_protected(mc, repl.clone(), &call_args)?;
+            append_repl_result(out, v, whole)?;
+        }
+        _ => {
+            return Err(SiltError::Custom(
+                "bad argument #3 to 'gsub' (string/function/table expected)".into(),
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// A table/function replacement result: nil or false keeps the original match; a string or
+/// number is substituted; anything else is an error.
+fn append_repl_result<'lua>(
+    out: &mut Vec<u8>,
+    v: Value<'lua>,
+    whole: &[u8],
+) -> Result<(), SiltError> {
+    match v {
+        Value::Nil | Value::Bool(false) => out.extend_from_slice(whole),
+        Value::String(_) | Value::Integer(_) | Value::Number(_) => {
+            out.extend_from_slice(v.coerce_string().as_bytes())
+        }
+        _ => {
+            return Err(SiltError::Custom(
+                "invalid replacement value (a string or number was expected)".into(),
+            ))
+        }
+    }
+    Ok(())
+}
