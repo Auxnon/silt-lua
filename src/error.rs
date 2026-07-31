@@ -111,10 +111,12 @@ pub enum ValueTypes {
     Closure,
     Table,
     UserData,
-    #[cfg(feature = "vectors")]
-    Vec3,
-    #[cfg(feature = "vectors")]
+    #[cfg(feature = "vector")]
     Vec2,
+    #[cfg(feature = "vector")]
+    Vec3,
+    #[cfg(feature = "vector")]
+    Vec4,
 }
 
 #[derive(Clone)]
@@ -302,10 +304,12 @@ impl std::fmt::Display for ValueTypes {
             ValueTypes::Closure => write!(f, "(function)"),
             ValueTypes::Table => write!(f, "table"),
             ValueTypes::UserData => write!(f, "userdata"),
-            #[cfg(feature = "vectors")]
-            ValueTypes::Vec3 => write!(f, "vec3"),
-            #[cfg(feature = "vectors")]
+            #[cfg(feature = "vector")]
             ValueTypes::Vec2 => write!(f, "vec2"),
+            #[cfg(feature = "vector")]
+            ValueTypes::Vec3 => write!(f, "vec3"),
+            #[cfg(feature = "vector")]
+            ValueTypes::Vec4 => write!(f, "vec4"),
         }
     }
 }

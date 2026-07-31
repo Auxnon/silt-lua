@@ -85,7 +85,10 @@ lsp = []
 # JSON-RPC-over-stdio language server (for Neovim etc.) built on `lsp`. Adds serde_json
 # only for the wire transport; `silt lsp` launches it. Off by default.
 lsp-server = ["lsp", "dep:serde_json"]
-vectors = []
+# First-class 2D/3D/4D vector value type backed by glam (f32), immutable. Adds
+# `vec2`/`vec3`/`vec4` constructors, `.x/.y/.z/.w` fields, operators, and a `vec`
+# method library. Off by default — opt-in for game/math embedders.
+vector = ["dep:glam"]
 dev-out = []
 
 [dependencies]
@@ -95,6 +98,7 @@ serde = { version = "1.0.219", features = ["derive"], optional=true }
 serde-wasm-bindgen = {version="0.6.5", optional=true}
 serde_json = { version = "1.0.150", optional = true }
 gc-arena = {version= "0.5.3", features=["allocator-api2"] }
+glam = { version = "0.29", optional = true }
 string-interner = "0.18.0"
 colored = "3.0.0"
 lending-iterator = "0.1.7"

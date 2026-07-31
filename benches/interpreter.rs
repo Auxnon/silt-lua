@@ -64,12 +64,37 @@ const TABLE_OPS: &str = r#"
     return sum
 "#;
 
+// Native-call-heavy: every iteration calls a Rust native function. This is the path
+// the marshalling optimizations target (args `popn` Vec + return path). Single-return.
+const NATIVE_CALL: &str = r#"
+    local f = math.floor
+    local s = 0
+    for i = 1, 1000000 do
+        s = s + f(i + 0.5)
+    end
+    return s
+"#;
+
+// Multi-return native call every iteration (math.modf returns two values) — stresses
+// the `NativeReturn::Multi(Vec)` allocation specifically.
+const NATIVE_MULTI: &str = r#"
+    local modf = math.modf
+    local s = 0
+    for i = 1, 1000000 do
+        local a, b = modf(i + 0.25)
+        s = s + a + b
+    end
+    return s
+"#;
+
 fn benches(c: &mut Criterion) {
     c.bench_function("for_loop_1e6", |b| b.iter(|| run(FOR_LOOP)));
     c.bench_function("while_loop_1e6", |b| b.iter(|| run(WHILE_LOOP)));
     c.bench_function("fib_28_recursion", |b| b.iter(|| run(FIB)));
     c.bench_function("string_concat_1e4", |b| b.iter(|| run(STR_CONCAT)));
     c.bench_function("table_rw_2e5", |b| b.iter(|| run(TABLE_OPS)));
+    c.bench_function("native_call_1e6", |b| b.iter(|| run(NATIVE_CALL)));
+    c.bench_function("native_multi_1e6", |b| b.iter(|| run(NATIVE_MULTI)));
 }
 
 criterion_group!(g, benches);

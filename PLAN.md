@@ -325,6 +325,24 @@ test binary.
     nesting all work). **Limitation:** the iterator must be a native function (covers
     `pairs`/`ipairs`/`next`); custom Lua-closure iterators aren't driven yet.
   - Tests: `tests/iteration.rs` (9), plus un-ignored `iteration_with_pairs` / `generic_for_ipairs`.
+  - **`pairs(userdata)` via `__pairs` ✅ (2026-07):** userdata metamethod dispatch was a
+    commented-out stub (`UserDataTypedMap::call_meta_method` always returned `UDNoMethodRef`).
+    Un-stubbed by storing metamethod closures as `Rc` (was `Box`) so one can be cloned out of
+    `VM.userdata_registry`, releasing the borrow, then invoked with `&mut VM` (the closures need
+    `&mut VM` but live inside the VM — a direct call is a self-borrow). `vm_integration::call_meta_method`
+    now does clone-then-call; `lua_pairs` routes a userdata through `__pairs` (which returns the
+    iterator fn; `pairs` supplies `(iter, ud, nil)`), erroring `MetaMethodMissing` if absent.
+    `TestEnt` gained a `__pairs` over its x/y/z fields. Tests: `tests/userdata_pairs.rs`.
+  - **Metamethod coverage after the un-stub (2026-07):** on the working `call_meta_method`,
+    these userdata metamethods now dispatch — **arithmetic** (`__add`/`__sub`/… via the
+    `binary_op!` macro; was already routed, now functional), **`__concat`** (CONCAT opcode,
+    either operand), **`__tostring`** (`tostring()` + `print()`), **comparisons** `__eq`/`__lt`/
+    `__le` (EQUAL/LESS/LESS_EQUAL/GREATER/GREATER_EQUAL, with `>`/`>=` as swapped `<`/`<=`), plus
+    **`__pairs`**. Regular methods (`ud:m()`) and field get/set already worked. Tests:
+    `tests/userdata_metamethods.rs`. **Still TODO (documented tail, same Rc pattern):** `__call`
+    (calling a userdata), `__len` (`#ud`), `__unm` (unary `-`), `__index`/`__newindex` *metamethod*
+    fallback for keys not in the registered fields, and `__ipairs`. `NOT_EQUAL` (`~=`) does not
+    consult `__eq` for userdata *or* tables (pre-existing; `==` does) — wire alongside a table fix.
 
 ### 2.8 `goto` / labels buggy
 - **Repro:** `do goto skip ::skip:: end return 1` → `Expected identifier only inbetween label tokens '::'`.
@@ -430,7 +448,18 @@ test binary.
   ABI.
 - **`math` ✅:** `floor`, `ceil`, `abs`, `sqrt`, `sin`/`cos`/`tan`, `min`, `max`, `random`,
   `randomseed` (thread-local xorshift, no `rand` dep), `huge`, `pi`, `maxinteger`, `mininteger`.
-  Still TODO: `fmod`, `modf`, `tointeger`, `type`.
+  `modf` ✅ (returns integral+fractional as a typed tuple — the first consumer of the
+  mlua-style multi-return reshape, see below). Still TODO: `fmod`, `tointeger`, `type`.
+
+  **Native multi-return reshape (2026-07, `value.rs`):** `ToLuaMulti` now follows mlua's
+  model — blanket `impl<T: ToLua> ToLuaMulti for T` (single→one value), explicit tuple
+  impls (spread), collections stay one table via their `ToLua` impls. Tuples deliberately
+  do NOT implement `ToLua` (removed the old tuple→table impl), which is what lets the
+  blanket and the tuple spread impls coexist. `NativeFunctionRaw::new` and
+  `register_native_function[_to]` now bind `R: ToLuaMulti` and take `F: … -> Result<R, _>`
+  (the `?` handles errors; `R` is the success type). `ToLuaMulti::to_native_return` keeps
+  the scalar path allocation-free (`Single`, no Vec) — and is the seam a future push-based
+  `push_multi` slots into (PLAN §6.1). Tests: `tests/multi_return.rs`.
 - **`string` ✅:** `len`, `sub`, `upper`, `lower`, `rep`, `reverse`, `byte` (single-index only —
   see below), `char`, `format` (`%d %i %u %x %X %o %f %e %g %s %c %q %%` with `- + space # 0`
   flags + width + `.precision`). **String metatable wired** — `("hi"):upper()` and `s:method()`
@@ -524,6 +553,36 @@ emit), not a separate pass. Types are compile-time only and never reach the VM.
 - **Deferred:** multi-value single-expression returns (use a `do` block); recording arrow param
   types on their locals.
 
+## 3.7 Vectors (glam-backed 2D/3D/4D) — landed, behind `vector` feature (off by default)
+First-class immutable f32 vector value type for game/math scripting, replacing the old broken
+`vectors` stub. `vector = ["dep:glam"]`.
+- **Types** (`src/vec.rs`): newtype wrappers `Vec2/Vec3/Vec4` around `glam::Vec{2,3,4}` — needed
+  for the orphan rule (`Collect` via manual `unsafe impl`, model `UDVec`) and a Lua `Display`.
+  `Copy`, `Deref` to glam, operator impls. Re-exported: `silt_lua::{Vec2,Vec3,Vec4}` and
+  `pub extern crate glam` (so embedders name the types without their own glam dep).
+- **`Value`/`ExVal`** gained `Vec2/Vec3/Vec4` variants (`src/value.rs`), extended across every
+  match (conversions, both `Display`s, `to_error`, `type_name`→`"vec2/3/4"`, clone, `PartialEq`,
+  `is_equal`). `ToLua`/`FromLua` for the wrappers AND raw `glam::Vec*` — the entity-interop glue.
+- **VM** (`src/lua.rs`): `binary_op!` gets vec·vec (`+ - *`) + scalar broadcast (`+ - *`, both
+  operand orders — the scalar applies to every component, GLSL/glam-style); DIVIDE gets vec·vec,
+  vec/scalar, and scalar/vec; NEGATE gets unary `-`. `TABLE_GET` returns `.x/.y/.z/.w`;
+  `METHOD_GET` dispatches through a global `vec` table (mirrors the `string` library). Registered
+  in `load_standard_library`.
+- **API:** `vec2/vec3/vec4(...)` constructors; `.x/.y/.z/.w`; `+ - * /` (component-wise and with
+  scalars in either order), unary `-`, `==`; `:length() :length_squared() :dot() :normalize()
+  :distance() :cross()` (`src/vector_lib.rs`). `type(v)` → `"vec2"/"vec3"/"vec4"`.
+- **Entity interop, no metamethod:** a userdata field getter returns a vector, a setter accepts
+  one (`v: glam::Vec3`), so `entity.pos = entity.pos + vec3(0,10,0)` works. Tests: `tests/vectors.rs`.
+- **Out of scope (future):** swizzling (`v.xy`), `DVec` f64 family, `%`/`^`/`//`, matrices/quats,
+  flexible constructors (splat / `vec3(v2, z)`).
+
+**Parser: field/index access on grouped/call results (2026-07).** `.`/`[` are now Pratt infix
+operators (`dot_infix`/`index_infix`, `Call` precedence, `src/compiler.rs`), so `(a + b).x`,
+`(t)["k"]`, `f().field`, and `(cond and t or u).x` parse — previously "Invalid token placement"
+(field access lived only inside `named_variable`'s eager loop for bare variables, which still
+handles `t.a.b`). Grouped/call results are rvalues, so `(t).x = 5` correctly errors. Tests:
+`tests/tables.rs` (grouped/conditional/call-result/chained access).
+
 ## 4. Known deviations (documented, lower priority)
 
 - **`#` on tables returns hashmap length, not a border** (README limitation). Lua's `#`
@@ -607,15 +666,21 @@ and multiple-returns/varargs are still WIP. The pragmatic path:
 a real win. Do not start the rewrite until both exist.
 
 ### 6.1 Robustness/efficiency wins for the current stack VM (do these regardless)
-- **PUC-Lua-style native-call ABI (deferred optimization).** Native functions currently take a
-  `Vec<Value>` of args (allocated by `popn` every call) and return `NativeReturn::{Single,Multi}`
-  (the `Multi` path heap-allocates a small `Vec` per call — e.g. once per `next` in a `pairs`
-  loop). The zero-allocation design, matching Lua's C API, is: pass args as a **slice of the VM
-  stack** (no copy in) and have the function **push results directly onto the stack, returning a
-  count** (no copy/alloc out). Requires threading the stack handle (`Ephemeral`/`ip`) into the
-  native ABI so functions can push. The current enum is byte-for-byte the size of a bare `Value`
-  and free on the single-value path, so this is **benchmark-gated** — adopt it when the bench
-  harness shows native-call/iteration-heavy code as hot, not before.
+- **Native-call arg marshalling — args-side DONE (2026-07).** `popn` used to heap-allocate a
+  fresh `Vec` for `fn + args` on **every** native call. Now the CALL handler moves them into a
+  **reused `arg_scratch` buffer** on the VM (`mem::take`-d out during the call to avoid aliasing
+  `&mut VM`, moved not cloned so no String/Gc clone, restored after). Measured on
+  `benches/interpreter.rs`: `native_call_1e6` **68 ms → 56 ms (~18%)**, `native_multi_1e6`
+  **84.5 ms → 78.5 ms (~7%)**. The single-return path is now allocation-free end to end (args
+  reused + `NativeReturn::Single` from Increment 1).
+- **Results-side push (optional remaining).** Multi-return native calls still allocate the
+  `NativeReturn::Multi(Vec)`. Eliminating it means the function **pushes results straight onto
+  the operand stack, returning a count** (Lua C API style) — the `to_native_return` seam is
+  already in place for this. It needs threading the stack handle (`Ephemeral`/`ip`) into the
+  native ABI and reconciling `ip` with `stack_count` after the push, so it's riskier for a
+  smaller, rarer gain. **Benchmark-gated:** adopt when multi-return native calls show up hot in a
+  real workload. Doing it behind an abstracted `push`/`take_arg` accessor also yields the
+  `safe`-feature (bounds-checked, no-`unsafe`) VM backend as a drop-in.
 - **Fixed-size, overflow-checked stack** instead of an unbounded `Vec` push/pop (SPEC asks for
   this) — predictable latency, no realloc spikes mid-frame.
 - **Stop pushing `Nil` on pop** (`src/lua.rs` has many "pushing nil is stupid" TODOs around

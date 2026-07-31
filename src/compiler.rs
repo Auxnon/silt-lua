@@ -592,7 +592,20 @@ impl Compiler {
     }
 
     /** Tokens, not stack. Pop and return the token tuple, take care as this does not wipe the current token but does advance the iterator */
+    /// Discard any pending `Comment` tokens from the parse stream. Comments are real
+    /// lexer tokens (the LSP's separate lexer pass uses them for highlighting), but they
+    /// are transparent to parsing — skipping them here makes every accessor comment-aware
+    /// so a comment can appear anywhere (mid-expression, inside a table constructor, …),
+    /// not just at a statement boundary.
+    #[inline]
+    fn skip_comments(iter: &mut Peekable<Lexer>) {
+        while matches!(iter.peek(), Some(Ok((Token::Comment, _)))) {
+            iter.next();
+        }
+    }
+
     fn pop(&mut self, iter: &mut Peekable<Lexer>) -> (Result<Token, ErrorTuple>, TokenCell) {
+        Self::skip_comments(iter);
         self.current_index += 1;
         match iter.next() {
             Some(Ok(t)) => {
@@ -631,6 +644,7 @@ impl Compiler {
 
     /** Slightly faster pop that devourse the token or error, should follow a peek or risk skipping as possible error. Probably irrelevant otherwise. */
     fn eat(&mut self, iter: &mut Peekable<Lexer>) {
+        Self::skip_comments(iter);
         self.current_index += 1;
         let _t = iter.next();
         #[cfg(feature = "dev-out")]
@@ -645,6 +659,7 @@ impl Compiler {
 
     /** pop and store on to self as current token tuple */
     fn store(&mut self, iter: &mut Peekable<Lexer>) {
+        Self::skip_comments(iter);
         self.current_index += 1;
         (self.current, self.current_location) = match iter.next() {
             Some(Ok(t)) => (Ok(t.0), (t.1.line, t.1.col)),
@@ -722,6 +737,7 @@ impl Compiler {
 
     /** return the peeked token result */
     fn peek<'c>(&mut self, iter: &'c mut Peekable<Lexer>) -> Result<&'c Token, ErrorTuple> {
+        Self::skip_comments(iter);
         match iter.peek() {
             Some(Ok(t)) => {
                 // devout!("peek {}", t.0);
@@ -743,6 +759,7 @@ impl Compiler {
         &mut self,
         iter: &'c mut Peekable<Lexer>,
     ) -> Result<&'c (Token, TokenTriple), ErrorTuple> {
+        Self::skip_comments(iter);
         match iter.peek() {
             Some(Ok(t)) => {
                 // devout!("peek {}", t.0);
@@ -1069,7 +1086,10 @@ fn set_trailing_vararg(&mut self,bool: bool){
             Token::Identifier(_) => rule!(variable, void, None),
             Token::Function => rule!(function_expression, void, None),
             Token::VarArg => rule!(vararg_variable, void, None),
-            // Token::OpenBracket => rule!(void, indexer, Call),
+            // Postfix field/index access on any expression (grouped, call result, …).
+            // Bare variables are still handled eagerly by `named_variable`.
+            Token::Dot => rule!(void, dot_infix, Call),
+            Token::OpenBracket => rule!(void, index_infix, Call),
             Token::Integer(_) => rule!(integer, void, None),
             Token::Number(_) => rule!(number, void, None),
             Token::StringLiteral(_) => rule!(string, void, None),
@@ -1782,7 +1802,6 @@ fn define_declaration<'a, 'c: 'a>(
     match t {
         Token::Assign => {
             // WRONG We need to just change the entre logic to just use the global var_stack path bt with a cute local guy
-            println!("{} {}", "yeaaaaaah".on_magenta(), this.var_stack.len());
             expression_statement(this, mc, f, it)?;
         }
         // we can't increment what doesn't exist yet, like what are you even doing?
@@ -2151,6 +2170,12 @@ fn block<'c>(
                 this.eat(it);
                 break;
             }
+            Some(Ok((Token::Comment, _))) => {
+                // This loop peeks the raw iterator (to read `end`'s line for hotswap),
+                // so it must skip comments itself — otherwise a body of only comments
+                // falls through to `declaration` and trips on the `end`.
+                it.next();
+            }
             Some(Ok((Token::EOF, _))) | None => {
                 return Err(this.error_at(SiltError::UnterminatedBlock));
             }
@@ -2417,6 +2442,11 @@ fn for_statement<'c>(
         expect_token!(this it Assign);
         add_local_placeholder(this)?; // reserve end value with placeholder
         add_local_placeholder(this)?; // reserve step value with placeholder
+        // The `,` separating start/limit/step is the loop's own, NOT a multi-assign
+        // target list — disable multivar detection so `named_variable` (a variable or
+        // `#a` start) doesn't gobble the comma. Restored before the body.
+        let prev_multivar = this.can_multivar_set;
+        this.set_can_multivar_set(false);
         expression_single(this, mc, f, it, false)?; // expression for iterator
         expect_token!(this it Comma);
         expression_single(this, mc, f, it, false)?; // expression for end value
@@ -2430,6 +2460,7 @@ fn for_statement<'c>(
         } else {
             this.constant_at(f, Value::Integer(1))
         };
+        this.set_can_multivar_set(prev_multivar);
         let for_start = this.emit_index(f, OpCode::FOR_NUMERIC(0));
         // this.emit_at(OpCode::GET_LOCAL { index: iterator });
         // let loop_start = this.get_chunk_size();
@@ -3183,13 +3214,11 @@ fn named_variable<'c>(
                     return Err(this.error_at(SiltError::InvalidAssignment(t.clone())));
                 }
                 // we at least know multivar setting has ended
-                println!("ended multi");
                 this.set_can_multivar_set(false);
 
                 // For retrieval context, we need to drain the getters we've collected so far
                 // and then continue parsing as a regular expression
                 // this.return_count = this.var_stack.len() as u8;
-                println!("multivar drain 1");
                 this.drain_getters(f);
 
                 // Now parse the remaining expression starting from current position
@@ -3371,10 +3400,26 @@ fn named_variable<'c>(
             emit_method_get(this, f, it)?;
         }
         _ => {
-            // this.return_count = this.var_stack.len() as u8;
-            // devnote!(this it "drain 5");
-
-            this.drain_getters(f);
+            if this.local_declare_mode {
+                // Bare local declaration with no initializer (`local x`, `local a, b, c`).
+                // Each declared name reserved a slot but pushed no value; occupy them with
+                // nil so subsequent locals land in the right slots. Without this the slot
+                // is left uninitialized and everything after it is misaligned (and a later
+                // closure capture could underflow `i - offset` in `resolve_local`).
+                let n = this.var_stack.len();
+                this.drain_getters(f); // clears the (None) var_stack entries
+                this.local_declare_mode = false;
+                match n {
+                    0 => {}
+                    1 => this.emit_at(f, OpCode::NIL),
+                    _ => this.emit_at(f, OpCode::NILS(n as u8)),
+                }
+                // The pushed nil(s) ARE the locals' slots — don't let the statement pop them.
+                this.override_pop();
+            } else {
+                // this.return_count = this.var_stack.len() as u8;
+                this.drain_getters(f);
+            }
         }
     }
 
@@ -3622,15 +3667,15 @@ fn tabulate<'c>(
             }
 
             match this.peek(it)? {
-                Token::Comma => {
+                // `,` and `;` are interchangeable field separators (Lua allows both). A
+                // trailing separator is legal, so after eating one we stop if the next
+                // token closes the table: `{1, 2, 3,}` / `{1; 2; 3}`.
+                Token::Comma | Token::SemiColon => {
                     this.eat(it);
-                    true
+                    !matches!(this.peek(it)?, Token::CloseBrace)
                 }
                 Token::CloseBrace => false,
-                a => {
-                    println!("---------------------------------------here? 2 {}", a);
-                    return Err(this.error_at(SiltError::TableExpectedCommaOrCloseBrace));
-                }
+                _ => return Err(this.error_at(SiltError::TableExpectedCommaOrCloseBrace)),
             }
         } {
             // if args >= 255 {
@@ -3643,7 +3688,6 @@ fn tabulate<'c>(
         this.set_arg_mode(false);
     }
 
-    println!("here? 1");
     expect_token!(
         this,
         it,
@@ -3780,6 +3824,52 @@ fn method_infix<'c>(
     let constant = this.identifer_constant(f, name);
     this.emit_at(f, OpCode::METHOD_GET { constant });
     this.self_arg = true;
+    Ok(())
+}
+
+/// Pratt infix for `.field` — field access on ANY preceding expression (a grouped
+/// expression, a call result, etc.), not just a bare variable (those are handled
+/// eagerly inside `named_variable`). The receiver is already on the stack and the `.`
+/// has been consumed by the infix loop; pop the field name and emit a single
+/// `TABLE_GET`. Chained `.a.b` runs this once per link. This is what makes
+/// `(a + b).x` / `f().field` parse.
+fn dot_infix<'c>(
+    this: &mut Compiler,
+    _mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
+    devnote!(this it "dot_infix");
+    let (res, loc) = this.pop(it);
+    this.current_location = loc;
+    match res? {
+        Token::Identifier(ident) => this.emit_identifer_constant_at(f, ident),
+        _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
+    }
+    this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
+    Ok(())
+}
+
+/// Pratt infix for `[key]` — index access on any preceding expression. The `[` has
+/// been consumed by the infix loop; parse the key expression, expect `]`, and emit a
+/// single `TABLE_GET`. Companion to `dot_infix` for `(expr)[k]` / `f()[k]`.
+fn index_infix<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+    _can_assign: bool,
+) -> Catch {
+    devnote!(this it "index_infix");
+    expression(this, mc, f, it, false)?;
+    expect_token!(
+        this,
+        it,
+        CloseBracket,
+        this.error_at(SiltError::UnterminatedBracket(0, 0))
+    );
+    this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
     Ok(())
 }
 

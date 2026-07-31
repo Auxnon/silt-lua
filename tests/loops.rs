@@ -187,6 +187,31 @@ fn while_body_local_is_scoped() {
 }
 
 #[test]
+fn numeric_for_non_literal_start() {
+    // Regression: a non-literal numeric-for start (a variable or `#a`) went through
+    // `named_variable`, whose multi-assign detection ate the loop's separator comma,
+    // yielding "Expected ','". Start/limit/step now disable multivar detection.
+    valeq!(
+        "local a = {1, 2, 3} local s = 0 for i = #a, 5 do s = s + i end return s",
+        ExVal::Integer(12) // 3 + 4 + 5
+    );
+    valeq!(
+        "local n = 2 local s = 0 for i = n, 4 do s = s + i end return s",
+        ExVal::Integer(9) // 2 + 3 + 4
+    );
+    // `#a` in the limit AND a step (comma-separated) also parse.
+    valeq!(
+        "local a = {1, 2, 3} local s = 0 for i = 1, #a, 1 do s = s + i end return s",
+        ExVal::Integer(6)
+    );
+    // `#a` start with a descending step.
+    valeq!(
+        "local a = {1, 2, 3, 4} local s = 0 for i = #a, 1, -1 do s = s + i end return s",
+        ExVal::Integer(10)
+    );
+}
+
+#[test]
 fn generic_for_ipairs() {
     valeq!(
         r#"

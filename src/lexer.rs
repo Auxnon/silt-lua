@@ -91,15 +91,26 @@ impl<'c> Lexer<'c> {
     }
 
     fn eat(&mut self) {
-        self.current += 1;
-        self.column += 1;
-        self.iterator.next();
+        // `current`/`start_token` are BYTE offsets (they index `source`, a &str,
+        // in the slicing below), so advance by the char's UTF-8 width. `column`
+        // is a per-line CHARACTER counter for error display. Conflating the two
+        // (advancing `current` by 1 per char) desynced them on any multi-byte
+        // char, mis-slicing every following token.
+        if let Some(c) = self.iterator.next() {
+            self.current += c.len_utf8();
+            self.column += 1;
+        }
     }
 
     fn eat_out(&mut self) -> Option<char> {
-        self.current += 1;
-        self.column += 1;
-        self.iterator.next()
+        match self.iterator.next() {
+            Some(c) => {
+                self.current += c.len_utf8();
+                self.column += 1;
+                Some(c)
+            }
+            None => None,
+        }
     }
 
     fn peek(&mut self) -> Option<&char> {
@@ -109,7 +120,9 @@ impl<'c> Lexer<'c> {
     fn _error(&mut self, code: SiltError) -> TokenTripleResult {
         Err(ErrorTuple {
             code,
-            location: (self.line_number, self.start_token),
+            // Report the per-line column (matching `_send`), not `start_token`
+            // (an absolute byte offset — which read like "everything on one line").
+            location: (self.line_number, self.column_start + 1),
         })
     }
 
@@ -516,6 +529,41 @@ impl<'c> Lexer<'c> {
                                 // flag
                                 self.eat();
                                 self.get_flag()
+                            } else if self.peek() == Some(&'[') {
+                                self.eat(); // first '['
+                                if self.peek() == Some(&'[') {
+                                    // `--[[ … ]]` block comment: can be inline (code after
+                                    // it on the same line) or span multiple lines. Consume
+                                    // to the closing `]]` (mirrors `multi_line_string`).
+                                    self.eat(); // second '['
+                                    loop {
+                                        match self.peek() {
+                                            Some('\n') => {
+                                                self.new_line();
+                                                self.eat();
+                                            }
+                                            Some(']') => {
+                                                self.eat();
+                                                if self.peek() == Some(&']') {
+                                                    self.eat();
+                                                    break;
+                                                }
+                                            }
+                                            Some(_) => self.eat(),
+                                            None => break, // unterminated → treat rest as comment
+                                        }
+                                    }
+                                    self.send(Token::Comment)
+                                } else {
+                                    // `--[` not a block opener: an ordinary line comment.
+                                    while self.current < self.end {
+                                        if let Some('\n') = self.eat_out() {
+                                            self.new_line();
+                                            break;
+                                        }
+                                    }
+                                    self.send(Token::Comment)
+                                }
                             } else {
                                 while self.current < self.end {
                                     if let Some('\n') = self.eat_out() {
@@ -523,11 +571,7 @@ impl<'c> Lexer<'c> {
                                         break;
                                     }
                                 }
-
-                                // self.current-=1;
-                                let t = self.send(Token::Comment);
-                                // self.current+=1;
-                                t
+                                self.send(Token::Comment)
                             }
                         }
                         #[cfg(feature = "compound-assignment")]

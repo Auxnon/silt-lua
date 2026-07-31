@@ -485,3 +485,46 @@ fn local_reuse_in_assignment() {
         12
     );
 }
+
+// Bare uninitialized locals (`local x` with no `=`) must occupy their slot with nil so
+// subsequent locals — and closures that capture them — stay correctly aligned.
+// Regression: previously the slot was left unfilled, mis-indexing everything after it
+// (and a later capture could panic with "attempt to subtract with overflow").
+
+#[test]
+fn uninitialized_local_is_nil() {
+    valeq!("local x return x", ExVal::Nil);
+    valeq!("local a, b, c return b", ExVal::Nil);
+}
+
+#[test]
+fn uninitialized_local_does_not_shift_later_locals() {
+    valeq!("local x local y = 5 return y", ExVal::Integer(5));
+    valeq!("local a = 1 local x local b = 2 return a + b", ExVal::Integer(3));
+    valeq!(
+        "local function f() local x local y = 5 return y end return f()",
+        ExVal::Integer(5)
+    );
+}
+
+#[test]
+fn uninitialized_local_then_for_loop() {
+    // The loop's hidden control slots must not clobber the earlier local.
+    valeq!("local x for i = 1, 2 do end return x", ExVal::Nil);
+    valeq!(
+        "local function f() local t for i = 1, 3 do t = i end return t end return f()",
+        ExVal::Integer(3)
+    );
+}
+
+#[test]
+fn closure_captures_uninitialized_local_assigned_later() {
+    valeq!(
+        "local function f() local x local g = function() return x end x = 5 return g() end return f()",
+        ExVal::Integer(5)
+    );
+    valeq!(
+        "local function f() local g for i = 1, 1 do g = function() return i end end return g() end return f()",
+        ExVal::Integer(1)
+    );
+}

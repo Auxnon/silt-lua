@@ -4,6 +4,7 @@ mod compiler;
 pub mod error;
 mod function;
 mod lexer;
+pub(crate) mod lua_pattern;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod lua;
@@ -26,8 +27,19 @@ pub use self::{
 #[cfg(feature = "hot-swap")]
 pub use self::lua::HotswapResult;
 
-#[cfg(feature = "vectors")]
+// Re-export glam so embedders can name the vector types (for userdata fields etc.)
+// without adding their own glam dependency, and stay version-locked with silt.
+#[cfg(feature = "vector")]
+pub extern crate glam;
+
+#[cfg(feature = "vector")]
 pub mod vec;
+
+#[cfg(feature = "vector")]
+pub(crate) mod vector_lib;
+
+#[cfg(feature = "vector")]
+pub use self::vec::{Vec2, Vec3, Vec4};
 
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;

@@ -194,14 +194,15 @@ impl<'v> Table<'v> {
         T: Copy,
         T: From<Value<'v>>,
     {
-        let mut t = self.data.iter();
+        // Read the array part by index (Lua is 1-indexed). Iterating `self.data`
+        // (a HashMap) yields hash order, not 1..N, so `{a, b, c}` came out as an
+        // arbitrary cyclic rotation that varied per table.
         let mut out: [T; N] = [T::default(); N];
         for i in 0..N {
-            out[i] = if let Some(tt) = t.next() {
-                T::from(tt.1.clone())
-            } else {
-                T::default()
-            }
+            out[i] = match self.data.get(&Value::Integer((i + 1) as i64)) {
+                Some(v) => T::from(v.clone()),
+                None => T::default(),
+            };
         }
         out
     }

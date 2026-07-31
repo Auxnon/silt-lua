@@ -8,8 +8,7 @@ use crate::{
     code::OpCode,
     error::SiltError,
     lua::{Ephemeral, VM},
-    userdata::{InnerResult, ToInnerResult},
-    value::{FromLuaMulti, ToLua, Value},
+    value::{FromLuaMulti, ToLuaMulti, Value},
 };
 
 /////////////
@@ -388,19 +387,16 @@ impl<'gc> NativeFunctionRaw<'gc> {
     pub fn new<A, F, R>(f: F) -> Self
     where
         A: FromLuaMulti<'gc>,
-        R: ToLua<'gc>,
-        F: Fn(
-                &mut VM<'gc>,
-                &Mutation<'gc>,
-                A,
-                // <A as FromLuaMulti<'gc>>::Output,
-            ) -> ToInnerResult<'gc, R>
-            + 'gc,
+        R: ToLuaMulti<'gc>,
+        F: Fn(&mut VM<'gc>, &Mutation<'gc>, A) -> Result<R, SiltError> + 'gc,
     {
         Self {
             func: Box::new(move |vm, mc, raw_args| {
                 let args = A::from_lua_multi(raw_args, vm, mc)?;
-                Ok(NativeReturn::Single(R::to_lua(f(vm, mc, args), vm, mc)?))
+                // The `?` handles the error; `R` is the SUCCESS type, so a tuple return
+                // spreads (Multi), a scalar/collection is one value (Single/table), and
+                // `to_native_return` keeps the scalar path allocation-free.
+                f(vm, mc, args)?.to_native_return(vm, mc)
             }),
         }
     }

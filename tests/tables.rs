@@ -50,6 +50,44 @@ fn negative_index() {
     valeq!("local t = {} t[-1] = 5 return t[-1]", ExVal::Integer(5));
 }
 
+// --- key hashing ------------------------------------------------------------
+// Regression: `Hash for Value` hashed only the enum discriminant, so every key of a
+// given type (all integers, all strings, …) collided into one bucket and `HashMap::get`
+// degraded to an O(n) linear scan — every table access was O(table size). Now the
+// payload is hashed. These assert correctness across key types and sizes; the payoff is
+// performance (a 1000-entry table read went ~772ns → ~50ns, ~16x on array-heavy code).
+
+#[test]
+fn many_integer_keys_resolve() {
+    valeq!(
+        "local t = {} for i=1,1000 do t[i] = i*2 end return t[1] + t[500] + t[1000]",
+        ExVal::Integer(3002) // 2 + 1000 + 2000
+    );
+}
+
+#[test]
+fn many_string_keys_resolve() {
+    valeq!(
+        r#"local t = {} for i=1,200 do t["k"..i] = i end return t.k1 + t.k100 + t.k200"#,
+        ExVal::Integer(301)
+    );
+}
+
+#[test]
+fn assorted_key_types_resolve() {
+    // negative, zero, and non-integer float keys all coexist
+    valeq!("local t={} t[-5]=9 t[0]=8 t[1.5]=7 return t[-5]+t[0]+t[1.5]", ExVal::Integer(24));
+    // bool keys
+    valeq!("local t={[true]=1,[false]=2} return t[true]+t[false]", ExVal::Integer(3));
+}
+
+#[test]
+fn signed_zero_is_one_key() {
+    // 0.0 == -0.0 in PartialEq, so they must hash equal and address the same slot.
+    valeq!("local t={} t[0.0]=1 t[-0.0]=2 return t[0.0]", ExVal::Integer(2));
+    valeq!("local t={} t[0.0]=1 t[-0.0]=2 return t[-0.0]", ExVal::Integer(2));
+}
+
 // =====================================================================================
 // BROKEN — see PLAN.md
 // =====================================================================================
@@ -74,6 +112,63 @@ fn deep_chain_read_write() {
     // depth-3 navigation in both directions
     valeq!("local t = {a = {b = {c = 99}}} return t.a.b.c", ExVal::Integer(99));
     valeq!("local t = {a = {b = {}}} t.a.b.c = 5 return t.a.b.c", ExVal::Integer(5));
+}
+
+// Table constructor separators: `,` and `;` are interchangeable, and a trailing one is
+// allowed. Regression: a trailing separator errored ("Invalid token placement: }").
+
+#[test]
+fn trailing_comma_in_constructor() {
+    valeq!("local a = {1, 2, 3,} return a[3]", ExVal::Integer(3));
+    valeq!("local a = {1, 2, 3, 4,} return #a", ExVal::Integer(4));
+    valeq!("local a = {x = 1, y = 2,} return a.y", ExVal::Integer(2));
+}
+
+#[test]
+fn trailing_comma_in_nested_constructor() {
+    valeq!("local a = {{1, 2, 3}, {4, 5, 6},} return a[2][1]", ExVal::Integer(4));
+}
+
+#[test]
+fn semicolon_separators() {
+    valeq!("local a = {1; 2; 3} return a[2]", ExVal::Integer(2));
+    // `;` and `,` may be mixed, including a trailing one.
+    valeq!("local a = {1, 2; 3,} return #a", ExVal::Integer(3));
+}
+
+// Field/index access on a grouped or call-result expression — previously a parser
+// gap ("Invalid token placement"); `.`/`[` are now Pratt infix operators.
+
+#[test]
+fn field_access_on_grouped_expression() {
+    valeq!("local t = {x = 5} return (t).x", ExVal::Integer(5));
+    valeq!(r#"local t = {x = 5} return (t)["x"]"#, ExVal::Integer(5));
+}
+
+#[test]
+fn field_access_on_conditional_expression() {
+    valeq!(
+        "local t = {x = 1} local u = {x = 2} return (true and t or u).x",
+        ExVal::Integer(1)
+    );
+}
+
+#[test]
+fn call_result_field_and_call() {
+    // `f()` returns a table; index it, and also call a function field off a group.
+    valeq!(
+        "local function mk() return {v = 7} end return mk().v",
+        ExVal::Integer(7)
+    );
+    valeq!(
+        "local t = {f = function() return 9 end} return (t).f()",
+        ExVal::Integer(9)
+    );
+}
+
+#[test]
+fn chained_access_after_group() {
+    valeq!("local a = {b = {c = 42}} return (a).b.c", ExVal::Integer(42));
 }
 
 #[test]
