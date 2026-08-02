@@ -156,8 +156,7 @@ impl<'v> Table<'v> {
         'v: 'f,
         V: Into<Value<'v>>,
     {
-        self.counter += 1;
-        let key = self.counter;
+        let key = self.border() + 1;
         self.data.insert(key.into(), val.into())
     }
 
@@ -258,32 +257,61 @@ impl<'v> Table<'v> {
         // The old loop ran `counter..pos`, which is empty whenever `pos < counter`, so
         // nothing shifted and the element already at `pos` was silently overwritten.
         let i = key.strict_int()?;
-        let mut k = self.counter;
+        let mut k = self.border();
         while k >= i && k >= 1 {
             if let Some(v) = self.data.remove(&Value::Integer(k)) {
                 self.data.insert(Value::Integer(k + 1), v);
             }
             k -= 1;
         }
-        self.counter += 1;
         self.data.insert(Value::Integer(i), value);
         Ok(Value::Nil)
     }
 
     pub fn push(&mut self, value: Value<'v>) {
-        // Append at the array border. `counter` is the last used integer index (0 for a
-        // fresh table), so the new element goes at `counter + 1` — Lua tables are
-        // 1-indexed. Incrementing FIRST (matching `raw_push`) was the bug: reading
-        // `counter` before the bump appended at index 0 and clobbered the last slot.
-        self.counter += 1;
-        let key = self.counter.into();
-        self.data.insert(key, value);
+        // Append at the array border (Lua tables are 1-indexed, so the new element lands
+        // at border + 1). Derived from contents so it works regardless of how the table
+        // was grown — including a `t[#t+1] = v` loop, which routes through `set` and never
+        // maintained the old `counter`.
+        let key = self.border() + 1;
+        self.data.insert(Value::Integer(key), value);
     }
 
-    /// The current array border (last integer index in use, 0 when empty) — Lua's `#t`
-    /// for a hole-free table. Used as the default position for `table.remove`.
+    /// The array border — an `n` with `t[n] ~= nil` and `t[n+1] == nil` (Lua's `#t` for a
+    /// hole-free table). Computed from actual contents via an unbounded binary search
+    /// (exponential probe, O(log n) on the hashmap) rather than a hand-maintained counter,
+    /// so `insert`/`remove_at`/`push` stay correct on tables built by index assignment —
+    /// the old `counter` was only updated by the constructor path, never by `t[k] = v`.
     pub fn border(&self) -> i64 {
-        self.counter
+        let has = |i: i64| self.data.contains_key(&Value::Integer(i));
+        if !has(1) {
+            return 0;
+        }
+        // exponential probe: find j present but 2j absent
+        let mut i = 1i64;
+        let mut j = 2i64;
+        while has(j) {
+            i = j;
+            if j > i64::MAX / 2 {
+                // pathological (huge dense array) — fall back to a linear walk
+                let mut n = i;
+                while has(n + 1) {
+                    n += 1;
+                }
+                return n;
+            }
+            j *= 2;
+        }
+        // binary search for the border in (i, j)
+        while j - i > 1 {
+            let m = i + (j - i) / 2;
+            if has(m) {
+                i = m;
+            } else {
+                j = m;
+            }
+        }
+        i
     }
 
     /// Remove the element at `pos` (Lua `table.remove`): return it, then shift every
@@ -292,24 +320,24 @@ impl<'v> Table<'v> {
     /// decremented the border unconditionally — it never actually removed anything
     /// (the standard-lib wrapper even called `insert` instead). See `tests/tables.rs`.
     pub fn remove_at(&mut self, pos: i64) -> Value<'v> {
+        let n = self.border();
         let removed = self.data.remove(&Value::Integer(pos)).unwrap_or_default();
         let mut k = pos + 1;
-        while k <= self.counter {
+        while k <= n {
             if let Some(v) = self.data.remove(&Value::Integer(k)) {
                 self.data.insert(Value::Integer(k - 1), v);
             }
             k += 1;
         }
-        if self.counter > 0 {
-            self.counter -= 1;
-        }
         removed
     }
 
     pub fn pop(&mut self) -> Value<'v> {
-        let k = self.counter.into();
-        self.counter -= 1;
-        self.data.remove(&k).unwrap_or_default()
+        let n = self.border();
+        if n == 0 {
+            return Value::Nil;
+        }
+        self.data.remove(&Value::Integer(n)).unwrap_or_default()
     }
 
     pub fn concat_array<A, I>(&mut self, array: I)

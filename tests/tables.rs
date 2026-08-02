@@ -88,6 +88,78 @@ fn signed_zero_is_one_key() {
     valeq!("local t={} t[0.0]=1 t[-0.0]=2 return t[-0.0]", ExVal::Integer(2));
 }
 
+// SILT-BUGS.md #2 & #3: table.insert/remove on a table grown by index assignment
+// (`t[#t+1] = v`, how any line/file buffer is built) used to overwrite / leave a hole,
+// because the shift loops were bounded by a `counter` that only the `{...}` constructor
+// path maintained — `t[k] = v` never touched it. `border()` now derives the array length
+// from actual contents, so insert/remove work regardless of how the table was built.
+
+#[test]
+fn insert_positional_on_loop_built_table() {
+    valeq!(
+        r#"
+        local t = {}
+        for i = 1, 19 do t[#t + 1] = "line" .. i end
+        table.insert(t, 2, "INS")
+        return #t
+        "#,
+        ExVal::Integer(20)
+    );
+    valeq!(
+        r#"
+        local t = {}
+        for i = 1, 19 do t[#t + 1] = "line" .. i end
+        table.insert(t, 2, "INS")
+        return t[2] .. "/" .. t[3]
+        "#,
+        ExVal::String("INS/line2".to_string())
+    );
+}
+
+#[test]
+fn remove_positional_on_loop_built_table() {
+    // remove(2) returns "line2", shifts the rest down, no nil hole
+    valeq!(
+        r#"
+        local t = {}
+        for i = 1, 19 do t[#t + 1] = "line" .. i end
+        local r = table.remove(t, 2)
+        return r .. "/" .. #t .. "/" .. t[2]
+        "#,
+        ExVal::String("line2/18/line3".to_string())
+    );
+}
+
+#[test]
+fn remove_last_on_loop_built_table() {
+    valeq!(
+        r#"
+        local t = {}
+        for i = 1, 5 do t[#t + 1] = i end
+        local x = table.remove(t)
+        return x * 10 + #t
+        "#,
+        ExVal::Integer(54) // removed 5, length now 4
+    );
+}
+
+#[test]
+fn border_matches_after_mixed_growth() {
+    // grow by index, then append with table.insert, then check #t and ipairs agree
+    valeq!(
+        r#"
+        local t = {}
+        for i = 1, 3 do t[#t + 1] = i end
+        table.insert(t, 4)
+        table.insert(t, 1, 0)
+        local sum = 0
+        for _, v in ipairs(t) do sum = sum + v end
+        return #t * 100 + sum
+        "#,
+        ExVal::Integer(510) // #t=5, sum=0+1+2+3+4=10
+    );
+}
+
 // =====================================================================================
 // BROKEN — see PLAN.md
 // =====================================================================================
