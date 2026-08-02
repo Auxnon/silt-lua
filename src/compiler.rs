@@ -4094,6 +4094,10 @@ fn call<'c>(
     // If the final argument was itself a function call, it spreads ALL its return
     // values (Lua's open multiret). Mark that inner call multiret and flag this
     // call variadic so its true argument count is resolved from the stack at runtime.
+    // `read_last_code()` is reliable here because, once argument parsing restores the
+    // caller's `can_multivar_set`/`arg_mode` (see `arguments()`), a trailing local's getter
+    // is drained before we reach this point — so the last emitted opcode truly reflects the
+    // final argument (SILT-BUGS.md #1 was the arg-count clobber, not this detection).
     let trailing_multiret =
         !trailing_vararg && matches!(f.chunk.read_last_code(), OpCode::CALL(..));
     if trailing_multiret {
@@ -4138,13 +4142,15 @@ fn call_table<'c>(
     let start = this.current_location;
     this.store(it); // current = `{`
 
+    let prev_arg_mode = this.is_arg_mode();
+    let prev_multivar = this.can_multivar_set;
     this.set_arg_mode(true);
     this.set_can_multivar_set(false);
 
     tabulate(this, mc, f, it, can_assign)?;
 
-    this.set_arg_mode(false);
-    this.set_can_multivar_set(true);
+    this.set_arg_mode(prev_arg_mode);
+    this.set_can_multivar_set(prev_multivar);
     this.emit(f, OpCode::CALL(1, 0, false), start);
     Ok(())
 }
@@ -4162,13 +4168,15 @@ fn call_string<'c>(
     let start = this.current_location;
     this.store(it); // current = the string literal
 
+    let prev_arg_mode = this.is_arg_mode();
+    let prev_multivar = this.can_multivar_set;
     this.set_arg_mode(true);
     this.set_can_multivar_set(false);
 
     string(this, mc, f, it, false)?;
 
-    this.set_arg_mode(false);
-    this.set_can_multivar_set(true);
+    this.set_arg_mode(prev_arg_mode);
+    this.set_can_multivar_set(prev_multivar);
     this.emit(f, OpCode::CALL(1, 0, false), start);
     Ok(())
 }
@@ -4181,6 +4189,13 @@ fn arguments<'c>(
     start: TokenCell,
 ) -> Result<u8, ErrorTuple> {
     devnote!(this it "arguments");
+    // Save and restore the caller's parsing context. A nested call argument (e.g.
+    // `text(a, flr(8), y, col)`) recurses into `arguments()`, and if we reset these to
+    // fixed defaults on exit we clobber the OUTER call's context — `can_multivar_set`
+    // would come back `true`, so a following local (`y`) would start a multivar comma-walk
+    // and swallow the next argument (`col`), losing an argument (SILT-BUGS.md #1).
+    let prev_arg_mode = this.is_arg_mode();
+    let prev_multivar = this.can_multivar_set;
     this.set_arg_mode(true);
     this.set_can_multivar_set(false);
 
@@ -4227,8 +4242,8 @@ fn arguments<'c>(
             }
         }
     }
-    this.set_arg_mode(false);
-    this.set_can_multivar_set(true);
+    this.set_arg_mode(prev_arg_mode);
+    this.set_can_multivar_set(prev_multivar);
 
     expect_token!(
         this,
