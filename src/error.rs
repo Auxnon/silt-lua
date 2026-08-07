@@ -314,7 +314,7 @@ impl std::fmt::Display for ValueTypes {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ErrorTuple {
     pub code: SiltError,
     pub location: TokenCell,
@@ -337,7 +337,7 @@ impl Default for &ErrorTuple {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ErrorOut {
     pub errors: Vec<ErrorTuple>,
     pub source: Option<String>,

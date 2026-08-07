@@ -79,6 +79,9 @@ typing = []
 # function bodies in a running VM (top-level globals swap live, preserving state).
 # Off by default — only needed for live-reload / dev tooling, not normal embedding.
 hot-swap = []
+# Snippets: extract a script function into a portable, arena-independent capture that runs in
+# an isolated VM (Rust embedding API). Reuses the hot-swap subtree walk. Off by default.
+snippets = ["hot-swap"]
 # Pure-Rust language-analysis API (diagnostics + formatting) returning native Rust
 # types — no JSON, no serde. For in-process editor/tooling integration.
 lsp = []

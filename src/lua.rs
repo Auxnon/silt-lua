@@ -526,6 +526,104 @@ impl<'gc> Lua {
         out
     }
 
+    /// Extract a [`Snippet`](crate::snippet::Snippet) from `code`. `code` must define the snippet
+    /// as a function expression (e.g. `return function(x) return x * 2 end`); the first nested
+    /// function prototype is captured. Stage 1: the function must not capture upvalues. Globals it
+    /// references are classified against this VM's globals (value → snapshot, reference → resolve
+    /// from the target at run time).
+    #[cfg(feature = "snippets")]
+    pub fn extract_snippet(
+        &mut self,
+        name: Option<&str>,
+        code: &str,
+        compiler: &mut Compiler,
+    ) -> Result<crate::snippet::Snippet, String> {
+        self.arena.mutate_root(|mc, root| {
+            let f = compiler.try_compile(mc, name, code).map_err(|e| {
+                e.errors
+                    .iter()
+                    .map(|t| format!("{}", t.code))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })?;
+            // Find the first nested function constant — that's the snippet body.
+            let mut idx = None;
+            for i in 0..f.chunk.constants_len() {
+                if let Value::Function(_) = f.chunk.get_constant(i as u8) {
+                    idx = Some(i as u8);
+                    break;
+                }
+            }
+            let i = idx.ok_or_else(|| {
+                "snippet source must define a function (e.g. `return function(...) ... end`)"
+                    .to_string()
+            })?;
+            let value = f.chunk.get_constant(i).clone();
+            let vm = root.borrow_mut();
+            crate::snippet::Snippet::extract(&vm, &value).map_err(|e| e.to_string())
+        })
+    }
+
+    /// Build a snippet into a **fresh, isolated VM** and return that VM (its own arena + standard
+    /// library, with the snippet's globals injected and the snippet closure stored). The returned
+    /// [`Lua`] is a standalone handle you can run repeatedly with [`call_snippet`](Self::call_snippet)
+    /// — the snippet is fully decoupled from the VM that defined it.
+    #[cfg(feature = "snippets")]
+    pub fn build_snippet(snippet: &crate::snippet::Snippet) -> Result<Lua, String> {
+        let mut lua = Lua::new_with_standard();
+        lua.arena.mutate_root(|mc, root| {
+            let mut vm = root.borrow_mut();
+            let closure =
+                crate::snippet::instantiate(snippet, &mut vm, mc).map_err(|e| format!("{}", e))?;
+            // Store the materialized closure under a reserved global (not a valid Lua identifier,
+            // so it can't collide with script globals) for later invocation.
+            vm.globals.borrow_mut(mc).set(Self::SNIPPET_GLOBAL, closure);
+            Ok::<(), String>(())
+        })?;
+        lua.arena.collect_debt();
+        Ok(lua)
+    }
+
+    /// Reserved global name under which a built snippet's closure is stored. Not a valid Lua
+    /// identifier, so it never collides with a script-defined global.
+    #[cfg(feature = "snippets")]
+    pub const SNIPPET_GLOBAL: &'static str = "@snippet";
+
+    /// Invoke the snippet built into this VM (via [`build_snippet`](Self::build_snippet)) with
+    /// `args`, returning the single result as an [`ExVal`]. Can be called repeatedly.
+    #[cfg(feature = "snippets")]
+    pub fn call_snippet(&mut self, args: Vec<ExVal>) -> Result<ExVal, String> {
+        let out = self.arena.mutate_root(|mc, root| {
+            let mut vm = root.borrow_mut();
+            let closure = vm
+                .globals
+                .borrow()
+                .get(Self::SNIPPET_GLOBAL)
+                .cloned()
+                .ok_or_else(|| "no snippet built in this VM".to_string())?;
+            let mut arg_vals: Vec<Value> = Vec::with_capacity(args.len());
+            for a in &args {
+                arg_vals.push(a.into_value(&mut vm, mc).map_err(|e| format!("{}", e))?);
+            }
+            let result = vm
+                .call_protected(mc, closure, &arg_vals)
+                .map_err(|e| format!("[snippet] {}", e))?;
+            Ok::<ExVal, String>(ExVal::from(result))
+        });
+        self.arena.collect_debt();
+        out
+    }
+
+    /// One-shot convenience: build the snippet into a fresh VM and run it once. Equivalent to
+    /// `build_snippet(snippet)?.call_snippet(args)`.
+    #[cfg(feature = "snippets")]
+    pub fn run_snippet(
+        snippet: &crate::snippet::Snippet,
+        args: Vec<ExVal>,
+    ) -> Result<ExVal, String> {
+        Lua::build_snippet(snippet)?.call_snippet(args)
+    }
+
     pub fn compile(
         &mut self,
         name: Option<&str>,

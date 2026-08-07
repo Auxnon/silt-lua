@@ -447,6 +447,11 @@ impl ExTable {
         self.data.get(&ExVal::Integer(i as i64))
     }
 
+    /// Iterate the table's (key, value) entries.
+    pub fn iter(&self) -> std::collections::hash_map::Iter<'_, ExVal, ExVal> {
+        self.data.iter()
+    }
+
     pub fn pop_value(&mut self, i: usize) -> ExVal {
         self.data
             .remove(&ExVal::Integer(i as i64))
