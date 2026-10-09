@@ -3,7 +3,7 @@
 //! caret-annotated snippet — usable after the fact, off-thread).
 
 use silt_lua::error::{ErrorOut, ErrorTuple};
-use silt_lua::{error_snippet, Compiler, Lua};
+use silt_lua::{error_snippet, error_span_snippet, Compiler, Lua};
 
 /// Compile+run `src`, expecting failure; return the whole `ErrorOut`.
 fn err_out(src: &str) -> ErrorOut {
@@ -60,6 +60,44 @@ fn error_after_wide_constructor_line() {
     assert_eq!(err_line(src), 4);
     let src = "function spawn(x, y, z, dx, dy)\n  local b = { x = x, y = y, z = z, dx = dx, dy = dy, age = 0, ent = nil }\n  local c = nil\n  c.flipped = true\nend\nspawn(1, 2, 3, 4, 5)";
     assert_eq!(err_line(src), 4);
+}
+
+/// Columns after line 1 are exact: the lexer used to reset the column before
+/// eating the `\n`, so line 2+ columns were one too far right.
+#[test]
+fn columns_after_first_line() {
+    assert_eq!(first("local a = 1\nundefined_fn(1, 2)").location, (2, 1));
+    assert_eq!(first("local a = 1\nlocal b = a + nil").location, (2, 11));
+}
+
+/// A runtime error spans the whole failing expression or statement.
+#[test]
+fn runtime_error_span() {
+    let e = first("local a = 1\nlocal b = a + nil");
+    assert_eq!((e.location, e.end), ((2, 11), Some((2, 17))));
+    let e = first("local b = {}\nb.ent = 5\nb.ent.flipped = true");
+    assert_eq!((e.location, e.end), ((3, 1), Some((3, 20))));
+    let src = "local t = {}\nprint(t.a.b.c)";
+    assert_eq!(
+        err_out(src).snippet(src),
+        "error: Cannot perform table operations on a non-table value (nil) (line 2, col 7)\n\
+         2 | print(t.a.b.c)\n  |       ^^^^^^^"
+    );
+}
+
+#[test]
+fn span_snippet_underlines_start_to_end() {
+    assert_eq!(
+        error_span_snippet("abc\n\tb.ent = 1\nghi", (2, 2), (2, 6)),
+        "2 | \tb.ent = 1\n  | \t^^^^^"
+    );
+    // multi-line: each line's covered part, later lines from their first non-blank
+    assert_eq!(
+        error_span_snippet("x = 1 +\n  2", (1, 5), (2, 3)),
+        "1 | x = 1 +\n  |     ^^^\n2 |   2\n  |   ^"
+    );
+    // end before start falls back to a single caret
+    assert_eq!(error_span_snippet("abc", (1, 2), (1, 1)), error_snippet("abc", (1, 2)));
 }
 
 // ── snippet helper ───────────────────────────────────────────────────────────

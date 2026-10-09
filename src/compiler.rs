@@ -386,6 +386,14 @@ pub struct Compiler {
     pub valid: bool,
     current: Result<Token, ErrorTuple>,
     current_location: TokenCell,
+    /// Inclusive end of the current (last stored) token.
+    current_end: TokenCell,
+    /// Inclusive end of the last token consumed by any means (store, eat, pop).
+    last_end: TokenCell,
+    /// Start of each enclosing statement / expression being compiled. Emitted
+    /// instructions span from the innermost one to `last_end`, so a runtime
+    /// error can underline the whole expression that failed.
+    span_starts: Vec<TokenCell>,
     scope_depth: usize,
     functional_depth: usize,
     // TODO we need a fail catch if we exceed a local variable amount of up values as well
@@ -448,6 +456,9 @@ impl Compiler {
             // body: FunctionObject::new(None, true),
             current: Ok(Token::Nil),
             current_location: (0, 0),
+            current_end: (0, 0),
+            last_end: (0, 0),
+            span_starts: vec![],
             current_index: 0,
             errors: vec![],
             valid: true,
@@ -509,12 +520,14 @@ impl Compiler {
     /** Syntax error with code at location */
     fn error_syntax(&mut self, code: SiltError, location: TokenCell) -> ErrorTuple {
         self.valid = false;
-        ErrorTuple { code, location }
+        ErrorTuple::new(code, location)
     }
 
     /**syntax error at current token location with provided code */
     fn error_at(&mut self, code: SiltError) -> ErrorTuple {
-        self.error_syntax(code, self.current_location)
+        let mut e = self.error_syntax(code, self.current_location);
+        e.end = Some(self.current_end);
+        e
     }
 
     /** Print all syntax errors */
@@ -572,7 +585,31 @@ impl Compiler {
     }
 
     fn write_code(&self, f: FnRef, byte: OpCode, location: TokenCell) -> usize {
-        f.chunk.write_code(byte, location)
+        let span = self.span_for(location);
+        f.chunk.write_code_span(byte, location, span)
+    }
+
+    /// Span for an instruction emitted at `location`: from the start of the
+    /// innermost statement/expression being compiled to the end of the last
+    /// token consumed.
+    fn span_for(&self, location: TokenCell) -> (TokenCell, TokenCell) {
+        let start = match self.span_starts.last() {
+            Some(&s) if location == (0, 0) || s < location => s,
+            _ => location,
+        };
+        let end = if self.last_end > location { self.last_end } else { location };
+        (start, end)
+    }
+
+    /// Note where a statement or expression begins; pair with `end_span(mark)`.
+    fn begin_span(&mut self, start: TokenCell) -> usize {
+        let mark = self.span_starts.len();
+        self.span_starts.push(start);
+        mark
+    }
+
+    fn end_span(&mut self, mark: usize) {
+        self.span_starts.truncate(mark);
     }
 
     // fn read_last_code<'a, 'c: 'a>(&self, e: &mut Emphereal<'a,'c>) -> &'c OpCode {
@@ -610,6 +647,7 @@ impl Compiler {
         match iter.next() {
             Some(Ok(t)) => {
                 // devout!("popped {}", t.0);
+                self.last_end = t.1.end;
                 (Ok(t.0), (t.1.line, t.1.col))
             }
             Some(Err(e)) => {
@@ -647,6 +685,9 @@ impl Compiler {
         Self::skip_comments(iter);
         self.current_index += 1;
         let _t = iter.next();
+        if let Some(Ok((_, triple))) = &_t {
+            self.last_end = triple.end;
+        }
         #[cfg(feature = "dev-out")]
         {
             match _t {
@@ -662,7 +703,11 @@ impl Compiler {
         Self::skip_comments(iter);
         self.current_index += 1;
         (self.current, self.current_location) = match iter.next() {
-            Some(Ok(t)) => (Ok(t.0), (t.1.line, t.1.col)),
+            Some(Ok(t)) => {
+                self.current_end = t.1.end;
+                self.last_end = t.1.end;
+                (Ok(t.0), (t.1.line, t.1.col))
+            }
             Some(Err(er)) => {
                 // self.error_syntax(e.code, e.location);
                 let l = er.location;
@@ -683,7 +728,11 @@ impl Compiler {
     fn store_and_return(&mut self, iter: &mut Peekable<Lexer>) -> Result<Token, ErrorTuple> {
         self.current_index += 1;
         let (r, l) = match iter.next() {
-            Some(Ok(t)) => (Ok(t.0), (t.1.line, t.1.col)),
+            Some(Ok(t)) => {
+                self.current_end = t.1.end;
+                self.last_end = t.1.end;
+                (Ok(t.0), (t.1.line, t.1.col))
+            }
             Some(Err(e)) => {
                 // self.error_syntax(e.code, e.location);
                 let l = e.location;
@@ -708,23 +757,23 @@ impl Compiler {
     }
 
     fn drain_setters(&mut self, f: FnRef) {
-        let vv = self.var_set_stack.drain(..).rev();
-        let it = vv.peekable();
-        for v in it {
+        let vv: Vec<_> = self.var_set_stack.drain(..).rev().collect();
+        for v in vv {
             if let Some(s) = v {
                 // The setter opcode now consumes its value, so no trailing POP is
                 // needed — multiple targets just pop successive values off the stack.
-                f.chunk.write_code(s.0, self.current_location);
+                self.write_code(f, s.0, self.current_location);
             }
         }
     }
 
     fn drain_getters(&mut self, f: FnRef) {
         devout!("{}", "drain getters".green());
-        for v in self.var_stack.drain(..) {
+        let vv: Vec<_> = self.var_stack.drain(..).collect();
+        for v in vv {
             if let Some(s) = v {
                 // println!("⭐⭐⭐DRAIN GETTERS {}",s.1);
-                f.chunk.write_code(s.1, self.current_location);
+                self.write_code(f, s.1, self.current_location);
             }
         }
     }
@@ -750,6 +799,7 @@ impl Compiler {
                 Err(ErrorTuple {
                     code: e.code.clone(),
                     location: l,
+                    end: e.end,
                 })
             }
             None => Ok(&Token::EOF),
@@ -772,11 +822,13 @@ impl Compiler {
                 Err(ErrorTuple {
                     code: e.code.clone(),
                     location: l,
+                    end: e.end,
                 })
             }
             None => Err(ErrorTuple {
                 code: SiltError::Unknown,
                 location: (0, 0),
+                end: None,
             }),
         }
     }
@@ -1195,6 +1247,7 @@ fn set_trailing_vararg(&mut self,bool: bool){
                         col: _,
                         index,
                         length,
+                        ..
                     },
                 )) => {
                     let start = index;
@@ -1393,6 +1446,19 @@ impl Compiler {
         if !skip_step {
             self.store(it);
         }
+        let mark = self.begin_span(self.current_location);
+        let r = self.parse_precedence_inner(mc, f, it, precedence);
+        self.end_span(mark);
+        r
+    }
+
+    fn parse_precedence_inner<'c>(
+        &mut self,
+        mc: &Mutation<'c>,
+        f: FnRef<'_, 'c>,
+        it: &mut Peekable<Lexer>,
+        precedence: Precedence,
+    ) -> Catch {
         // self.store(); // MARK with store first it works for normal statements, but it breaks for incomplete expressions that are meant to pop off
         // Basically the integer we just saw is dropped off when we reach here because of store
         let t = self.get_current()?;
@@ -1489,6 +1555,23 @@ fn declaration<'a, 'c: 'a>(
     // Reset expression tracking for each declaration
     this.last_was_expression = false;
 
+    let start = match this.peek_triple(it) {
+        Ok(t) => (t.1.line, t.1.col),
+        Err(_) => this.current_location,
+    };
+    let mark = this.begin_span(start);
+    let r = declaration_inner(this, mc, f, it);
+    this.end_span(mark);
+    r
+}
+
+fn declaration_inner<'a, 'c: 'a>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'a, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
+    let t = this.peek(it)?;
     match t {
         Token::Local => declaration_keyword(this, mc, f, it, true, false)?,
         Token::Global => declaration_keyword(this, mc, f, it, false, false)?,
@@ -2183,6 +2266,7 @@ fn block<'c>(
                 let err = ErrorTuple {
                     code: e.code.clone(),
                     location: e.location,
+                    end: e.end,
                 };
                 return Err(err);
             }

@@ -204,16 +204,16 @@ impl<'frame> CallFrame<'frame> {
         self.ip = unsafe { self.ip.sub(offset as usize) };
         // println!("rewind: {}", unsafe { &*self.ip });
     }
-    /// Source location of the instruction `ip` points at. `ip` walks the
+    /// Source span of the instruction `ip` points at. `ip` walks the
     /// effective prototype's code (see `proto`), so its offset from that code's
     /// start is the instruction index into the parallel `locations` table.
-    pub fn current_loc(&self) -> (usize, usize) {
+    pub fn current_span(&self) -> ((usize, usize), (usize, usize)) {
         let chunk = &self.proto.chunk;
         let i = unsafe { self.ip.offset_from(chunk.code.as_ptr()) };
         if i < 0 {
-            return (0, 0);
+            return ((0, 0), (0, 0));
         }
-        chunk.get_loc(i as usize)
+        chunk.get_span(i as usize)
     }
 }
 #[derive(Default, Collect)]

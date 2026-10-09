@@ -10,6 +10,9 @@ pub struct Chunk<'chnk> {
     pub code: Vec<OpCode>,
     constants: Vec<Value<'chnk>>, //TODO VALUE ARRAY typedef faster?
     locations: Vec<(usize, usize)>,
+    /// Per-instruction source span (start, inclusive end) for error snippets:
+    /// the whole expression or statement the instruction belongs to.
+    spans: Vec<(TokenCell, TokenCell)>,
     valid: bool,
 }
 
@@ -19,15 +22,26 @@ impl<'chnk> Chunk<'chnk> {
             code: vec![],
             constants: vec![],
             locations: vec![],
+            spans: vec![],
             valid: true,
         }
     }
     // capacity < 8 ? 8: capacity*2
 
     pub fn write_code(&mut self, byte: OpCode, location: TokenCell) -> usize {
+        self.write_code_span(byte, location, (location, location))
+    }
+
+    pub fn write_code_span(
+        &mut self,
+        byte: OpCode,
+        location: TokenCell,
+        span: (TokenCell, TokenCell),
+    ) -> usize {
         // TODO https://shnatsel.medium.com/how-to-avoid-bounds-checks-in-rust-without-unsafe-f65e618b4c1e
         self.code.push(byte);
         self.locations.push(location);
+        self.spans.push(span);
         self.code.len() - 1
     }
 
@@ -41,6 +55,7 @@ impl<'chnk> Chunk<'chnk> {
     pub fn drop_last(&mut self) {
         self.code.pop();
         self.locations.pop();
+        self.spans.pop();
     }
 
     pub fn drop_last_if(&mut self, byte: &OpCode) -> bool {
@@ -176,6 +191,15 @@ impl<'chnk> Chunk<'chnk> {
         self.code.clear();
         self.constants.clear();
         self.locations.clear();
+        self.spans.clear();
+    }
+
+    /// Source span (start, inclusive end) of the instruction at `index`.
+    pub fn get_span(&self, index: usize) -> (TokenCell, TokenCell) {
+        match self.spans.get(index) {
+            Some(s) => *s,
+            None => ((0, 0), (0, 0)),
+        }
     }
 
     pub fn get_loc(&self, index: usize) -> (usize, usize) {

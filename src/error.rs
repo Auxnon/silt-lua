@@ -125,15 +125,18 @@ pub struct TokenTriple {
     pub col: usize,
     pub index: usize,
     pub length: usize,
+    /// Line and column (1-indexed, inclusive) of the token's last character.
+    pub end: TokenCell,
 }
 
 impl TokenTriple {
-    pub fn new(line: usize, col: usize, index: usize, length: usize) -> Self {
+    pub fn new(line: usize, col: usize, index: usize, length: usize, end: TokenCell) -> Self {
         TokenTriple {
             line,
             col,
             index,
             length,
+            end,
         }
     }
 }
@@ -145,6 +148,7 @@ impl Default for TokenTriple {
             col: 0,
             index: 0,
             length: 0,
+            end: (0, 0),
         }
     }
 }
@@ -317,7 +321,21 @@ impl std::fmt::Display for ValueTypes {
 #[derive(Clone)]
 pub struct ErrorTuple {
     pub code: SiltError,
+    /// Where the offending code starts (1-indexed line, col).
     pub location: TokenCell,
+    /// Where it ends (inclusive), when known. Snippets underline
+    /// `location..=end`; without it they mark `location` with a single caret.
+    pub end: Option<TokenCell>,
+}
+
+impl ErrorTuple {
+    pub fn new(code: SiltError, location: TokenCell) -> Self {
+        Self {
+            code,
+            location,
+            end: None,
+        }
+    }
 }
 
 impl Default for ErrorTuple {
@@ -325,6 +343,7 @@ impl Default for ErrorTuple {
         Self {
             code: SiltError::Unknown,
             location: (0, 0),
+            end: None,
         }
     }
 }
@@ -333,6 +352,7 @@ impl Default for &ErrorTuple {
         &ErrorTuple {
             code: SiltError::Unknown,
             location: (0, 0),
+            end: None,
         }
     }
 }
@@ -403,7 +423,10 @@ impl ErrorTuple {
         format!(
             "error: {} (line {}, col {})\n{}",
             self.code, self.location.0, self.location.1,
-            error_snippet(source, self.location)
+            match self.end {
+                Some(end) => error_span_snippet(source, self.location, end),
+                None => error_snippet(source, self.location),
+            }
         )
     }
 }
@@ -435,6 +458,64 @@ pub fn error_snippet(source: &str, location: TokenCell) -> String {
         .map(|c| if c == '\t' { '\t' } else { ' ' })
         .collect();
     format!("{} | {}\n{} | {}^", gutter, text, pad, indent)
+}
+
+/// Most source lines a span snippet prints before eliding the middle.
+const SPAN_MAX_LINES: usize = 4;
+
+/// Render the source covered by `start..=end` (1-indexed, inclusive) with the
+/// covered columns underlined, the way rustc marks an expression:
+///
+/// ```text
+/// 26 |     b.ent.flipped = flip
+///    |     ^^^^^^^^^^^^^^^^^^^^
+/// ```
+///
+/// A span over several lines underlines each line's covered part; past
+/// `SPAN_MAX_LINES` the middle lines are elided with `...`. Falls back to a
+/// single caret (`error_snippet`) if the end is missing or before the start.
+pub fn error_span_snippet(source: &str, start: TokenCell, end: TokenCell) -> String {
+    if end.0 < start.0 || (end.0 == start.0 && end.1 < start.1) {
+        return error_snippet(source, start);
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    if start.0 == 0 || start.0 > lines.len() {
+        return format!("  (line {} not in source)", start.0);
+    }
+    let last = end.0.min(lines.len());
+    let width = last.to_string().len();
+    let pad = " ".repeat(width);
+    let mut out: Vec<String> = vec![];
+    let count = last - start.0 + 1;
+    for line in start.0..=last {
+        let skip_from = start.0 + SPAN_MAX_LINES - 1;
+        if count > SPAN_MAX_LINES && line >= skip_from && line < last {
+            if line == skip_from {
+                out.push(format!("{} | ...", pad));
+            }
+            continue;
+        }
+        let text = lines[line - 1];
+        let chars: Vec<char> = text.chars().collect();
+        // Later lines start the underline at their first non-blank character.
+        let from = if line == start.0 {
+            start.1.max(1)
+        } else {
+            chars.iter().position(|c| !c.is_whitespace()).map(|i| i + 1).unwrap_or(1)
+        };
+        let to = if line == end.0 { end.1 } else { chars.len() };
+        let to = to.min(chars.len()).max(from);
+        // Echo leading characters as the indent (tabs stay tabs) so the
+        // underline lines up under tab- or space-indented code.
+        let indent: String = chars
+            .iter()
+            .take(from - 1)
+            .map(|&c| if c == '\t' { '\t' } else { ' ' })
+            .collect();
+        out.push(format!("{:>w$} | {}", line, text, w = width));
+        out.push(format!("{} | {}{}", pad, indent, "^".repeat(to - from + 1)));
+    }
+    out.join("\n")
 }
 
 impl From<Vec<ErrorTuple>> for SiltError {

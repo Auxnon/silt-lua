@@ -2562,7 +2562,8 @@ impl<'gc> VM<'gc> {
                         Value::Table(_) | Value::UserData(_) => {
                             self.operate_table(ep, *depth, Some(value))
                         }
-                        _ => Err(SiltError::MetaMethodMissing(MetaMethod::Index)),
+                        // Same message as TABLE_GET on a non-table receiver.
+                        other => Err(SiltError::VmNonTableOperations(other.to_error())),
                     });
                 }
                 // OpCode::TABLE_SET_BY_CONSTANT { constant } => {
@@ -2708,9 +2709,11 @@ impl<'gc> VM<'gc> {
         match results {
             Ok(o) => Ok(o),
             Err(e) => {
+                let (start, end) = frame.current_span();
                 let t = ErrorTuple {
                     code: e,
-                    location: frame.current_loc(),
+                    location: start,
+                    end: Some(end),
                 };
                 // The frame that faulted carries the source index of the code it was
                 // compiled from (a nested closure keeps its defining source's index,
@@ -2867,6 +2870,7 @@ impl<'gc> VM<'gc> {
                     errors: vec![ErrorTuple {
                         code: e,
                         location: (0, 0),
+                        end: None,
                     }],
                     source,
                     source_index: crate::error::SOURCE_INDEX_UNKNOWN,
@@ -2881,6 +2885,7 @@ impl<'gc> VM<'gc> {
                     errors: vec![ErrorTuple {
                         code: SiltError::Unknown,
                         location: (0, 0),
+                        end: None,
                     }],
                     source,
                     source_index: crate::error::SOURCE_INDEX_UNKNOWN,
