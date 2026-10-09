@@ -49,6 +49,19 @@ fn error_in_nested_function_body_line() {
     assert_eq!(err_line(src), 3);
 }
 
+/// The location comes from the faulting instruction, not the value-stack
+/// height. It used to index `locations` by stack depth, so a table
+/// constructor with several fields (leaving a deep stack) dragged the
+/// reported line back into the constructor.
+#[test]
+fn error_after_wide_constructor_line() {
+    assert_eq!(err_line("local b = { x = 1, y = 2 }\nb.ent.x = 1"), 2);
+    let src = "function f()\n  local b = { x = 1, y = 2, z = 3 }\n  b.ent = 5\n  b.ent.x = 1\nend\nf()";
+    assert_eq!(err_line(src), 4);
+    let src = "function spawn(x, y, z, dx, dy)\n  local b = { x = x, y = y, z = z, dx = dx, dy = dy, age = 0, ent = nil }\n  local c = nil\n  c.flipped = true\nend\nspawn(1, 2, 3, 4, 5)";
+    assert_eq!(err_line(src), 4);
+}
+
 // ── snippet helper ───────────────────────────────────────────────────────────
 
 #[test]

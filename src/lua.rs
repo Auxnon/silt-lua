@@ -2710,7 +2710,7 @@ impl<'gc> VM<'gc> {
             Err(e) => {
                 let t = ErrorTuple {
                     code: e,
-                    location: frame.get_loc_by_count(self.stack_count),
+                    location: frame.current_loc(),
                 };
                 // The frame that faulted carries the source index of the code it was
                 // compiled from (a nested closure keeps its defining source's index,
