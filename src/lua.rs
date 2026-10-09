@@ -2556,35 +2556,11 @@ impl<'gc> VM<'gc> {
                 OpCode::TABLE_SET { depth } => {
                     let value = self.pop(ep);
                     bubble!(match self.grab(ep, *depth as usize + 1) {
-                        Value::Table(_) => self.operate_table(ep, *depth, Some(value)),
-                        Value::UserData(u) => {
-                            let field = unsafe { ep.ip.sub(*depth as usize).replace(Value::Nil) };
-                            let field_name = field.pure_string();
-
-                            let u = &mut *(*u).borrow_mut(ep.mc);
-                            let reg = &self.userdata_registry;
-                            match crate::userdata::vm_integration::set_field(
-                                self,
-                                reg,
-                                &ep.mc,
-                                u,
-                                &field_name,
-                                value,
-                            ) {
-                                Ok(_) => {
-                                    // Mirror operate_table's set cleanup: pop the
-                                    // userdata receiver + its `depth` field keys off
-                                    // the stack. Without this the receiver leaks every
-                                    // assignment, desyncing the stack from the
-                                    // compiler's fixed local slots.
-                                    let dec = *depth as usize + 1;
-                                    self.stack_count -= dec;
-                                    unsafe { ep.ip = ep.ip.sub(dec) };
-                                    unsafe { ep.ip.replace(Value::Nil) };
-                                    Ok(())
-                                }
-                                Err(e) => Err(e),
-                            }
+                        // operate_table walks tables and userdata alike and pops
+                        // the receiver + its `depth` keys, keeping the stack in
+                        // step with the compiler's fixed local slots.
+                        Value::Table(_) | Value::UserData(_) => {
+                            self.operate_table(ep, *depth, Some(value))
                         }
                         _ => Err(SiltError::MetaMethodMissing(MetaMethod::Index)),
                     });
@@ -2654,28 +2630,9 @@ impl<'gc> VM<'gc> {
                     let value = unsafe { &*table_point };
 
                     match value {
-                        Value::Table(_) => match self.operate_table(ep, *depth, None) {
-                            Ok(_) => {}
-                            Err(e) => break Err(e),
-                        },
-                        Value::UserData(ud) => {
-                            let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
-                            let field_name = field.pure_string();
-                            let mut mu = (*ud).borrow_mut(ep.mc);
-                            let rud = mu.deref_mut();
-
-                            match crate::userdata::vm_integration::get_field(
-                                self,
-                                &self.userdata_registry,
-                                ep.mc,
-                                rud,
-                                &field_name,
-                            ) {
-                                Ok(value) => {
-                                    self.stack_count -= u - 1;
-                                    unsafe { ep.ip = ep.ip.sub(u - 1) };
-                                    unsafe { table_point.replace(value) };
-                                }
+                        Value::Table(_) | Value::UserData(_) => {
+                            match self.operate_table(ep, *depth, None) {
+                                Ok(_) => {}
                                 Err(e) => break Err(e),
                             }
                         }
@@ -3215,8 +3172,10 @@ impl<'gc> VM<'gc> {
         };
         let table_point = unsafe { ep.ip.sub(u) };
         let table = unsafe { &*table_point };
-        if let Value::Table(t) = table {
-            let mut current = *t;
+        if let Value::Table(_) | Value::UserData(_) = table {
+            // Each link may be a table or a userdata: `b.ent.x = v` walks the
+            // table `b` to the userdata `b.ent`, then sets its field.
+            let mut current = table.clone();
             for i in 1..=depth {
                 // Keys sit on the stack in source order above the table:
                 // [table, key1, key2, ... keyN] with keyN on top (ip.sub(1)).
@@ -3232,28 +3191,71 @@ impl<'gc> VM<'gc> {
                     // assert!(ep.ip == table_point);
                     match set {
                         Some(value) => {
-                            current.borrow_mut(ep.mc).set(key, value);
+                            match &current {
+                                Value::Table(t) => {
+                                    (*t).borrow_mut(ep.mc).set(key, value);
+                                }
+                                Value::UserData(ud) => {
+                                    let name = key.pure_string();
+                                    let mut mu = (*ud).borrow_mut(ep.mc);
+                                    crate::userdata::vm_integration::set_field(
+                                        self,
+                                        &self.userdata_registry,
+                                        ep.mc,
+                                        mu.deref_mut(),
+                                        &name,
+                                        value,
+                                    )?;
+                                }
+                                _ => unreachable!(),
+                            }
                             unsafe { table_point.replace(Value::Nil) };
                         }
                         None => {
-                            let out = Self::meta_index_get(current, &key);
+                            let out = match &current {
+                                Value::Table(t) => Self::meta_index_get(*t, &key),
+                                Value::UserData(ud) => {
+                                    let name = key.pure_string();
+                                    let mut mu = (*ud).borrow_mut(ep.mc);
+                                    crate::userdata::vm_integration::get_field(
+                                        self,
+                                        &self.userdata_registry,
+                                        ep.mc,
+                                        mu.deref_mut(),
+                                        &name,
+                                    )?
+                                }
+                                _ => unreachable!(),
+                            };
                             unsafe { table_point.replace(out) };
                         }
                     }
                     return Ok(());
                 } else {
-                    let v = current.try_borrow().unwrap();
-                    let check = v.getr(&key);
-                    // let check = unsafe { current.try_borrow_unguarded() }.unwrap().get(&key);
+                    let check = match &current {
+                        Value::Table(t) => t.borrow().getr(&key).cloned(),
+                        Value::UserData(ud) => {
+                            let name = key.pure_string();
+                            let mut mu = (*ud).borrow_mut(ep.mc);
+                            Some(crate::userdata::vm_integration::get_field(
+                                self,
+                                &self.userdata_registry,
+                                ep.mc,
+                                mu.deref_mut(),
+                                &name,
+                            )?)
+                        }
+                        _ => unreachable!(),
+                    };
                     match check {
-                        Some(Value::Table(t)) => {
-                            current = *t;
+                        Some(v @ (Value::Table(_) | Value::UserData(_))) => {
+                            current = v;
+                        }
+                        Some(Value::Nil) | None => {
+                            return Err(SiltError::VmNonTableOperations(ValueTypes::Nil));
                         }
                         Some(v) => {
                             return Err(SiltError::VmNonTableOperations(v.to_error()));
-                        }
-                        None => {
-                            return Err(SiltError::VmNonTableOperations(ValueTypes::Nil));
                         }
                     }
                 }
