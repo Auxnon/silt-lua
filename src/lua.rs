@@ -2393,6 +2393,21 @@ impl<'gc> VM<'gc> {
                     match value {
                         Value::Closure(c) => {
                             let cc = *c;
+                            // Lua fills parameters the caller left out with nil. Without
+                            // this a short call left those slots as whatever was on the
+                            // stack above the args, so the callee read stale values, and
+                            // a later push (e.g. a nested call's function) showed up as
+                            // the "missing" parameter.
+                            let fixed = if cc.is_variadic() {
+                                cc.get_variadic()
+                            } else {
+                                cc.get_arity()
+                            };
+                            let mut ar = ar;
+                            while ar < fixed {
+                                self.push(ep, Value::Nil);
+                                ar += 1;
+                            }
                             if cc.is_variadic() {
                                 // Lua-style variadic adjust: the overflow args stay
                                 // where they are and we copy the function slot plus
