@@ -10,7 +10,7 @@ use colored::Colorize;
 use gc_arena::{Gc, Mutation};
 
 use crate::{
-    code::OpCode,
+    code::{ConstIndex, OpCode},
     error::{ErrorOut, ErrorTuple, SiltError, TokenCell, TokenTriple},
     function::FunctionObject,
     lexer::Lexer,
@@ -177,7 +177,7 @@ enum Precedence {
 }
 // precedence enum includes concat ..
 
-type Ident = u8;
+type Ident = ConstIndex;
 
 type Catch = Result<(), ErrorTuple>;
 
@@ -907,13 +907,28 @@ impl Compiler {
         self.labels.insert(label, self.get_chunk_size(f));
     }
 
-    fn identifer_constant(&mut self, f: FnRef, ident: String) -> u8 {
-        self.write_identifier(f, ident) as u8
+    /** Narrow a constant-table index to an operand. Past ConstIndex::MAX this is a
+     * compile error rather than a silent wrap onto some other constant. */
+    fn const_index(&mut self, index: usize) -> ConstIndex {
+        match ConstIndex::try_from(index) {
+            Ok(i) => i,
+            Err(_) => {
+                let e = self.error_at(SiltError::TooManyConstants);
+                self.push_error(e);
+                0
+            }
+        }
+    }
+
+    fn identifer_constant(&mut self, f: FnRef, ident: String) -> ConstIndex {
+        let i = self.write_identifier(f, ident);
+        self.const_index(i)
     }
 
     /** write to constant table  */
-    fn write_constant<'a, 'c: 'a>(&mut self, f: FnRef<'a, 'c>, value: Value<'c>) -> u8 {
-        f.chunk.write_constant(value) as u8
+    fn write_constant<'a, 'c: 'a>(&mut self, f: FnRef<'a, 'c>, value: Value<'c>) -> ConstIndex {
+        let i = f.chunk.write_constant(value);
+        self.const_index(i)
     }
 
     /** write to constant table and emit the op code at location */
@@ -929,7 +944,7 @@ impl Compiler {
 
     /** write identifier to constant table, remove duplicates, and emit code */
     fn emit_identifer_constant_at<'a, 'c: 'a>(&mut self, f: FnRef, ident: String) {
-        let constant = self.write_identifier(f, ident) as u8;
+        let constant = self.identifer_constant(f, ident);
         self.emit(f, OpCode::CONSTANT { constant }, self.current_location);
     }
 
@@ -2047,7 +2062,7 @@ fn build_function<'c>(
     let func_value = Value::Function(Gc::new(mc, f2));
     if true {
         // need closure
-        let constant = f.chunk.write_constant(func_value) as u8;
+        let constant = this.write_constant(f, func_value);
         this.emit_at(f, OpCode::CLOSURE { constant });
         // emit upvalues
 
@@ -2884,7 +2899,7 @@ fn build_arrow_function<'c>(
     f2.varidic_index = if state.vararg > 0 { state.vararg - 1 } else { 0 };
 
     let func_value = Value::Function(Gc::new(mc, f2));
-    let constant = f.chunk.write_constant(func_value) as u8;
+    let constant = this.write_constant(f, func_value);
     this.emit_at(f, OpCode::CLOSURE { constant });
     for val in state.up_values.iter() {
         this.emit_at(
