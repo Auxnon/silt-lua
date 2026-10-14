@@ -87,10 +87,20 @@ const NATIVE_MULTI: &str = r#"
     return s
 "#;
 
+
+const TAIL_RECURSION: &str = r#"
+    local function loop(n, acc)
+        if n == 0 then return acc end
+        return loop(n - 1, acc + 1)
+    end
+    return loop(1000000, 0)
+"#;
+
 fn benches(c: &mut Criterion) {
     c.bench_function("for_loop_1e6", |b| b.iter(|| run(FOR_LOOP)));
     c.bench_function("while_loop_1e6", |b| b.iter(|| run(WHILE_LOOP)));
     c.bench_function("fib_28_recursion", |b| b.iter(|| run(FIB)));
+    c.bench_function("tail_recursion_1e6", |b| b.iter(|| run(TAIL_RECURSION)));
     c.bench_function("string_concat_1e4", |b| b.iter(|| run(STR_CONCAT)));
     c.bench_function("table_rw_2e5", |b| b.iter(|| run(TABLE_OPS)));
     c.bench_function("native_call_1e6", |b| b.iter(|| run(NATIVE_CALL)));

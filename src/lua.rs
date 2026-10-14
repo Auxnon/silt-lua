@@ -2284,7 +2284,14 @@ impl<'gc> VM<'gc> {
                         .set_value(&mut self.stack, value);
                 }
 
-                OpCode::CALL(arity, multi,variadic) => {
+                OpCode::CALL(..) | OpCode::TAILCALL(..) => {
+                    // TAILCALL compiles with multi 0; for a closure callee it
+                    // inherits the current frame's multi_return below.
+                    let (arity, multi, variadic, tail) = match instruction {
+                        OpCode::CALL(a, m, v) => (*a, *m, *v, false),
+                        OpCode::TAILCALL(a, v) => (*a, 0u8, *v, true),
+                        _ => unreachable!(),
+                    };
                     // Resolve the true argument count. When the call spreads `...`
                     // the trailing arg expands to the caller's variadic overflow, so
                     // the compile-time count (which counts `...` as a single arg) is
@@ -2294,11 +2301,11 @@ impl<'gc> VM<'gc> {
                         // from `base` upward. The real arg count is the fixed args
                         // (arity - 1, the trailing call counted as one) plus however many
                         // values it produced (stack_count - base).
-                        (((self.stack_count - base) as u8).wrapping_add(*arity)).wrapping_sub(1)
-                    } else if *variadic {
-                        (*arity - 1) + (frame.call_arity - frame.proto.varidic_index)
+                        (((self.stack_count - base) as u8).wrapping_add(arity)).wrapping_sub(1)
+                    } else if variadic {
+                        (arity - 1) + (frame.call_arity - frame.proto.varidic_index)
                     } else {
-                        *arity
+                        arity
                     };
                     let value = self.peekn(ar);
                     devout!(" | -> {}", value);
@@ -2308,6 +2315,26 @@ impl<'gc> VM<'gc> {
                                 break Err(SiltError::StackOverflow);
                             }
                             let cc = *c;
+                            let multi = if tail {
+                                // Tail call: this frame is finished. Close its upvalues
+                                // (closures built for the args may alias its locals),
+                                // slide `[f, args]` down onto its base, drop the frame;
+                                // the callee answers to our caller with our multi_return.
+                                let snapshot = frame.stack_snapshot;
+                                let want = frame.multi_return;
+                                self.close_upvalues_by_return(ep.mc, snapshot);
+                                let func_idx = self.stack_count - ar as usize - 1;
+                                for i in 0..=(ar as usize) {
+                                    let v = take(&mut self.stack[func_idx + i]);
+                                    self.stack[snapshot + i] = v;
+                                }
+                                self.stack_count = snapshot + ar as usize + 1;
+                                frames.pop();
+                                frame_count -= 1;
+                                want
+                            } else {
+                                multi
+                            };
                             // Lua fills parameters the caller left out with nil. Without
                             // this a short call left those slots as whatever was on the
                             // stack above the args, so the callee read stale values, and
@@ -2342,14 +2369,14 @@ impl<'gc> VM<'gc> {
                                     let v = self.stack[func_idx + i].clone();
                                     self.push(v);
                                 }
-                                let mut new_frame = CallFrame::new(cc, snapshot, ar, *multi);
+                                let mut new_frame = CallFrame::new(cc, snapshot, ar, multi);
                                 new_frame.base = frame_top;
                                 frames.push(new_frame);
                                 frame = frames.last_mut().unwrap();
                             } else {
                                 let frame_top = self.stack_count - (ar as usize) - 1;
                                 self.ensure_stack();
-                                let mut new_frame = CallFrame::new(cc, frame_top, ar, *multi);
+                                let mut new_frame = CallFrame::new(cc, frame_top, ar, multi);
                                 new_frame.base = frame_top;
                                 frames.push(new_frame);
                                 frame = frames.last_mut().unwrap();
@@ -2402,7 +2429,7 @@ impl<'gc> VM<'gc> {
                                 // A native in trailing multiret position leaves ALL its
                                 // values and records where they start (like a Lua multiret
                                 // call), so the enclosing CALL can spread them.
-                                let multiret = *multi == crate::code::MULTIRET;
+                                let multiret = multi == crate::code::MULTIRET;
                                 let base = self.stack_count;
                                 match res {
                                     NativeReturn::Single(v) => {
@@ -2422,7 +2449,7 @@ impl<'gc> VM<'gc> {
                                             // adjust to the caller's wanted count
                                             // (`multi`): >1 keeps that many (nil-padded),
                                             // else just one.
-                                            let want = if *multi > 1 { *multi as usize } else { 1 };
+                                            let want = if multi > 1 { multi as usize } else { 1 };
                                             if n < want {
                                                 for _ in 0..(want - n) {
                                                     self.push(Value::Nil);

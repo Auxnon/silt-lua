@@ -2673,6 +2673,17 @@ fn return_statement<'c>(
     }
     this.set_can_multivar_set(true);
 
+    // `return f(...)` with a single call expression is a tail call: the callee
+    // replaces this frame. Only inside functions — the root chunk's frame is
+    // what `process` returns from. The call's `multi` is 0 here (an inner call
+    // marked MULTIRET is never the last op), so no information is lost.
+    if this.get_expression_count() == 1 && !f.is_script {
+        if let OpCode::CALL(a, 0, v) = f.chunk.read_last_code() {
+            let op = OpCode::TAILCALL(*a, *v);
+            f.chunk.patch_last(op);
+        }
+    }
+
     // For multiple return values, all expressions are already on the stack
     this.emit_at(f, OpCode::RETURN(this.get_expression_count()));
     Ok(())
