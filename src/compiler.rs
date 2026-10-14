@@ -375,6 +375,15 @@ impl FunctionalState {
     }
 }
 
+/// The enclosing statement's assignment bookkeeping, parked while a nested
+/// function body compiles (see `Compiler::save_assignment_state`).
+struct AssignmentState {
+    var_stack: Vec<Option<(OpCode, OpCode)>>,
+    var_set_stack: Vec<Option<(OpCode, OpCode)>>,
+    expected_multi: u8,
+    can_multivar_set: bool,
+}
+
 type FnRef<'a, 'c> = &'a mut FunctionObject<'c>;
 #[allow(dead_code)]
 type OpOpCode = Option<OpCode>;
@@ -570,6 +579,25 @@ impl Compiler {
     fn set_can_multivar_set(&mut self, value: bool) {
         self.can_multivar_set = value;
         // println!("multi set to {}", value);
+    }
+
+    /// Take the in-flight assignment state (multi-var setter/getter stacks and
+    /// their counters) so a nested function body starts clean; pair with
+    /// `restore_assignment_state` once the body is compiled.
+    fn save_assignment_state(&mut self) -> AssignmentState {
+        AssignmentState {
+            var_stack: std::mem::take(&mut self.var_stack),
+            var_set_stack: std::mem::take(&mut self.var_set_stack),
+            expected_multi: self.expected_multi,
+            can_multivar_set: self.can_multivar_set,
+        }
+    }
+
+    fn restore_assignment_state(&mut self, s: AssignmentState) {
+        self.var_stack = s.var_stack;
+        self.var_set_stack = s.var_set_stack;
+        self.expected_multi = s.expected_multi;
+        self.can_multivar_set = s.can_multivar_set;
     }
 
     // fn get_chunk(&self,e: &'a mut Emphereal) -> &'chnk Chunk {
@@ -1184,6 +1212,16 @@ fn set_trailing_vararg(&mut self,bool: bool){
                 Err(e) => println!("err {}", e),
             });
         }
+        // A Compiler is reused across many `run`s by hosts. Everything except the
+        // language flags and the source counter is per-compile state (locals,
+        // scope/functional depth, var stacks, labels, loops, `valid`…); carrying it
+        // over made the second chunk's locals address the first chunk's slots.
+        let flags = self.language_flags;
+        let source_counter = self.source_counter;
+        *self = Compiler::new();
+        self.language_flags = flags;
+        self.source_counter = source_counter;
+
         // Hand this compile a fresh source index and record it as the "current"
         // one so every nested FunctionObject::new below stamps the same value.
         let source_index = self.source_counter;
@@ -1963,10 +2001,21 @@ fn define_function<'c>(
     }
 
     let ident_clone = ident.clone();
-    let global_ident = if this.scope_depth > 0 && local {
+    // `function f()` where `f` is a local (or an enclosing function's local) in
+    // scope assigns that variable, as Lua does — the `local f  function f() … end`
+    // forward-declaration idiom. It used to always define a global, leaving the
+    // local nil.
+    let existing_local = if local {
+        None
+    } else {
+        resolve_local(this, it, &ident)
+    };
+    let global_ident = if existing_local.is_some() {
+        None
+    } else if this.scope_depth > 0 && local {
         //local
         //TODO should we warn? redefine_behavior(this,ident)?
-        add_local(this,  ident)?;
+        add_local(this, ident)?;
         None
     } else {
         Some((this.identifer_constant(f, ident), location))
@@ -1974,7 +2023,11 @@ fn define_function<'c>(
 
     build_function(this, mc, f, it, ident_clone, false, false, location.0)?;
 
-    define_variable(this, it, f, global_ident)?;
+    match existing_local {
+        Some((index, true)) => this.emit(f, OpCode::SET_UPVALUE { index }, location),
+        Some((index, false)) => this.emit(f, OpCode::SET_LOCAL { index }, location),
+        None => define_variable(this, it, f, global_ident)?,
+    }
 
     Ok(())
 }
@@ -2048,8 +2101,11 @@ fn build_function<'c>(
     // error inside them resolves back to the source they were written in.
     f2.source_index = this.current_source_index;
     let fr2 = &mut f2;
-    // this.swap_function(&mut sidelined_func);
-    // swap(f, &mut sidelined_func);
+    // The enclosing statement may be mid-assignment (`set = function(v) x = v end`):
+    // its setters sit on the var stacks. The body's own assignments swap/drain
+    // those stacks, so without isolating them the outer setter was drained inside
+    // the body and the outer assignment was silently lost.
+    let saved_assign = this.save_assignment_state();
     begin_scope(this);
     begin_functional_scope(this);
     let mut arity = 0;
@@ -2131,6 +2187,7 @@ fn build_function<'c>(
 
     end_scope(this, fr2, true);
     let state = end_functional_scope(this);
+    this.restore_assignment_state(saved_assign);
     // When we're done compiling the function object we drop the current body function back in and push the compiled func as a constant within that body
     // this.swap_function(&mut sidelined_func);
     // swap(f, &mut sidelined_func);
@@ -2948,6 +3005,7 @@ fn build_arrow_function<'c>(
     f2.start_line = start_line;
     f2.source_index = this.current_source_index;
     let fr2 = &mut f2;
+    let saved_assign = this.save_assignment_state();
     begin_scope(this);
     begin_functional_scope(this);
     let arity = params.len() as u8;
@@ -2989,6 +3047,7 @@ fn build_arrow_function<'c>(
 
     end_scope(this, fr2, true);
     let state = end_functional_scope(this);
+    this.restore_assignment_state(saved_assign);
     f2.upvalue_count = state.up_values.len() as u8;
     f2.is_variadic = state.vararg > 0;
     f2.varidic_index = if state.vararg > 0 { state.vararg - 1 } else { 0 };
@@ -3089,8 +3148,11 @@ fn vararg_variable(
         this.set_trailing_vararg(true);
     }
 
+    // No local placeholder here: whatever VARARG pushes is consumed by the
+    // enclosing operation (the declared locals, setters, CALL, TABLE_BUILD,
+    // RETURN). Reserving a slot made every local declared after any `...` use
+    // in the function read the wrong stack slot.
     this.emit_at(f, OpCode::VARARG { is_arg, count });
-    add_local_placeholder(this)?;
 
     Ok(())
 }
@@ -3724,6 +3786,23 @@ fn finish_grouped_method_call<'c>(
     Ok(())
 }
 
+/// If the expression just compiled was a spread `...` (argument-mode VARARG),
+/// rewrite it to push exactly one value and clear the trailing flag. Used where
+/// Lua truncates a vararg to its first value: a keyed table field or a
+/// positional element that is not the last.
+fn truncate_trailing_vararg(this: &mut Compiler, f: FnRef) {
+    if !this.is_trailing_vararg() {
+        return;
+    }
+    if let OpCode::VARARG { is_arg: true, .. } = f.chunk.read_last_code() {
+        f.chunk.patch_last(OpCode::VARARG {
+            is_arg: false,
+            count: 1,
+        });
+        this.set_trailing_vararg(false);
+    }
+}
+
 fn tabulate<'c>(
     this: &mut Compiler,
     mc: &Mutation<'c>,
@@ -3771,6 +3850,8 @@ fn tabulate<'c>(
                 }
             } {
                 expression_single(this, mc, f, it, false)?;
+                // `{k = ...}` takes only the first vararg value (Lua truncation).
+                truncate_trailing_vararg(this, f);
                 this.emit_at(f, OpCode::TABLE_INSERT { offset: count });
             } else {
                 count += 1;
@@ -3782,7 +3863,12 @@ fn tabulate<'c>(
                 // token closes the table: `{1, 2, 3,}` / `{1; 2; 3}`.
                 Token::Comma | Token::SemiColon => {
                     this.eat(it);
-                    !matches!(this.peek(it)?, Token::CloseBrace)
+                    let more = !matches!(this.peek(it)?, Token::CloseBrace);
+                    if more {
+                        // `{..., x}`: a vararg that is not the last element is one value.
+                        truncate_trailing_vararg(this, f);
+                    }
+                    more
                 }
                 Token::CloseBrace => false,
                 _ => return Err(this.error_at(SiltError::TableExpectedCommaOrCloseBrace)),
@@ -3793,7 +3879,13 @@ fn tabulate<'c>(
             // }
         }
         if count > 0 {
-            this.emit_at(f, OpCode::TABLE_BUILD(count));
+            // A trailing `...` spreads every overflow value, so the real element
+            // count is only known at run time; flag the build like a variadic CALL.
+            let variadic = this.is_trailing_vararg();
+            if variadic {
+                this.set_trailing_vararg(false);
+            }
+            this.emit_at(f, OpCode::TABLE_BUILD { count, variadic });
         }
         this.set_arg_mode(false);
     }
