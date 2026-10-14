@@ -24,6 +24,7 @@ pub enum SiltError {
     ExpectedToken(Token),
     TooManyLocals,
     TooManyConstants,
+    StackOverflow,
     TooManyOperations,
     TooManyParameters,
     InvalidVarArgParam,
@@ -195,6 +196,7 @@ impl std::fmt::Display for SiltError {
                 "Too many operations within this condition, limited to 65535"
             ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
+            Self::StackOverflow => write!(f, "stack overflow (too deep a call chain)"),
             Self::TooManyConstants => write!(
                 f,
                 "Too many constants in one chunk, limited to 65536; split the file or move data into functions"

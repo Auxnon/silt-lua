@@ -189,11 +189,11 @@ macro_rules! binary_op_push {
         #[cfg(feature = "dev-out")]
         $src.body.chunk.print_constants();
         // TODO test speed of this vs 1 pop and a mutate
-        let r = $src.pop($ep);
-        let l = $src.pop($ep);
+        let r = $src.pop();
+        let l = $src.pop();
         let res = binary_op!($src, $ep, $frame, $frames, $frame_count, l, $op, r, $opp);
 
-        $src.push($ep, res);
+        $src.push(res);
     }};
 }
 
@@ -283,19 +283,23 @@ macro_rules! table_meta_op {
                  * This feels dirty, but I wrote this very sleep deprived and it works so this is a
                  * future me problem.
                  */
-                $lua.push($ep, f);
-                $lua.push($ep, Value::Table($table));
+                $lua.push(f);
+                $lua.push(Value::Table($table));
                 // $lua.push($ep,$right);
                 let arity: u8 = 1;
-                let val = $lua.peekn($ep, arity);
+                let val = $lua.peekn(arity);
                 // println!(" we attempt to call {}", val);
                 if let Value::Closure(c) = val {
                     const ARITY: usize = 2;
-                    let frame_top = unsafe { $ep.ip.sub(ARITY) };
-                    let new_frame = CallFrame::new(c.clone(), $lua.stack_count - ARITY, ARITY as u8, 0); // TODO using this opcode method means metamethods cant multireturn
+                    if $lua.stack_count > MAX_STACK {
+                        break Err(SiltError::StackOverflow);
+                    }
+                    let frame_top = $lua.stack_count - ARITY;
+                    let mut new_frame = CallFrame::new(c.clone(), frame_top, ARITY as u8, 0); // TODO using this opcode method means metamethods cant multireturn
+                    new_frame.base = frame_top;
+                    $lua.ensure_stack();
                     $frames.push(new_frame);
                     $frame = $frames.last_mut().unwrap();
-                    $frame.local_stack = frame_top;
                     $frame_count += 1;
 
                     $lua.print_stack();
@@ -446,17 +450,10 @@ fn plan_swaps<'gc>(
     SwapPlan::Nested(redirects)
 }
 
+/// Weak handles to userdata created this run; no `Gc` inside, nothing to trace.
+#[derive(Collect)]
+#[collect(require_static)]
 pub struct UDVec(pub Vec<WeakWrapper>);
-
-unsafe impl Collect for UDVec {
-    fn needs_trace() -> bool {
-        false
-    }
-
-    fn trace(&self, _cc: &gc_arena::Collection) {
-        // No GC references to trace
-    }
-}
 pub struct Lua {
     arena: Arena<Rootable![VM<'_>]>,
 }
@@ -671,10 +668,9 @@ pub struct VM<'gc> {
     // frames: Vec<CallFrame>,
     // dummy_frame: CallFrame,
     /** Instruction to be run at start of loop  */
-    // ip: *const OpCode, // TODO usize vs *const OpCode, will rust optimize the same?
-    // stack: Vec<Value>, // TODO fixed size array vs Vec, how much less overhead is there?
-    stack: [Value<'gc>; 256],
-    // stack_top: Gc<'lua,*mut Value<'lua>>,
+    /// Value stack. Grown on frame entry (`ensure_stack`) so every frame has
+    /// `STACK_HEADROOM` slots; `stack_count` is the top (next free slot).
+    stack: Vec<Value<'gc>>,
     stack_count: usize,
     /** Next empty location */
     // stack_top: *mut Value,
@@ -707,14 +703,20 @@ pub struct VM<'gc> {
     arg_scratch: Vec<Value<'gc>>,
 }
 
+/// Slots guaranteed above a frame's base when it is entered (see `VM::ensure_stack`).
+const STACK_HEADROOM: usize = 256;
+/// Hard cap on stack height; a call past this is a `StackOverflow` error rather
+/// than unbounded growth (PUC-Lua's LUAI_MAXSTACK is the same figure).
+const MAX_STACK: usize = 1_000_000;
+
+/// Per-run context threaded through the interpreter: the GC mutation handle.
 pub(crate) struct Ephemeral<'a, 'g> {
-    pub(crate) ip: *mut Value<'g>,
     pub(crate) mc: &'a Mutation<'g>,
 }
 
 impl<'a, 'g> Ephemeral<'a, 'g> {
-    pub fn new(mc: &'a Mutation<'g>, ip: *mut Value<'g>) -> Self {
-        Ephemeral { mc, ip }
+    pub fn new(mc: &'a Mutation<'g>) -> Self {
+        Ephemeral { mc }
     }
 }
 
@@ -764,11 +766,7 @@ impl<'gc> VM<'gc> {
         //     one
         // });
 
-        let stack = [(); 256].map(|_| Value::default());
-        // let stack_top = Gc::new(mc,RefLock::new( stack.as_mut_ptr() as *mut Value) );
-        // let stack = vec![];
-        // let stack_top = stack.as_ptr() as *mut Value;
-        // let gtable  =RefLock::new(HashMap::new() );
+        let stack = vec![Value::Nil; STACK_HEADROOM];
         Self {
             // compiler: Compiler::new(),
             root: Gc::new(mc, FunctionObject::new(None, false)),
@@ -1092,16 +1090,13 @@ impl<'gc> VM<'gc> {
         // and after ~255 calls the position math runs off the [Value; 256] array,
         // corrupting state and hanging the VM.
         self.stack_count = 0;
-        let mut ep = Ephemeral::new(mc, self.stack.as_mut_ptr() as *mut Value);
+        self.ensure_stack();
+        let mut ep = Ephemeral::new(mc);
         self.body = object;
-        // *root = new_body(mc, object.clone());
         let closure = Gc::new(mc, Closure::new(object, vec![]));
 
-        let mut frame = CallFrame::new(closure, 0, 0, 0);
-        frame.ip = object.chunk.code.as_ptr();
-        frame.local_stack = ep.ip;
-        // frame.stack.resize(256, Value::Nil); // TODO
-        self.push(&mut ep, Value::Function(object)); // TODO this needs to store the function object itself somehow, RC?
+        let frame = CallFrame::new(closure, 0, 0, 0);
+        self.push(Value::Function(object)); // frame base / self slot
         let frames = vec![frame];
         self.process(&mut ep, frames)
     }
@@ -1139,142 +1134,99 @@ impl<'gc> VM<'gc> {
         u
     }
 
+    /// Make sure a frame entered at the current height has `STACK_HEADROOM` slots
+    /// above it. Called on every frame push; pushes within a frame then stay in
+    /// bounds (the compiler caps locals at 255), and `stack[..]` indexing is the
+    /// backstop. The old fixed `[Value; 256]` array silently ran off its end under
+    /// deep recursion; this grows instead.
+    #[inline]
+    fn ensure_stack(&mut self) {
+        let need = self.stack_count + STACK_HEADROOM;
+        if self.stack.len() < need {
+            self.stack.resize(need, Value::Nil);
+        }
+    }
+
     /// push value to stack
     #[inline]
-    pub(crate) fn push(&mut self, ep: &mut Ephemeral<'_, 'gc>, value: Value<'gc>) {
-        VM::push_raw(ep, value);
+    pub(crate) fn push(&mut self, value: Value<'gc>) {
+        devout!(" | push: {}", value);
+        self.stack[self.stack_count] = value;
         self.stack_count += 1;
     }
 
-    /// push value to stack without stack adjustment (convenience for mutable reference hiccups)
-    #[inline]
-    fn push_raw<'e>(ep: &mut Ephemeral<'e, 'gc>, value: Value<'gc>) {
-        devout!(" | push: {}", value);
-        unsafe { ep.ip.write(value) };
-        ep.ip = unsafe { ep.ip.add(1) };
-    }
-
-    pub(crate) fn push_nils(&mut self, ep: &mut Ephemeral<'_, 'gc>, amount: usize) {
+    pub(crate) fn push_nils(&mut self, amount: usize) {
         devout!(" | push nils x{}", amount);
-        // const NIL: u8 = unsafe{ std::mem::transmute::<Value, u8>(Value::Nil)};
-        // ep.ip = unsafe {
-        //     ep.ip.write_bytes(NIL, amount);
-        //     ep.ip.add(amount)
-        // };
         for _ in 0..amount {
-            unsafe { ep.ip.write(Value::Nil) };
-            ep.ip = unsafe { ep.ip.add(1) };
+            self.push(Value::Nil);
         }
-        self.stack_count += amount;
     }
 
-    pub(crate) fn pushn(
-        &mut self,
-        ep: &mut Ephemeral<'_, 'gc>,
-        values: &[Value<'gc>],
-        need: usize,
-        is_rev: bool,
-    ) {
+    /// Push `need` slots: the first `values` (or the last, reversed, with
+    /// `is_rev`) and then whatever was already in the remaining slots.
+    pub(crate) fn pushn(&mut self, values: &[Value<'gc>], need: usize, is_rev: bool) {
         devout!(" | push_n: values x {}, need {}", values.len(), need);
-        // for v in values.iter() {
-        //     println!("we have {}", v);
-        // }
-        let _n = values.len();
-        let c = need;
         if is_rev {
-            // TODO this is sloppy make this DRYer
             let mut vv = values.iter().rev();
-            for _ in 0..c {
-                // TODO pushing nil is stupid, right? popping always writes nils so we shouldnt leak?
-                // let v= match vv.next(){
-                //     Some(v)=>v,
-                //     None=>Value::Nil
-                // }
-
+            for _ in 0..need {
                 if let Some(v) = vv.next() {
                     devout!("pushn -> {}", v);
-                    unsafe { ep.ip.write(v.clone()) };
+                    self.stack[self.stack_count] = v.clone();
                 };
-                ep.ip = unsafe { ep.ip.add(1) };
+                self.stack_count += 1;
             }
         } else {
-            let mut vv = values.into_iter();
-            for _ in 0..c {
-                // TODO pushing nil is stupid, right? popping always writes nils so we shouldnt leak?
-                // let v= match vv.next(){
-                //     Some(v)=>v,
-                //     None=>Value::Nil
-                // }
-
+            let mut vv = values.iter();
+            for _ in 0..need {
                 if let Some(v) = vv.next() {
                     devout!("pushn -> {}", v);
-                    unsafe { ep.ip.write(v.clone()) };
+                    self.stack[self.stack_count] = v.clone();
                 };
-                ep.ip = unsafe { ep.ip.add(1) };
+                self.stack_count += 1;
             }
         }
-
-        self.stack_count += need;
-    }
-
-    #[allow(dead_code)]
-    fn reserve(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> *mut Value<'gc> {
-        self.stack_count += 1;
-        let old = ep.ip;
-        ep.ip = unsafe { ep.ip.add(1) };
-        old
     }
 
     /** pop N number of values from stack */
-    fn popn_drop(&mut self, ep: &mut Ephemeral<'_, 'gc>, n: u8) {
-        unsafe { ep.ip = ep.ip.sub(n as usize) };
+    fn popn_drop(&mut self, n: u8) {
         self.stack_count -= n as usize;
     }
 
     #[cfg(feature = "dev-out")]
     fn print_upvalues(&self) {
         self.open_upvalues.iter().enumerate().for_each(|(i, up)| {
-            // let m=unsafe{};
-            println!("{}:{}", i, unsafe { up.as_ptr().read() }); // TODO can we make this safer?
+            println!("{}:{}", i, up.borrow());
         });
     }
 
+    /// Block end: the top `n` locals go out of scope and each has an open
+    /// upvalue. Close each from its own slot (not from whatever sits on top —
+    /// with several captured locals those are different slots) and pop them.
     fn close_n_upvalues(&mut self, ep: &mut Ephemeral<'_, 'gc>, n: u8) {
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
-        // remove n from end of list
-        if n > 1 {
-            self.open_upvalues
-                .drain(self.open_upvalues.len() - n as usize..)
-                .rev()
-                .for_each(|up| {
-                    let mut upvalue = up.borrow_mut(ep.mc);
-                    upvalue.close_around(unsafe { ep.ip.replace(Value::Nil) });
-                });
-            unsafe { ep.ip = ep.ip.sub(n as usize) };
-        } else {
-            let upvalue = self.open_upvalues.pop().unwrap();
-
-            upvalue.borrow_mut(ep.mc).close_around(self.pop(ep));
+        let start = self.open_upvalues.len() - n as usize;
+        for up in self.open_upvalues.drain(start..) {
+            up.borrow_mut(ep.mc).close(&mut self.stack);
         }
+        self.stack_count -= n as usize;
     }
 
-    /// Close every open upvalue that points at or above `last` (the returning
-    /// frame's base slot) and drop it from `open_upvalues`. Closing copies the
-    /// captured value off the soon-to-be-reclaimed stack into the UpValue's own
-    /// heap cell, so surviving closures keep seeing the right value after the
-    /// frame is gone. We must `borrow_mut` the actual Gc cell here — reading a
-    /// copy of the UpValue and closing that leaves the real cell open, pointing
-    /// at dead stack memory.
-    fn close_upvalues_by_return(&mut self, mc: &Mutation<'gc>, last: *mut Value<'gc>) {
+    /// Close every open upvalue that points at or above slot `last` (the
+    /// returning frame's base) and drop it from `open_upvalues`. Closing moves
+    /// the captured value off the soon-to-be-reclaimed stack into the UpValue's
+    /// own heap cell, so surviving closures keep seeing the right value after
+    /// the frame is gone. We must `borrow_mut` the actual Gc cell here — closing
+    /// a copy would leave the real cell open on a dead slot.
+    fn close_upvalues_by_return(&mut self, mc: &Mutation<'gc>, last: usize) {
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
         let mut i = 0;
         while i < self.open_upvalues.len() {
-            let loc = self.open_upvalues[i].borrow().location;
-            if loc >= last {
+            let loc = self.open_upvalues[i].borrow().slot();
+            if matches!(loc, Some(s) if s >= last) {
                 let up = self.open_upvalues.remove(i);
-                up.borrow_mut(mc).close();
+                up.borrow_mut(mc).close(&mut self.stack);
             } else {
                 i += 1;
             }
@@ -1283,94 +1235,53 @@ impl<'gc> VM<'gc> {
 
     /** pop and return top of stack */
     #[inline]
-    fn pop(&mut self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
+    fn pop(&mut self) -> Value<'gc> {
         self.stack_count -= 1;
-        unsafe { ep.ip = ep.ip.sub(1) };
-        let v = unsafe { ep.ip.replace(Value::Nil) };
-        // TODO is there a way to read without segfaulting?
-        // We'd have to list the value to be forgotten, but is this even faster?
-        // let v = unsafe { ep.ip.read() };
+        let v = take(&mut self.stack[self.stack_count]);
         devout!(" | pop: {}", v);
         v
     }
 
-    fn pop_offset(&mut self, ep: &mut Ephemeral<'_, 'gc>, offset: usize) -> Value<'gc> {
-        self.stack_count -= offset;
+    /// Pop `offset` values and return the lowest of them.
+    fn pop_offset(&mut self, offset: usize) -> Value<'gc> {
         for _ in 1..offset {
-            unsafe { ep.ip = ep.ip.sub(1) };
-            unsafe { ep.ip.replace(Value::Nil) };
+            self.pop();
         }
-        unsafe { ep.ip = ep.ip.sub(1) };
-        unsafe { ep.ip.replace(Value::Nil) }
+        self.pop()
     }
 
-    // TODO can we make this faster with slices? can we slice a pointer? 🤔
-    fn popn(&mut self, ep: &mut Ephemeral<'_, 'gc>, n: u8) -> Vec<Value<'gc>> {
-        // println!("popn: {}", n);
-        let mut values = vec![];
-        for _ in 0..n {
-            self.stack_count -= 1;
-            unsafe { ep.ip = ep.ip.sub(1) };
-            let v = unsafe { ep.ip.replace(Value::Nil) };
-            values.push(v);
-        }
-        // TODO inefficient just make it this way
-        values.reverse();
+    fn popn(&mut self, n: u8) -> Vec<Value<'gc>> {
+        let start = self.stack_count - n as usize;
+        let values: Vec<Value<'gc>> = self.stack[start..self.stack_count]
+            .iter_mut()
+            .map(take)
+            .collect();
+        self.stack_count = start;
         values
-    }
-
-    #[allow(dead_code)]
-    fn safe_pop(&mut self) -> Value<'gc> {
-        // let v3 = take(&mut self.stack[3]);
-        // println!("we took {}", v3);
-        // let v0 = take(&mut self.stack[self.stack_count - 1]);
-        // println!("we took {}", v0);
-        // let ve = v0.clone();
-        // std::mem::forget(v3);
-        // drop(v0);
-        // println!("we took {}", ve);
-        // self.print_raw_stack();
-        // core::ptr::read()
-
-        take(&mut self.stack[self.stack_count - 1])
-
-        // for i in self.stack.iter_mut().enumerate() {
-        //     *i = Value::Nil;
-        // }
-    }
-
-    /** Dangerous!  */
-    #[allow(dead_code)]
-    fn read_top(&self, ep: &mut Ephemeral<'_, 'gc>) -> Value<'gc> {
-        unsafe { ep.ip.sub(1).read() }
     }
 
     /** Look and get immutable reference to top of stack */
     #[inline]
-    fn peek(&self, ep: &mut Ephemeral<'_, 'gc>) -> &Value<'gc> {
-        // self.stack.last()
-        unsafe { &*ep.ip.sub(1) }
+    fn peek(&self) -> &Value<'gc> {
+        &self.stack[self.stack_count - 1]
     }
 
     /** Look and get mutable reference to top of stack */
     #[inline]
-    fn peek_mut(&self, ep: &mut Ephemeral<'_, 'gc>) -> &mut Value<'gc> {
-        unsafe { &mut *ep.ip.sub(1) }
+    fn peek_mut(&mut self) -> &mut Value<'gc> {
+        &mut self.stack[self.stack_count - 1]
     }
 
-    fn grab(&self, ep: &mut Ephemeral<'_, 'gc>, n: usize) -> &Value<'gc> {
-        unsafe { &*ep.ip.sub(n) }
+    /** Reference to the value `n` below the top (1 = top) */
+    #[inline]
+    fn grab(&self, n: usize) -> &Value<'gc> {
+        &self.stack[self.stack_count - n]
     }
-
-    // fn grab_mut(&self, ep: &mut Ephemeral<'_, 'gc>, n: usize) -> &mut Value<'gc> {
-    //     unsafe { &mut *ep.ip.sub(n) }
-    // }
 
     /** Look down N amount of stack and return immutable reference */
-    fn peekn(&self, ep: &mut Ephemeral<'_, 'gc>, n: u8) -> &Value<'gc> {
-        // unsafe { *ep.ip.sub(n as usize) }
-        // &self.stack[self.stack.len() - n as usize]
-        unsafe { &*ep.ip.sub((n as usize) + 1) }
+    #[inline]
+    fn peekn(&self, n: u8) -> &Value<'gc> {
+        &self.stack[self.stack_count - n as usize - 1]
     }
 
     // pub fn evaluate(&mut self, source: &str) -> FunctionObject<'lua> {
@@ -1400,18 +1311,16 @@ impl<'gc> VM<'gc> {
                 // ep.ip == stack[stack_count] invariant), so it cannot disturb the
                 // caller's live values below this point.
                 let snapshot = self.stack_count;
-                let base = unsafe { self.stack.as_mut_ptr().add(snapshot) };
-                let mut ep = Ephemeral::new(mc, base);
+                self.ensure_stack();
+                let mut ep = Ephemeral::new(mc);
                 // Lay down [closure, args...] exactly as a normal CALL leaves the stack
-                // (verified: function value at local_stack[0], args above).
-                Self::push_raw(&mut ep, Value::Closure(c));
-                self.stack_count += 1;
+                // (function value at the frame base, args above).
+                self.push(Value::Closure(c));
                 for a in args {
-                    Self::push_raw(&mut ep, a.clone());
-                    self.stack_count += 1;
+                    self.push(a.clone());
                 }
                 let mut frame = CallFrame::new(c, snapshot, args.len() as u8, 1);
-                frame.local_stack = base;
+                frame.base = snapshot;
                 // Every function body begins with a placeholder POP that the main loop
                 // skips via its trailing `iterate()` right after a CALL (it never runs).
                 // A freshly-entered nested loop would otherwise execute it and eat the
@@ -1425,7 +1334,7 @@ impl<'gc> VM<'gc> {
                 self.body = saved_body;
                 // Reclaim everything the protected run left above the entry point and
                 // close any upvalues it opened, on both success and failure.
-                self.close_upvalues_by_return(mc, base);
+                self.close_upvalues_by_return(mc, snapshot);
                 self.stack_count = snapshot;
                 match result {
                     Ok(ex) => ex.into_value(self, mc),
@@ -1484,7 +1393,7 @@ impl<'gc> VM<'gc> {
                     let count = *c;
                     frame_count -= 1;
                     if frame_count <= 0 {
-                        let out = self.pop(ep).into();
+                        let out = self.pop().into();
                         // if self.stack_count <= 1 {
                         //     return Ok(ExVal::Nil);
                         // }
@@ -1503,18 +1412,17 @@ impl<'gc> VM<'gc> {
                         // Trailing multiret call (`outer(inner())`): leave ALL `count`
                         // return values on the stack and record where they start so the
                         // immediately-following outer CALL can spread them as arguments.
-                        let vres = &self.popn(ep, count);
+                        let vres = &self.popn(count);
                         let snapshot = frame.stack_snapshot;
-                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
-                        self.close_upvalues_by_return(ep.mc, ep.ip);
+                        self.close_upvalues_by_return(ep.mc, snapshot);
                         self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
                         pending_multiret = Some(snapshot);
-                        self.pushn(ep, vres, count as usize, false);
+                        self.pushn(vres, count as usize, false);
                     } else if multi_return > 1 && count > 1 {
                         // TODO seriously stupid to make a Vec and then slice it
-                        let vres = &self.popn(ep, count);
+                        let vres = &self.popn(count);
 
                         // TODO this paragraph is a dupe of the one below, i hate this whole logic
                         // segment. Pushing stack values to a new vec, reversing it, then iterating
@@ -1526,9 +1434,7 @@ impl<'gc> VM<'gc> {
                         // fixed params were copied above the overflow). Deriving it
                         // from the snapshot reclaims that overflow + copies too.
                         let snapshot = frame.stack_snapshot;
-                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
-                        self.close_upvalues_by_return(ep.mc, ep.ip);
-                        devout!("stack top {}", unsafe { &*ep.ip });
+                        self.close_upvalues_by_return(ep.mc, snapshot);
                         self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
@@ -1536,14 +1442,14 @@ impl<'gc> VM<'gc> {
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
 
-                        self.pushn(ep, vres, multi_return as usize, false);
+                        self.pushn(vres, multi_return as usize, false);
                     } else {
                         // The function returned 0 or 1 value (count <= 1). Capture it
                         // before truncating the stack; a bare `return` (count 0) yields nil.
                         let res = match count {
                             0 => Value::Nil,
-                            1 => self.pop(ep),
-                            _ => self.pop_offset(ep, count as usize),
+                            1 => self.pop(),
+                            _ => self.pop_offset(count as usize),
                         };
 
                         // Truncate to the original function slot (== local_stack for
@@ -1551,27 +1457,24 @@ impl<'gc> VM<'gc> {
                         // fixed params were copied above the overflow). Deriving it
                         // from the snapshot reclaims that overflow + copies too.
                         let snapshot = frame.stack_snapshot;
-                        ep.ip = unsafe { self.stack.as_mut_ptr().add(snapshot) };
-                        self.close_upvalues_by_return(ep.mc, ep.ip);
-                        devout!("stack top {}", unsafe { &*ep.ip });
+                        self.close_upvalues_by_return(ep.mc, snapshot);
                         self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
                         devout!("next instruction {}", frame.current_instruction());
-                        // println!("yeah push {}", res);
-                        self.push(ep, res);
+                        self.push(res);
                         // The caller wanted `multi_return` values (e.g. `local a,b,c = f()`)
                         // but only one was produced — pad the remaining targets with nil so
                         // they aren't left holding stale stack slots.
                         if (multi_return as usize) > 1 {
-                            self.push_nils(ep, multi_return as usize - 1);
+                            self.push_nils(multi_return as usize - 1);
                         }
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
 
                         // if frame.need > 1 {
                         //     for _ in 1..frame.need {
-                        //         self.push(ep, Value::Nil);
+                        //         self.push(Value::Nil);
                         //     }
                         // }
                     }
@@ -1586,7 +1489,7 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::CONSTANT { constant } => {
                     let value = Self::get_chunk(frame).get_constant(*constant);
-                    self.push(ep, value.clone());
+                    self.push(value.clone());
                     // match value {
                     //     Value::Number(f) => self.push(*f),
                     //     Value::Integer(i) => self.push(*i as f64),
@@ -1594,16 +1497,11 @@ impl<'gc> VM<'gc> {
                     // }
                 }
                 OpCode::DEFINE_GLOBAL { constant } => {
-                    let value = self.body.chunk.get_constant(*constant);
+                    // Copy the Gc out first so the constant borrows the local, not `self`.
+                    let body = self.body;
+                    let value = body.chunk.get_constant(*constant);
                     if let Value::String(s) = value {
-                        // devout!("\"{}\"", _);
-                        // DEV inline pop due to self lifetime nonsense
-                        self.stack_count -= 1;
-                        unsafe { ep.ip = ep.ip.sub(1) };
-                        let v = unsafe { ep.ip.read() };
-
-                        // let v = self.pop();
-                        // self.globals.borrow_mut(ep.mc).set::< K:Value<'gc>, V:Value<'gc>>(s.into(), v);
+                        let v = self.pop();
                         self.globals.borrow_mut(ep.mc).set(s, v);
                     } else {
                         break Err(SiltError::VmCorruptConstant);
@@ -1619,7 +1517,7 @@ impl<'gc> VM<'gc> {
                         devout!("\"{}\"", s);
                         // Assignment consumes its value (no trailing POP from the
                         // compiler), so pop rather than clone-and-leave.
-                        let v = self.pop(ep);
+                        let v = self.pop();
                         self.globals.borrow_mut(ep.mc).set(s, v);
                     } else {
                         // devout!("0SET_GLOBAL: {}", value);
@@ -1636,9 +1534,9 @@ impl<'gc> VM<'gc> {
                         devout!("\"{}\"", s);
 
                         if let Some(v) = self.globals.borrow_mut(ep.mc).get(s) {
-                            self.push(ep, v.clone());
+                            self.push(v.clone());
                         } else {
-                            self.push(ep, Value::Nil);
+                            self.push(Value::Nil);
                         }
                     } else {
                         break Err(SiltError::VmCorruptConstant);
@@ -1647,24 +1545,25 @@ impl<'gc> VM<'gc> {
                 OpCode::SET_LOCAL { index } => {
                     // Assignment consumes its value (the compiler no longer emits a
                     // trailing POP), so pop rather than clone-and-leave.
-                    let value = self.pop(ep);
-                    frame.set_val(*index, value)
+                    let value = self.pop();
+                    frame.set_val(&mut self.stack, *index, value)
                 }
                 OpCode::GET_LOCAL { index } => {
                     #[cfg(feature = "dev-out")]
                     {
                         println!("before {}", self.stack_count);
-                        frame.print_local_stack();
+                        frame.print_local_stack(&self.stack);
                     }
                     // For variadic functions the frame base already sits past the
                     // variadic range (the fixed params are copied above the
                     // overflow at call time), so locals are addressed uniformly.
-                    self.push(ep, frame.get_val(*index).clone());
+                    let value = frame.get_val(&self.stack, *index).clone();
+                    self.push(value);
 
                     #[cfg(feature = "dev-out")]
                     {
                         println!("after {}", self.stack_count);
-                        frame.print_local_stack();
+                        frame.print_local_stack(&self.stack);
                     }
                     // self.push(frame.stack[*index as usize].clone());
                     // TODO ew cloning, is our cloning optimized yet?
@@ -1685,20 +1584,23 @@ impl<'gc> VM<'gc> {
                     #[cfg(feature = "dev-out")]
                     {
                         println!("before {}", self.stack_count);
-                        frame.print_local_stack();
+                        frame.print_local_stack(&self.stack);
                     }
 
-                    let raw = frame.get_varargs(nextra);
-                    self.pushn(ep, &raw[..take as usize], take as usize, false);
+                    // The overflow sits below the frame base and we push above the
+                    // top, so copy the range out rather than alias the stack.
+                    let raw: Vec<Value<'gc>> =
+                        frame.get_varargs(&self.stack, nextra)[..take as usize].to_vec();
+                    self.pushn(&raw, take as usize, false);
                     if val_count > nextra {
                         // not enough overflow values to satisfy the requested count
-                        self.push_nils(ep, (val_count - nextra) as usize);
+                        self.push_nils((val_count - nextra) as usize);
                     }
 
                     #[cfg(feature = "dev-out")]
                     {
                         println!("after {}", self.stack_count);
-                        frame.print_local_stack();
+                        frame.print_local_stack(&self.stack);
                     }
                 }
                 OpCode::NEED(_) => {}
@@ -1707,54 +1609,54 @@ impl<'gc> VM<'gc> {
                 OpCode::SUB => binary_op_push!(self, ep, frame, frames, frame_count, -, Sub),
                 OpCode::MULTIPLY => binary_op_push!(self, ep, frame, frames, frame_count, *, Mul),
                 OpCode::DIVIDE => {
-                    let right = self.pop(ep);
-                    let left = self.pop(ep);
+                    let right = self.pop();
+                    let left = self.pop();
 
                     match (left, right) {
                         (Value::Number(left), Value::Number(right)) => {
-                            self.push(ep, Value::Number(left / right))
+                            self.push(Value::Number(left / right))
                         }
                         (Value::Integer(left), Value::Integer(right)) => {
-                            self.push(ep, Value::Number(left as f64 / right as f64))
+                            self.push(Value::Number(left as f64 / right as f64))
                         }
                         (Value::Number(left), Value::Integer(right)) => {
-                            self.push(ep, Value::Number(left / right as f64))
+                            self.push(Value::Number(left / right as f64))
                         }
                         (Value::Integer(left), Value::Number(right)) => {
-                            self.push(ep, Value::Number(left as f64 / right))
+                            self.push(Value::Number(left as f64 / right))
                         }
                         // Component-wise vector division and scalar broadcast (both
                         // vector/scalar and scalar/vector).
                         #[cfg(feature = "vector")]
-                        (Value::Number(l), Value::Vec2(r)) => self.push(ep, Value::Vec2(l as f32 / r)),
+                        (Value::Number(l), Value::Vec2(r)) => self.push(Value::Vec2(l as f32 / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Number(l), Value::Vec3(r)) => self.push(ep, Value::Vec3(l as f32 / r)),
+                        (Value::Number(l), Value::Vec3(r)) => self.push(Value::Vec3(l as f32 / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Number(l), Value::Vec4(r)) => self.push(ep, Value::Vec4(l as f32 / r)),
+                        (Value::Number(l), Value::Vec4(r)) => self.push(Value::Vec4(l as f32 / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Integer(l), Value::Vec2(r)) => self.push(ep, Value::Vec2(l as f32 / r)),
+                        (Value::Integer(l), Value::Vec2(r)) => self.push(Value::Vec2(l as f32 / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Integer(l), Value::Vec3(r)) => self.push(ep, Value::Vec3(l as f32 / r)),
+                        (Value::Integer(l), Value::Vec3(r)) => self.push(Value::Vec3(l as f32 / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Integer(l), Value::Vec4(r)) => self.push(ep, Value::Vec4(l as f32 / r)),
+                        (Value::Integer(l), Value::Vec4(r)) => self.push(Value::Vec4(l as f32 / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec2(l), Value::Vec2(r)) => self.push(ep, Value::Vec2(l / r)),
+                        (Value::Vec2(l), Value::Vec2(r)) => self.push(Value::Vec2(l / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec3(l), Value::Vec3(r)) => self.push(ep, Value::Vec3(l / r)),
+                        (Value::Vec3(l), Value::Vec3(r)) => self.push(Value::Vec3(l / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec4(l), Value::Vec4(r)) => self.push(ep, Value::Vec4(l / r)),
+                        (Value::Vec4(l), Value::Vec4(r)) => self.push(Value::Vec4(l / r)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec2(l), Value::Number(r)) => self.push(ep, Value::Vec2(l / r as f32)),
+                        (Value::Vec2(l), Value::Number(r)) => self.push(Value::Vec2(l / r as f32)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec3(l), Value::Number(r)) => self.push(ep, Value::Vec3(l / r as f32)),
+                        (Value::Vec3(l), Value::Number(r)) => self.push(Value::Vec3(l / r as f32)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec4(l), Value::Number(r)) => self.push(ep, Value::Vec4(l / r as f32)),
+                        (Value::Vec4(l), Value::Number(r)) => self.push(Value::Vec4(l / r as f32)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec2(l), Value::Integer(r)) => self.push(ep, Value::Vec2(l / r as f32)),
+                        (Value::Vec2(l), Value::Integer(r)) => self.push(Value::Vec2(l / r as f32)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec3(l), Value::Integer(r)) => self.push(ep, Value::Vec3(l / r as f32)),
+                        (Value::Vec3(l), Value::Integer(r)) => self.push(Value::Vec3(l / r as f32)),
                         #[cfg(feature = "vector")]
-                        (Value::Vec4(l), Value::Integer(r)) => self.push(ep, Value::Vec4(l / r as f32)),
+                        (Value::Vec4(l), Value::Integer(r)) => self.push(Value::Vec4(l / r as f32)),
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
                                 self,
@@ -1766,7 +1668,7 @@ impl<'gc> VM<'gc> {
                                 rr,
                                 Div
                             );
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (l, r) => {
                             break Err(SiltError::ExpOpValueWithValue(
@@ -1779,8 +1681,8 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::MODULUS => {
-                    let right = self.pop(ep);
-                    let left = self.pop(ep);
+                    let right = self.pop();
+                    let left = self.pop();
                     match (left, right) {
                         (Value::Integer(a), Value::Integer(b)) => {
                             if b == 0 {
@@ -1794,24 +1696,24 @@ impl<'gc> VM<'gc> {
                             // the divisor (Rust's `%` is truncated toward zero).
                             let r = a % b;
                             let m = if r != 0 && (r < 0) != (b < 0) { r + b } else { r };
-                            self.push(ep, Value::Integer(m));
+                            self.push(Value::Integer(m));
                         }
                         (Value::Number(a), Value::Number(b)) => {
-                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                            self.push(Value::Number(a - (a / b).floor() * b))
                         }
                         (Value::Number(a), Value::Integer(b)) => {
                             let b = b as f64;
-                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                            self.push(Value::Number(a - (a / b).floor() * b))
                         }
                         (Value::Integer(a), Value::Number(b)) => {
                             let a = a as f64;
-                            self.push(ep, Value::Number(a - (a / b).floor() * b))
+                            self.push(Value::Number(a - (a / b).floor() * b))
                         }
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
                                 self, ep, frame, frames, frame_count, table, rr, Mod
                             );
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (l, r) => {
                             break Err(SiltError::ExpOpValueWithValue(
@@ -1824,26 +1726,26 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::POWER => {
                     // `^` always yields a float, per Lua.
-                    let right = self.pop(ep);
-                    let left = self.pop(ep);
+                    let right = self.pop();
+                    let left = self.pop();
                     match (left, right) {
                         (Value::Integer(a), Value::Integer(b)) => {
-                            self.push(ep, Value::Number((a as f64).powf(b as f64)))
+                            self.push(Value::Number((a as f64).powf(b as f64)))
                         }
                         (Value::Number(a), Value::Number(b)) => {
-                            self.push(ep, Value::Number(a.powf(b)))
+                            self.push(Value::Number(a.powf(b)))
                         }
                         (Value::Number(a), Value::Integer(b)) => {
-                            self.push(ep, Value::Number(a.powf(b as f64)))
+                            self.push(Value::Number(a.powf(b as f64)))
                         }
                         (Value::Integer(a), Value::Number(b)) => {
-                            self.push(ep, Value::Number((a as f64).powf(b)))
+                            self.push(Value::Number((a as f64).powf(b)))
                         }
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
                                 self, ep, frame, frames, frame_count, table, rr, Pow
                             );
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (l, r) => {
                             break Err(SiltError::ExpOpValueWithValue(
@@ -1855,8 +1757,8 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::FLOOR_DIVIDE => {
-                    let right = self.pop(ep);
-                    let left = self.pop(ep);
+                    let right = self.pop();
+                    let left = self.pop();
                     match (left, right) {
                         (Value::Integer(a), Value::Integer(b)) => {
                             if b == 0 {
@@ -1871,22 +1773,22 @@ impl<'gc> VM<'gc> {
                             let q = a / b;
                             let r = a % b;
                             let q = if r != 0 && (r < 0) != (b < 0) { q - 1 } else { q };
-                            self.push(ep, Value::Integer(q));
+                            self.push(Value::Integer(q));
                         }
                         (Value::Number(a), Value::Number(b)) => {
-                            self.push(ep, Value::Number((a / b).floor()))
+                            self.push(Value::Number((a / b).floor()))
                         }
                         (Value::Number(a), Value::Integer(b)) => {
-                            self.push(ep, Value::Number((a / b as f64).floor()))
+                            self.push(Value::Number((a / b as f64).floor()))
                         }
                         (Value::Integer(a), Value::Number(b)) => {
-                            self.push(ep, Value::Number((a as f64 / b).floor()))
+                            self.push(Value::Number((a as f64 / b).floor()))
                         }
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
                                 self, ep, frame, frames, frame_count, table, rr, IDiv
                             );
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (l, r) => {
                             break Err(SiltError::ExpOpValueWithValue(
@@ -1904,8 +1806,8 @@ impl<'gc> VM<'gc> {
                 | OpCode::BIT_XOR
                 | OpCode::SHIFT_LEFT
                 | OpCode::SHIFT_RIGHT => {
-                    let r = self.pop(ep);
-                    let l = self.pop(ep);
+                    let r = self.pop();
+                    let l = self.pop();
                     match (bit_int(&l), bit_int(&r)) {
                         (Some(a), Some(b)) => {
                             let res = match instruction {
@@ -1915,16 +1817,16 @@ impl<'gc> VM<'gc> {
                                 OpCode::SHIFT_LEFT => lua_shl(a, b),
                                 _ => lua_shr(a, b),
                             };
-                            self.push(ep, Value::Integer(res));
+                            self.push(Value::Integer(res));
                         }
                         (None, _) => break Err(SiltError::ExpInvalidBitwise(l.to_error())),
                         (_, None) => break Err(SiltError::ExpInvalidBitwise(r.to_error())),
                     }
                 }
                 OpCode::BIT_NOT => {
-                    let v = self.pop(ep);
+                    let v = self.pop();
                     match bit_int(&v) {
-                        Some(a) => self.push(ep, Value::Integer(!a)),
+                        Some(a) => self.push(Value::Integer(!a)),
                         None => break Err(SiltError::ExpInvalidBitwise(v.to_error())),
                     }
                 }
@@ -1933,57 +1835,57 @@ impl<'gc> VM<'gc> {
                     // After each push the window shifts up by one, so grab(n) keeps
                     // yielding the next original value.
                     for _ in 0..*n {
-                        let v = self.grab(ep, *n as usize).clone();
-                        self.push(ep, v);
+                        let v = self.grab(*n as usize).clone();
+                        self.push(v);
                     }
                 }
 
                 OpCode::NEGATE => {
-                    match self.peek(ep) {
+                    match self.peek() {
                         Value::Number(n) => {
                             let f = -n;
-                            self.pop(ep);
-                            self.push(ep, Value::Number(f))
+                            self.pop();
+                            self.push(Value::Number(f))
                         }
                         Value::Integer(i) => {
                             let f = -i;
-                            self.pop(ep);
-                            self.push(ep, Value::Integer(f))
+                            self.pop();
+                            self.push(Value::Integer(f))
                         }
                         #[cfg(feature = "vector")]
                         Value::Vec2(v) => {
                             let nv = -*v;
-                            self.pop(ep);
-                            self.push(ep, Value::Vec2(nv))
+                            self.pop();
+                            self.push(Value::Vec2(nv))
                         }
                         #[cfg(feature = "vector")]
                         Value::Vec3(v) => {
                             let nv = -*v;
-                            self.pop(ep);
-                            self.push(ep, Value::Vec3(nv))
+                            self.pop();
+                            self.push(Value::Vec3(nv))
                         }
                         #[cfg(feature = "vector")]
                         Value::Vec4(v) => {
                             let nv = -*v;
-                            self.pop(ep);
-                            self.push(ep, Value::Vec4(nv))
+                            self.pop();
+                            self.push(Value::Vec4(nv))
                         }
                         // None => Err(SiltError::EarlyEndOfFile)?,
                         c => break Err(SiltError::ExpInvalidNegation(c.to_error())),
                     }
                     // TODO  test this vs below: unsafe { *ep.ip = -*ep.ip };
                 }
-                OpCode::NIL => self.push(ep, Value::Nil),
-                OpCode::NILS(u) => self.push_nils(ep, *u as usize),
-                OpCode::TRUE => self.push(ep, Value::Bool(true)),
-                OpCode::FALSE => self.push(ep, Value::Bool(false)),
+                OpCode::NIL => self.push(Value::Nil),
+                OpCode::NILS(u) => self.push_nils(*u as usize),
+                OpCode::TRUE => self.push(Value::Bool(true)),
+                OpCode::FALSE => self.push(Value::Bool(false)),
                 OpCode::NOT => {
-                    let value = self.pop(ep);
-                    self.push(ep, Value::Bool(!Self::is_truthy(&value)));
+                    let value = self.pop();
+                    self.push(Value::Bool(!Self::is_truthy(&value)));
                 }
                 OpCode::EQUAL => {
-                    let r = self.pop(ep);
-                    let l = self.pop(ep);
+                    let r = self.pop();
+                    let l = self.pop();
                     // Userdata: consult `__eq` when both are userdata of distinct identity;
                     // same object is always equal, and a missing `__eq` means not equal.
                     if let (Value::UserData(a), Value::UserData(b)) = (&l, &r) {
@@ -1994,7 +1896,7 @@ impl<'gc> VM<'gc> {
                             bubble!(self.ud_meta_bool(ep.mc, ud, MetaMethod::Eq, &[l.clone(), r.clone()]))
                                 .unwrap_or(false)
                         };
-                        self.push(ep, Value::Bool(eq));
+                        self.push(Value::Bool(eq));
                     } else {
                     // Lua only consults `__eq` when both operands are tables that are
                     // not the same object; a missing `__eq` falls back to raw (reference)
@@ -2015,122 +1917,118 @@ impl<'gc> VM<'gc> {
                             let v = table_meta_op!(
                                 self, ep, frame, frames, frame_count, table, r, Eq
                             );
-                            self.push(ep, v);
+                            self.push(v);
                         }
-                        None => self.push(ep, Value::Bool(Self::is_equal(&l, &r))),
+                        None => self.push(Value::Bool(Self::is_equal(&l, &r))),
                     }
                     }
                 }
                 OpCode::NOT_EQUAL => {
-                    let r = self.pop(ep);
-                    let l = self.pop(ep);
-                    self.push(ep, Value::Bool(!Self::is_equal(&l, &r)));
+                    let r = self.pop();
+                    let l = self.pop();
+                    self.push(Value::Bool(!Self::is_equal(&l, &r)));
                 }
                 OpCode::LESS => {
-                    let r = self.pop(ep);
-                    let l = self.pop(ep);
+                    let r = self.pop();
+                    let l = self.pop();
                     match (l, r) {
                         (Value::Table(table), rr) => {
                             let v =
                                 table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Lt);
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (Value::UserData(ud), rr) => {
                             match bubble!(self.ud_meta_bool(
                                 ep.mc, ud, MetaMethod::Lt, &[Value::UserData(ud), rr.clone()]
                             )) {
-                                Some(res) => self.push(ep, Value::Bool(res)),
+                                Some(res) => self.push(Value::Bool(res)),
                                 None => self.push(
-                                    ep,
                                     Value::Bool(bubble!(Self::is_less(&Value::UserData(ud), &rr))),
                                 ),
                             }
                         }
-                        (l, r) => self.push(ep, Value::Bool(bubble!(Self::is_less(&l, &r)))),
+                        (l, r) => self.push(Value::Bool(bubble!(Self::is_less(&l, &r)))),
                     }
                 }
                 OpCode::LESS_EQUAL => {
-                    let r = self.pop(ep);
-                    let l = self.pop(ep);
+                    let r = self.pop();
+                    let l = self.pop();
                     match (l, r) {
                         (Value::Table(table), rr) => {
                             let v =
                                 table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Le);
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (Value::UserData(ud), rr) => {
                             match bubble!(self.ud_meta_bool(
                                 ep.mc, ud, MetaMethod::Le, &[Value::UserData(ud), rr.clone()]
                             )) {
-                                Some(res) => self.push(ep, Value::Bool(res)),
+                                Some(res) => self.push(Value::Bool(res)),
                                 None => self.push(
-                                    ep,
                                     Value::Bool(!bubble!(Self::is_greater(&Value::UserData(ud), &rr))),
                                 ),
                             }
                         }
                         (l, r) => {
-                            self.push(ep, Value::Bool(!bubble!(Self::is_greater(&l, &r))))
+                            self.push(Value::Bool(!bubble!(Self::is_greater(&l, &r))))
                         }
                     }
                 }
                 OpCode::GREATER => {
-                    let r = self.pop(ep);
-                    let l = self.pop(ep);
+                    let r = self.pop();
+                    let l = self.pop();
                     // `l > r` is evaluated as `r < l`, so a table dispatches `__lt`
                     // with operands swapped (matching Lua's comparison rewrite).
                     match (r, l) {
                         (Value::Table(table), ll) => {
                             let v =
                                 table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Lt);
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (Value::UserData(ud), ll) => {
                             match bubble!(self.ud_meta_bool(
                                 ep.mc, ud, MetaMethod::Lt, &[Value::UserData(ud), ll.clone()]
                             )) {
-                                Some(res) => self.push(ep, Value::Bool(res)),
+                                Some(res) => self.push(Value::Bool(res)),
                                 None => self.push(
-                                    ep,
                                     Value::Bool(bubble!(Self::is_less(&Value::UserData(ud), &ll))),
                                 ),
                             }
                         }
-                        (rr, ll) => self.push(ep, Value::Bool(bubble!(Self::is_less(&rr, &ll)))),
+                        (rr, ll) => self.push(Value::Bool(bubble!(Self::is_less(&rr, &ll)))),
                     }
                 }
                 OpCode::GREATER_EQUAL => {
-                    let r = self.pop(ep);
-                    let l = self.pop(ep);
+                    let r = self.pop();
+                    let l = self.pop();
                     // `l >= r` is evaluated as `r <= l` → `__le` with swapped operands.
                     match (r, l) {
                         (Value::Table(table), ll) => {
                             let v =
                                 table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Le);
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (Value::UserData(ud), ll) => {
                             match bubble!(self.ud_meta_bool(
                                 ep.mc, ud, MetaMethod::Le, &[Value::UserData(ud), ll.clone()]
                             )) {
-                                Some(res) => self.push(ep, Value::Bool(res)),
+                                Some(res) => self.push(Value::Bool(res)),
                                 None => self.push(
-                                    ep,
                                     Value::Bool(!bubble!(Self::is_greater(&Value::UserData(ud), &ll))),
                                 ),
                             }
                         }
                         (rr, ll) => {
-                            self.push(ep, Value::Bool(!bubble!(Self::is_greater(&rr, &ll))))
+                            self.push(Value::Bool(!bubble!(Self::is_greater(&rr, &ll))))
                         }
                     }
                 }
                 OpCode::CONCAT => {
-                    let r = self.pop(ep);
-                    let l = self.pop(ep);
+                    let r = self.pop();
+                    let l = self.pop();
                     match (l, r) {
                         (Value::String(left), Value::String(right)) => {
-                            self.push(ep, Value::String(left + &right))
+                            self.push(Value::String(left + &right))
                         }
                         // A userdata operand (either side) dispatches its `__concat`
                         // metamethod, with the operands passed in source order. Checked
@@ -2143,7 +2041,7 @@ impl<'gc> VM<'gc> {
                                 MetaMethod::Concat,
                                 &[Value::UserData(ud), rr],
                             ));
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (ll, Value::UserData(ud)) => {
                             let v = bubble!(crate::userdata::vm_integration::call_meta_method(
@@ -2153,22 +2051,22 @@ impl<'gc> VM<'gc> {
                                 MetaMethod::Concat,
                                 &[ll, Value::UserData(ud)],
                             ));
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (Value::String(left), v2) => {
-                            self.push(ep, Value::String(left + &v2.to_string()))
+                            self.push(Value::String(left + &v2.to_string()))
                         }
                         // A table operand dispatches to its `__concat` metamethod.
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
                                 self, ep, frame, frames, frame_count, table, rr, Concat
                             );
-                            self.push(ep, v);
+                            self.push(v);
                         }
                         (v1, Value::String(right)) => {
-                            self.push(ep, Value::String(v1.to_string() + &right))
+                            self.push(Value::String(v1.to_string() + &right))
                         }
-                        (v1, v2) => self.push(ep, Value::String(v1.to_string() + &v2.to_string())),
+                        (v1, v2) => self.push(Value::String(v1.to_string() + &v2.to_string())),
                     }
                 }
 
@@ -2177,17 +2075,17 @@ impl<'gc> VM<'gc> {
                     literal: _,
                 } => {}
                 OpCode::POP => {
-                    self.pop(ep); //  last =
+                    self.pop(); //  last =
                 }
 
-                OpCode::POPS(n) => self.popn_drop(ep, *n), //TODO here's that 255 local limit again
+                OpCode::POPS(n) => self.popn_drop(*n), //TODO here's that 255 local limit again
 
                 OpCode::CLOSE_UPVALUES(n) => {
                     self.close_n_upvalues(ep, *n);
                 }
 
                 OpCode::GOTO_IF_FALSE(offset) => {
-                    let value = self.peek(ep);
+                    let value = self.peek();
                     // println!("GOTO_IF_FALSE: {}", value);
                     if !Self::is_truthy(value) {
                         frame.forward(*offset);
@@ -2195,14 +2093,14 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::POP_AND_GOTO_IF_FALSE(offset) => {
-                    let value = &self.pop(ep);
+                    let value = &self.pop();
                     // println!("GOTO_IF_FALSE: {}", value);
                     if !Self::is_truthy(value) {
                         frame.forward(*offset);
                     }
                 }
                 OpCode::GOTO_IF_TRUE(offset) => {
-                    let value = self.peek(ep);
+                    let value = self.peek();
                     if Self::is_truthy(value) {
                         frame.forward(*offset);
                     }
@@ -2218,9 +2116,10 @@ impl<'gc> VM<'gc> {
                     // Stack layout: [iterator, limit, step] with step on top. The
                     // loop-continue test depends on the step's sign: ascending ends
                     // once iterator > limit, descending once iterator < limit.
-                    let iterator = unsafe { &*ep.ip.sub(3) };
-                    let compare = unsafe { &*ep.ip.sub(2) };
-                    let step = unsafe { &*ep.ip.sub(1) };
+                    let top = self.stack_count;
+                    let iterator = &self.stack[top - 3];
+                    let compare = &self.stack[top - 2];
+                    let step = &self.stack[top - 1];
                     let descending = match step {
                         Value::Integer(i) => *i < 0,
                         Value::Number(n) => *n < 0.0,
@@ -2235,7 +2134,7 @@ impl<'gc> VM<'gc> {
                         frame.forward(*skip);
                     } else {
                         let it = iterator.clone();
-                        self.push(ep, it);
+                        self.push(it);
                     }
                 }
                 OpCode::FORLOOP(rewind) => {
@@ -2243,16 +2142,16 @@ impl<'gc> VM<'gc> {
                     // stack top is [iterator, limit, step] again. Increment the
                     // iterator by the step, re-test the bound, and either push the
                     // new loop variable and jump back to the body, or fall through.
-                    let step = unsafe { &*ep.ip.sub(1) }.clone();
+                    let top = self.stack_count;
+                    let step = self.stack[top - 1].clone();
                     let descending = match step {
                         Value::Integer(i) => i < 0,
                         Value::Number(n) => n < 0.0,
                         _ => false,
                     };
-                    let iter_slot = unsafe { &mut *ep.ip.sub(3) };
-                    bubble!(iter_slot.increment(&step));
-                    let iterator = unsafe { &*ep.ip.sub(3) };
-                    let compare = unsafe { &*ep.ip.sub(2) };
+                    bubble!(self.stack[top - 3].increment(&step));
+                    let iterator = &self.stack[top - 3];
+                    let compare = &self.stack[top - 2];
                     let done = if descending {
                         bubble!(Self::is_less(iterator, compare))
                     } else {
@@ -2260,22 +2159,25 @@ impl<'gc> VM<'gc> {
                     };
                     if !done {
                         let it = iterator.clone();
-                        self.push(ep, it);
+                        self.push(it);
                         frame.rewind(*rewind);
                     }
                 }
                 OpCode::INCREMENT { index } => {
-                    let value = frame.get_val_mut(*index);
-                    let step = self.peek(ep);
-                    bubble!(value.increment(step));
+                    // The step is on top; the local being stepped is a different
+                    // slot, so split the borrow with a copy of the step.
+                    let step = self.peek().clone();
+                    let value = frame.get_val_mut(&mut self.stack, *index);
+                    bubble!(value.increment(&step));
                 }
 
                 OpCode::FOR_GENERIC { count, exit } => {
                     // The top three stack values are the iterator triple
                     // (iterator f, state s, control). Call f(s, control).
-                    let f_val = unsafe { &*ep.ip.sub(3) }.clone();
-                    let s = unsafe { &*ep.ip.sub(2) }.clone();
-                    let control = unsafe { &*ep.ip.sub(1) }.clone();
+                    let top = self.stack_count;
+                    let f_val = self.stack[top - 3].clone();
+                    let s = self.stack[top - 2].clone();
+                    let control = self.stack[top - 1].clone();
                     let results = match &f_val {
                         Value::NativeFunction(nf) => {
                             match bubble!(nf.f.call(self, ep.mc, &[s, control])) {
@@ -2295,10 +2197,10 @@ impl<'gc> VM<'gc> {
                         frame.forward(*exit);
                     } else {
                         // advance the control variable, then push the loop vars
-                        unsafe { *ep.ip.sub(1) = first };
+                        *self.peek_mut() = first;
                         for i in 0..*count {
                             let v = results.get(i as usize).cloned().unwrap_or(Value::Nil);
-                            self.push(ep, v);
+                            self.push(v);
                         }
                     }
                 }
@@ -2338,7 +2240,7 @@ impl<'gc> VM<'gc> {
                         //             }
                         //         }
                         //
-                        //         self.push(ep, Value::Closure(Gc::new(ep.mc, closure)));
+                        //         self.push(Value::Closure(Gc::new(ep.mc, closure)));
                         //     } else {
                         //         // devout!("closure is of type {}", closure.function.function.name);
                         //         return Err(SiltError::VmRuntimeError);
@@ -2353,23 +2255,23 @@ impl<'gc> VM<'gc> {
                 OpCode::GET_UPVALUE { index } => {
                     let value = frame.function.upvalues[*index as usize]
                         .borrow()
-                        .copy_value();
+                        .copy_value(&self.stack);
 
                     #[cfg(feature = "dev-out")]
                     {
-                        frame.print_local_stack();
+                        frame.print_local_stack(&self.stack);
                         frame.function.print_upvalues();
                     }
 
                     devout!("GET_UPVALUE: {}", value);
-                    self.push(ep, value);
+                    self.push(value);
                 }
                 OpCode::SET_UPVALUE { index } => {
                     // Assignment consumes its value (no trailing POP from the compiler).
-                    let value = self.pop(ep);
+                    let value = self.pop();
                     frame.function.upvalues[*index as usize]
                         .borrow_mut(ep.mc)
-                        .set_value(value);
+                        .set_value(&mut self.stack, value);
                 }
 
                 OpCode::CALL(arity, multi,variadic) => {
@@ -2388,10 +2290,13 @@ impl<'gc> VM<'gc> {
                     } else {
                         *arity
                     };
-                    let value = self.peekn(ep, ar);
+                    let value = self.peekn(ar);
                     devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
+                            if self.stack_count > MAX_STACK {
+                                break Err(SiltError::StackOverflow);
+                            }
                             let cc = *c;
                             // Lua fills parameters the caller left out with nil. Without
                             // this a short call left those slots as whatever was on the
@@ -2405,7 +2310,7 @@ impl<'gc> VM<'gc> {
                             };
                             let mut ar = ar;
                             while ar < fixed {
-                                self.push(ep, Value::Nil);
+                                self.push(Value::Nil);
                                 ar += 1;
                             }
                             if cc.is_variadic() {
@@ -2419,32 +2324,25 @@ impl<'gc> VM<'gc> {
                                 let numfixed = cc.get_variadic() as usize;
                                 let snapshot = self.stack_count - total - 1;
                                 // original function slot, start of the copy source
-                                let func_ptr = unsafe { ep.ip.sub(total + 1) };
+                                let func_idx = snapshot;
                                 // copies land at the current top -> this is the new base
-                                let frame_top = ep.ip;
-                                // clone function + fixed params before pushing so we
-                                // never read and write the stack at the same time
-                                let copies: Vec<Value<'gc>> = (0..=numfixed)
-                                    .map(|i| unsafe { (*func_ptr.add(i)).clone() })
-                                    .collect();
-                                for v in copies {
-                                    self.push(ep, v);
+                                let frame_top = self.stack_count;
+                                self.ensure_stack();
+                                for i in 0..=numfixed {
+                                    let v = self.stack[func_idx + i].clone();
+                                    self.push(v);
                                 }
-                                let new_frame = CallFrame::new(cc, snapshot, ar, *multi);
+                                let mut new_frame = CallFrame::new(cc, snapshot, ar, *multi);
+                                new_frame.base = frame_top;
                                 frames.push(new_frame);
                                 frame = frames.last_mut().unwrap();
-                                frame.local_stack = frame_top;
                             } else {
-                                let frame_top = unsafe { ep.ip.sub((ar as usize) + 1) };
-                                let new_frame = CallFrame::new(
-                                    cc,
-                                    self.stack_count - (ar as usize) - 1,
-                                    ar,
-                                    *multi,
-                                );
+                                let frame_top = self.stack_count - (ar as usize) - 1;
+                                self.ensure_stack();
+                                let mut new_frame = CallFrame::new(cc, frame_top, ar, *multi);
+                                new_frame.base = frame_top;
                                 frames.push(new_frame);
                                 frame = frames.last_mut().unwrap();
-                                frame.local_stack = frame_top;
                             }
                             frame_count += 1;
                         }
@@ -2476,12 +2374,9 @@ impl<'gc> VM<'gc> {
                             let n = (ar + 1) as usize;
                             let mut scratch = std::mem::take(&mut self.arg_scratch);
                             scratch.clear();
-                            for _ in 0..n {
-                                self.stack_count -= 1;
-                                unsafe { ep.ip = ep.ip.sub(1) };
-                                scratch.push(unsafe { ep.ip.replace(Value::Nil) });
-                            }
-                            scratch.reverse();
+                            let start = self.stack_count - n;
+                            scratch.extend(self.stack[start..self.stack_count].iter_mut().map(take));
+                            self.stack_count = start;
 
                             // scratch[0] is the function, scratch[1..] the args. Copy the
                             // Gc (Copy) out so no borrow of `scratch` is held across the
@@ -2501,7 +2396,7 @@ impl<'gc> VM<'gc> {
                                 let base = self.stack_count;
                                 match res {
                                     NativeReturn::Single(v) => {
-                                        self.push(ep, v);
+                                        self.push(v);
                                         if multiret {
                                             pending_multiret = Some(base);
                                         }
@@ -2509,7 +2404,7 @@ impl<'gc> VM<'gc> {
                                     NativeReturn::Multi(vals) => {
                                         let n = vals.len();
                                         for v in vals {
-                                            self.push(ep, v);
+                                            self.push(v);
                                         }
                                         if multiret {
                                             pending_multiret = Some(base);
@@ -2520,11 +2415,11 @@ impl<'gc> VM<'gc> {
                                             let want = if *multi > 1 { *multi as usize } else { 1 };
                                             if n < want {
                                                 for _ in 0..(want - n) {
-                                                    self.push(ep, Value::Nil);
+                                                    self.push(Value::Nil);
                                                 }
                                             } else {
                                                 for _ in 0..(n - want) {
-                                                    self.pop(ep);
+                                                    self.pop();
                                                 }
                                             }
                                         }
@@ -2539,7 +2434,7 @@ impl<'gc> VM<'gc> {
                 }
 
                 OpCode::PRINT => {
-                    println!("<<<<<< {} >>>>>>>", self.pop(ep));
+                    println!("<<<<<< {} >>>>>>>", self.pop());
                 }
                 OpCode::META(_) => todo!(),
                 OpCode::REGISTER_UPVALUE {
@@ -2547,15 +2442,15 @@ impl<'gc> VM<'gc> {
                     neighboring: _,
                 } => unreachable!(),
                 OpCode::LENGTH => {
-                    let value = self.pop(ep);
+                    let value = self.pop();
                     match value {
-                        Value::String(s) => self.push(ep, Value::Integer(s.len() as i64)),
-                        Value::Table(t) => self.push(ep, Value::Integer(t.borrow().len() as i64)),
+                        Value::String(s) => self.push(Value::Integer(s.len() as i64)),
+                        Value::Table(t) => self.push(Value::Integer(t.borrow().len() as i64)),
                         _ => break Err(SiltError::ExpInvalidLength(value.to_error())),
                     }
                 }
                 OpCode::NEW_TABLE => {
-                    self.push(ep, self.new_table(ep.mc));
+                    self.push(self.new_table(ep.mc));
                     *self.table_counter.borrow_mut() += 1;
                 }
                 OpCode::TABLE_INSERT { offset } => {
@@ -2569,8 +2464,8 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::TABLE_SET { depth } => {
-                    let value = self.pop(ep);
-                    bubble!(match self.grab(ep, *depth as usize + 1) {
+                    let value = self.pop();
+                    bubble!(match self.grab(*depth as usize + 1) {
                         // operate_table walks tables and userdata alike and pops
                         // the receiver + its `depth` keys, keeping the stack in
                         // step with the compiler's fixed local slots.
@@ -2598,7 +2493,7 @@ impl<'gc> VM<'gc> {
                     // Look up the method and leave [method, receiver] so the
                     // receiver is passed as the implicit `self` first argument.
                     let key = Self::get_chunk(&frame).get_constant(*constant);
-                    let receiver = self.peek(ep).clone();
+                    let receiver = self.peek().clone();
                     let method = match &receiver {
                         Value::Table(t) => Self::meta_index_get(*t, &key),
                         // Strings dispatch methods through the `string` library
@@ -2636,16 +2531,14 @@ impl<'gc> VM<'gc> {
                         }
                         _ => break Err(SiltError::VmNonTableOperations(receiver.to_error())),
                     };
-                    *self.peek_mut(ep) = method;
-                    self.push(ep, receiver);
+                    *self.peek_mut() = method;
+                    self.push(receiver);
                 }
                 OpCode::TABLE_GET { depth } => {
                     let u = *depth as usize + 1;
-                    let table_point = unsafe { ep.ip.sub(u) };
-                    // self.table_op_index=self.stack_count-u;
-                    let value = unsafe { &*table_point };
+                    let table_point = self.stack_count - u;
 
-                    match value {
+                    match &self.stack[table_point] {
                         Value::Table(_) | Value::UserData(_) => {
                             match self.operate_table(ep, *depth, None) {
                                 Ok(_) => {}
@@ -2657,9 +2550,10 @@ impl<'gc> VM<'gc> {
                         // single component value at the receiver slot.
                         #[cfg(feature = "vector")]
                         Value::Vec2(_) | Value::Vec3(_) | Value::Vec4(_) => {
-                            let field = unsafe { ep.ip.sub(1).replace(Value::Nil) };
+                            let value = self.stack[table_point].clone();
+                            let field = self.pop();
                             let field_name = field.pure_string();
-                            let component = match (value, field_name.as_str()) {
+                            let component = match (&value, field_name.as_str()) {
                                 (Value::Vec2(v), "x") => Some(v.0.x),
                                 (Value::Vec2(v), "y") => Some(v.0.y),
                                 (Value::Vec3(v), "x") => Some(v.0.x),
@@ -2673,9 +2567,9 @@ impl<'gc> VM<'gc> {
                             };
                             match component {
                                 Some(c) => {
-                                    self.stack_count -= u - 1;
-                                    unsafe { ep.ip = ep.ip.sub(u - 1) };
-                                    unsafe { table_point.replace(Value::Number(c as f64)) };
+                                    // the key was already popped above (u - 1 == 1 here)
+                                    self.stack_count = table_point + 1;
+                                    self.stack[table_point] = Value::Number(c as f64);
                                 }
                                 None => {
                                     break Err(SiltError::Custom(format!(
@@ -2686,7 +2580,7 @@ impl<'gc> VM<'gc> {
                                 }
                             }
                         }
-                        _ => break Err(SiltError::VmNonTableOperations(value.to_error())),
+                        other => break Err(SiltError::VmNonTableOperations(other.to_error())),
                     }
                 }
                 OpCode::TABLE_GET_FROM { index: _ } => {
@@ -2704,10 +2598,10 @@ impl<'gc> VM<'gc> {
 
                 OpCode::TABLE_GET_BY_CONSTANT { constant } => {
                     let key = Self::get_chunk(&frame).get_constant(*constant);
-                    let table = self.peek_mut(ep);
+                    let table = self.peek_mut();
                     if let Value::Table(t) = table {
                         let v: Value = Self::meta_index_get(*t, &key);
-                        self.push(ep, v);
+                        self.push(v);
                     } else {
                         break Err(SiltError::VmNonTableOperations(table.to_error()));
                     }
@@ -2916,19 +2810,18 @@ impl<'gc> VM<'gc> {
         // directly rather than going through `execute`, which re-seats the stack at
         // the base and hardcodes call_arity = 0 (dropping the args).
         let n = res.len();
-        let base = self.stack.as_mut_ptr();
-        let mut ep = Ephemeral::new(mc, base);
+        self.stack_count = 0;
+        self.ensure_stack();
+        let mut ep = Ephemeral::new(mc);
         for param in res {
-            VM::push_raw(&mut ep, param);
+            self.push(param);
         }
-        let frame_top = ep.ip; // base + n — the args are the vararg overflow below this
-        VM::push_raw(&mut ep, Value::Function(obj)); // frame base / self slot
-        self.stack_count = n + 1;
+        let frame_top = self.stack_count; // == n — the args are the vararg overflow below this
+        self.push(Value::Function(obj)); // frame base / self slot
         self.body = obj;
         let closure = Gc::new(mc, Closure::new(obj, vec![]));
         let mut frame = CallFrame::new(closure, 0, n.min(u8::MAX as usize) as u8, 0);
-        frame.ip = obj.chunk.code.as_ptr();
-        frame.local_stack = frame_top;
+        frame.base = frame_top;
         let out = self.process(&mut ep, vec![frame]);
         // Top-level entry: leave the stack empty for the next call regardless of outcome.
         self.stack_count = 0;
@@ -2981,31 +2874,30 @@ impl<'gc> VM<'gc> {
         frame: &CallFrame<'gc>,
     ) -> Gc<'gc, RefLock<UpValue<'gc>>> {
         #[cfg(feature = "dev-out")]
-        frame.print_local_stack();
-        let value = unsafe { frame.local_stack.add(index as usize) };
-        devout!("2capture_upvalue at index {} : {}", index, unsafe {
-            &*value
-        });
-        // `open_upvalues` is kept sorted ASCENDING by stack address (lowest
-        // first). That ordering is load-bearing: `close_n_upvalues` drains the
-        // tail (the most-recently-declared locals, which sit at the highest
-        // addresses). So to find or insert we scan upward and stop at the first
-        // entry whose address is >= ours: equal means an upvalue already exists
-        // for this slot and MUST be shared (so two closures over the same local
-        // see each other's writes); greater is the insertion point.
+        frame.print_local_stack(&self.stack);
+        let slot = frame.slot(index);
+        devout!("2capture_upvalue at index {} : {}", index, self.stack[slot]);
+        // `open_upvalues` is kept sorted ASCENDING by stack slot (lowest first).
+        // That ordering is load-bearing: `close_n_upvalues` drains the tail (the
+        // most-recently-declared locals, which sit at the highest slots). So to
+        // find or insert we scan upward and stop at the first entry whose slot
+        // is >= ours: equal means an upvalue already exists for this slot and
+        // MUST be shared (so two closures over the same local see each other's
+        // writes); greater is the insertion point. Every entry here is open, so
+        // `slot()` is always `Some`.
         let mut insert_at = self.open_upvalues.len();
         for (i, up) in self.open_upvalues.iter().enumerate() {
-            let loc = up.borrow().location;
-            if loc == value {
+            let loc = up.borrow().slot().unwrap_or(usize::MAX);
+            if loc == slot {
                 return *up;
             }
-            if loc > value {
+            if loc > slot {
                 insert_at = i;
                 break;
             }
         }
 
-        let u = Gc::new(ep.mc, RefLock::new(UpValue::new(index, value)));
+        let u = Gc::new(ep.mc, RefLock::new(UpValue::new(index, slot)));
         self.open_upvalues.insert(insert_at, u);
 
         #[cfg(feature = "dev-out")]
@@ -3111,19 +3003,15 @@ impl<'gc> VM<'gc> {
 
     fn build_table(&mut self, ep: &mut Ephemeral<'_, 'gc>, n: u8) -> Result<(), SiltError> {
         let offset = n as usize + 1;
-        let table_point = unsafe { ep.ip.sub(offset) };
-        let table = unsafe { &*table_point };
-        if let Value::Table(t) = table {
-            let mut b = (*t).borrow_mut(ep.mc);
-            // push in reverse
-            for i in (0..n).rev() {
-                let value = unsafe { ep.ip.sub(i as usize + 1).replace(Value::Nil) };
-                b.raw_push(value);
+        let table_point = self.stack_count - offset;
+        if let Value::Table(t) = &self.stack[table_point] {
+            let t = *t;
+            let mut b = t.borrow_mut(ep.mc);
+            // the n values above the table, in source order
+            for value in self.stack[table_point + 1..self.stack_count].iter_mut() {
+                b.raw_push(take(value));
             }
-
-            self.stack_count -= offset - 1;
-            ep.ip = unsafe { table_point.add(1) };
-
+            self.stack_count = table_point + 1;
             Ok(())
         } else {
             Err(SiltError::ChunkCorrupt) // shouldn't happen unless our compiler really screwed up
@@ -3136,11 +3024,13 @@ impl<'gc> VM<'gc> {
         ep: &mut Ephemeral<'_, 'gc>,
         offset: u8,
     ) -> Result<(), SiltError> {
-        let table = unsafe { &*ep.ip.sub(offset as usize + 3) }; // -3 because -1 for top of stack, -1 for key, -1 for value, and then offset from there
-        if let Value::Table(t) = table {
-            let value = self.pop(ep);
-            let key = self.pop(ep);
-            (*t).borrow_mut(ep.mc).set(key, value);
+        // -3 because -1 for top of stack, -1 for key, -1 for value, and then offset from there
+        let table_point = self.stack_count - offset as usize - 3;
+        if let Value::Table(t) = &self.stack[table_point] {
+            let t = *t;
+            let value = self.pop();
+            let key = self.pop();
+            t.borrow_mut(ep.mc).set(key, value);
             Ok(())
         } else {
             Err(SiltError::ChunkCorrupt) // shouldn't happen unless our compiler really screwed up
@@ -3190,25 +3080,23 @@ impl<'gc> VM<'gc> {
             Some(_) => u,
             None => u - 1,
         };
-        let table_point = unsafe { ep.ip.sub(u) };
-        let table = unsafe { &*table_point };
+        let table_point = self.stack_count - u;
+        let table = &self.stack[table_point];
         if let Value::Table(_) | Value::UserData(_) = table {
             // Each link may be a table or a userdata: `b.ent.x = v` walks the
             // table `b` to the userdata `b.ent`, then sets its field.
             let mut current = table.clone();
+            let top = self.stack_count;
             for i in 1..=depth {
                 // Keys sit on the stack in source order above the table:
-                // [table, key1, key2, ... keyN] with keyN on top (ip.sub(1)).
+                // [table, key1, key2, ... keyN] with keyN on top (top - 1).
                 // Navigation must consume them left-to-right, so step i reads
-                // key i at ip.sub(depth - i + 1) — NOT ip.sub(i), which would
+                // key i at top - (depth - i + 1) — NOT top - i, which would
                 // walk the chain backwards (t[keyN] first → nil for depth >= 2).
-                let key = unsafe { ep.ip.sub((depth - i + 1) as usize).replace(Value::Nil) };
+                let key = take(&mut self.stack[top - (depth - i + 1) as usize]);
                 devout!("get from table with key: {}", key);
                 if i == depth {
-                    // let offset = depth as usize;
                     self.stack_count -= decrease;
-                    unsafe { ep.ip = ep.ip.sub(decrease) };
-                    // assert!(ep.ip == table_point);
                     match set {
                         Some(value) => {
                             match &current {
@@ -3229,7 +3117,7 @@ impl<'gc> VM<'gc> {
                                 }
                                 _ => unreachable!(),
                             }
-                            unsafe { table_point.replace(Value::Nil) };
+                            self.stack[table_point] = Value::Nil;
                         }
                         None => {
                             let out = match &current {
@@ -3247,7 +3135,7 @@ impl<'gc> VM<'gc> {
                                 }
                                 _ => unreachable!(),
                             };
-                            unsafe { table_point.replace(out) };
+                            self.stack[table_point] = out;
                         }
                     }
                     return Ok(());

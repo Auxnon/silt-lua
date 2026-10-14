@@ -1439,16 +1439,15 @@ impl<'gc> FromLuaMulti<'gc> for Value<'gc> {
     }
 }
 
-pub struct ValueRef<'gc> {
-    ptr: *const Value<'gc>,
-    _marker: PhantomData<&'gc Value<'gc>>,
-}
+/// The first argument, by value. `FromLuaMulti` cannot hand out a borrow of the
+/// argument slice (its signature ties nothing to that lifetime), so this holds a
+/// clone — a `Value` clone is a tag + pointer copy, not a deep copy.
+pub struct ValueRef<'gc>(Value<'gc>);
 
 impl<'gc> Deref for ValueRef<'gc> {
     type Target = Value<'gc>;
-    // Offered at your own
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.ptr }
+        &self.0
     }
 }
 
@@ -1458,13 +1457,7 @@ impl<'gc> FromLuaMulti<'gc> for ValueRef<'gc> {
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
-        // TODO this means a nil ref will be passed, since this is unsafe will it panic with a
-        // function without params passed?
-        let val = args.first().unwrap_or(&Value::Nil);
-        Ok(ValueRef {
-            ptr: val as *const _,
-            _marker: PhantomData,
-        })
+        Ok(ValueRef(args.first().cloned().unwrap_or(Value::Nil)))
     }
 }
 
@@ -1510,65 +1503,38 @@ where
 //     }
 // }
 
+/// All of a native function's arguments (`...`). Derefs to `[Value]`, so
+/// `args.len()`, `args.iter()` and indexing work. Owns its values for the same
+/// reason as [`ValueRef`]; the `'a` parameter is kept so existing
+/// `Variadic<'_, 'gc>` spellings still compile.
 pub struct Variadic<'a, 'gc> {
-    start: *const Value<'gc>,
-    len: usize,
-    _marker: PhantomData<&'a [Value<'gc>]>,
+    values: Vec<Value<'gc>>,
+    _marker: PhantomData<&'a ()>,
 }
 
 impl<'a, 'gc> Deref for Variadic<'a, 'gc> {
     type Target = [Value<'gc>];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.start, self.len) }
+        &self.values
     }
-}
-
-pub struct VariadicIter<'a, 'gc> {
-    current: *const Value<'gc>,
-    end: *const Value<'gc>,
-    _marker: PhantomData<&'a Value<'gc>>,
 }
 
 impl<'a, 'gc> IntoIterator for Variadic<'a, 'gc> {
-    type Item = &'a Value<'gc>;
-    type IntoIter = VariadicIter<'a, 'gc>;
+    type Item = Value<'gc>;
+    type IntoIter = std::vec::IntoIter<Value<'gc>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        VariadicIter {
-            current: self.start,
-            end: unsafe { self.start.add(self.len) },
-            _marker: PhantomData,
-        }
+        self.values.into_iter()
     }
 }
 
-impl<'a, 'gc> Iterator for VariadicIter<'a, 'gc> {
-    type Item = &'a Value<'gc>;
+impl<'b, 'a, 'gc> IntoIterator for &'b Variadic<'a, 'gc> {
+    type Item = &'b Value<'gc>;
+    type IntoIter = std::slice::Iter<'b, Value<'gc>>;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current == self.end {
-            return None;
-        }
-
-        let item = unsafe {
-            let item = &*self.current;
-            self.current = self.current.add(1);
-            item
-        };
-
-        Some(item)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let count = (self.end as usize - self.current as usize) / std::mem::size_of::<Value<'gc>>();
-        (count, Some(count))
-    }
-}
-
-impl<'a, 'gc> ExactSizeIterator for VariadicIter<'a, 'gc> {
-    fn len(&self) -> usize {
-        (self.end as usize - self.current as usize) / std::mem::size_of::<Value<'gc>>()
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter()
     }
 }
 
@@ -1579,8 +1545,7 @@ impl<'a, 'gc> FromLuaMulti<'gc> for Variadic<'a, 'gc> {
         _mc: &Mutation<'gc>,
     ) -> Result<Self, SiltError> {
         Ok(Variadic {
-            start: args.as_ptr(),
-            len: args.len(),
+            values: args.to_vec(),
             _marker: PhantomData,
         })
     }
@@ -1610,11 +1575,7 @@ impl<'gc> FromLuaMultiBorrow<'gc> for &Value<'gc> {
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self::Output, SiltError> {
-        let val = args.first().unwrap_or(&Value::Nil);
-        Ok(ValueRef {
-            ptr: val as *const _,
-            _marker: PhantomData,
-        })
+        Ok(ValueRef(args.first().cloned().unwrap_or(Value::Nil)))
     }
 }
 
@@ -1625,11 +1586,7 @@ impl<'gc> FromLuaMultiBorrow<'gc> for ValueRef<'gc> {
         _vm: &VM<'gc>,
         _mc: &Mutation<'gc>,
     ) -> Result<Self::Output, SiltError> {
-        let val = args.first().unwrap_or(&Value::Nil);
-        Ok(ValueRef {
-            ptr: val as *const _,
-            _marker: PhantomData,
-        })
+        Ok(ValueRef(args.first().cloned().unwrap_or(Value::Nil)))
     }
 }
 
