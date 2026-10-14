@@ -14,7 +14,7 @@ pub const MULTIRET: u8 = u8::MAX;
 pub type ConstIndex = u16;
 
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-#[derive(Clone, Collect)]
+#[derive(Clone, Debug, Collect)]
 #[collect(no_drop)]
 pub enum OpCode {
     CONSTANT {
