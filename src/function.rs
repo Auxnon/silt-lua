@@ -500,6 +500,14 @@ impl<'lua> UpValue<'lua> {
         println!("closed: {}", self.closed);
     }
 
+    /// Close, copying the value and leaving the stack slot intact — for a frame whose
+    /// slots are still about to be read (the root RETURN pops its result afterwards).
+    pub fn close_keep(&mut self, stack: &[Value<'lua>]) {
+        if let Some(s) = self.slot.take() {
+            self.closed = stack[s].clone();
+        }
+    }
+
     pub fn copy_value(&self, stack: &[Value<'lua>]) -> Value<'lua> {
         match self.slot {
             Some(s) => stack[s].clone(),

@@ -528,6 +528,11 @@ impl<'gc> Lua {
                 Err(er) => Err(er),
             }
         });
+        // `last_return` exists only for `extract_snippet`, which reads it inside its own
+        // mutation; don't let a plain run keep the returned value alive until the next one.
+        #[cfg(feature = "snippets")]
+        self.arena
+            .mutate_root(|_, root| root.borrow_mut().last_return = None);
         // End-of-cycle incremental collection (see `collect`).
         self.arena.collect_debt();
         out
@@ -550,21 +555,28 @@ impl<'gc> Lua {
         code: &str,
         compiler: &mut Compiler,
     ) -> Result<crate::snippet::Snippet, String> {
-        self.run(name, code, compiler).map_err(|e| {
+        let join = |e: ErrorOut| {
             e.errors
                 .iter()
                 .map(|t| format!("{}", t.code))
                 .collect::<Vec<_>>()
                 .join("; ")
-        })?;
-        self.enter(|vm, mc| {
+        };
+        // Compile, run and read the returned value inside one mutation so `last_return` is
+        // consumed here and never outlives the run (plain `run` clears it).
+        let out = self.arena.mutate_root(|mc, root| {
+            let f = compiler.try_compile(mc, name, code).map_err(join)?;
+            let mut vm = root.borrow_mut();
+            vm.run(mc, Gc::new(mc, f)).map_err(join)?;
             // The root frame has returned; its locals are gone from the live stack, so make
             // sure every upvalue a returned closure captured is closed (holds its own copy)
             // before we read it.
             vm.close_all_upvalues(mc);
             let value = vm.last_return.take().unwrap_or(Value::Nil);
-            crate::snippet::Snippet::extract(vm, &value).map_err(|e| e.to_string())
-        })
+            crate::snippet::Snippet::extract(&vm, &value).map_err(|e| e.to_string())
+        });
+        self.arena.collect_debt();
+        out
     }
 
     /// Build a snippet into a **fresh, isolated VM** (its own arena and standard library, the
@@ -1244,7 +1256,14 @@ impl<'gc> VM<'gc> {
         let frame = CallFrame::new(closure, 0, 0, 0);
         self.push(Value::Function(object)); // frame base / self slot
         let frames = vec![frame];
-        self.process(&mut ep, frames)
+        let out = self.process(&mut ep, frames);
+        // The chunk is over. Close every upvalue still pointing into its stack slots — a
+        // root local captured by a global function keeps its value instead of aliasing
+        // whatever the next chunk puts in that slot — then drop the dead slots so the
+        // chunk's locals (and anything they held) can be collected.
+        self.close_upvalues_by_return(mc, 0);
+        self.stack.iter_mut().for_each(|v| *v = Value::Nil);
+        out
     }
 
     /// dump all newest userdata as weak references but keep atomic strong references within the lua
@@ -1390,6 +1409,21 @@ impl<'gc> VM<'gc> {
     #[cfg(feature = "snippets")]
     pub(crate) fn close_all_upvalues(&mut self, mc: &Mutation<'gc>) {
         self.close_upvalues_by_return(mc, 0);
+    }
+
+    /// Like [`close_upvalues_by_return`](Self::close_upvalues_by_return) but leaves the
+    /// stack slots in place: used when the returning frame's result has not been popped yet.
+    fn close_upvalues_keeping(&mut self, mc: &Mutation<'gc>, last: usize) {
+        let mut i = 0;
+        while i < self.open_upvalues.len() {
+            let loc = self.open_upvalues[i].borrow().slot();
+            if matches!(loc, Some(s) if s >= last) {
+                let up = self.open_upvalues.remove(i);
+                up.borrow_mut(mc).close_keep(&self.stack);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /** pop and return top of stack */
@@ -1580,6 +1614,13 @@ impl<'gc> VM<'gc> {
                     let count = *c;
                     frame_count -= 1;
                     if frame_count <= 0 {
+                        // The outermost frame of this run is over (a chunk, or the callee
+                        // of call_protected): close the upvalues over its locals while
+                        // they are still in place. A chunk-level local captured by a global
+                        // function must keep its value rather than alias whatever the next
+                        // chunk puts in that slot. Frames below `stack_snapshot` (an
+                        // enclosing script under pcall) are still live and stay open.
+                        self.close_upvalues_keeping(ep.mc, frame.stack_snapshot);
                         // A multi-value `return a, b` at the root (a script, or a function
                         // run via call_protected) yields its FIRST value, as Lua does when
                         // a single value is wanted — not whatever happens to be on top.

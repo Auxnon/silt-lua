@@ -353,3 +353,28 @@ fn snippet_vm_accepts_host_natives() {
     });
     assert_eq!(vm.call_f64(&[4.0]), Ok(40.0));
 }
+
+#[test]
+fn plain_run_does_not_retain_the_returned_value() {
+    // `last_return` exists so `extract_snippet` can read a returned closure; an ordinary
+    // `run` must not keep the chunk's result alive until the next run.
+    let mut lua = Lua::new_with_standard();
+    let mut c = Compiler::new();
+    lua.run(None, "return 1", &mut c).unwrap();
+    lua.collect_full();
+    lua.collect_full();
+    let baseline = lua.allocated_bytes();
+    lua.run(
+        None,
+        "local t = {} for i = 1, 20000 do t[i] = {i} end return t",
+        &mut c,
+    )
+    .unwrap();
+    lua.collect_full();
+    lua.collect_full();
+    let after = lua.allocated_bytes();
+    assert!(
+        after < baseline + 100_000,
+        "returned table retained after run: {baseline} -> {after} bytes"
+    );
+}
