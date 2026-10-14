@@ -1,34 +1,45 @@
-use std::{
-    collections::{hash_map::Iter, HashMap},
-    usize,
-};
+use std::collections::HashMap;
 
 use gc_arena::{Collect, Mutation};
 
 use crate::{
     error::SiltError,
+    hash::FxMap,
     userdata::MetaMethod,
     value::{ExVal, FromLua, ToLua, Value},
     VM,
 };
 
+/// A Lua table with PUC-Lua's layout: a dense **array part** for the sequence
+/// `1..=array.len()` and a **hash part** for everything else.
+///
+/// Invariants:
+/// * An integer key `k` with `1 <= k <= array.len()` lives in `array[k-1]` and is
+///   never in `hash`. `array` may hold `Nil` *holes* (a mid-sequence `t[k] = nil`,
+///   or a `nil` in a constructor) — reads of a hole return `None` like an absent
+///   key — but it is trimmed whenever its last slot becomes `Nil`.
+/// * `hash` never holds the key `array.len() + 1`: appending runs `absorb`, which
+///   pulls any such run of keys over, so a sequence built out of order
+///   (`t[3]=c; t[1]=a; t[2]=b`) still collapses into the array.
+///
+/// `#t` is the border `array.len()` (after trimming), O(1) for hole-free tables.
+/// Sequence reads/writes are a bounds-checked index instead of a hash and
+/// probe, and a 32-byte key is no longer stored per element.
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct Table<'v> {
-    data: HashMap<Value<'v>, Value<'v>>,
+    array: Vec<Value<'v>>,
+    hash: FxMap<Value<'v>, Value<'v>>,
     meta: Option<Value<'v>>,
-    // data: RefLock<HashMap<String, String>>,
-    /** replicate standard lua behavior */
-    counter: i64,
     id: usize,
 }
 
 impl<'v> Table<'v> {
     pub fn new(id: usize) -> Self {
         Table {
-            data: HashMap::new(),
+            array: Vec::new(),
+            hash: FxMap::default(),
             meta: None,
-            counter: 0,
             id,
         }
     }
@@ -38,22 +49,92 @@ impl<'v> Table<'v> {
         mc: &Mutation<'v>,
         id: usize,
         input: &ExTable,
-    ) -> Result<Table<'v>, SiltError>
-// where
-        // T: ToLua<'v>,
-    {
-        let mut data = HashMap::new();
+    ) -> Result<Table<'v>, SiltError> {
+        let mut t = Table::new(id);
         for (k, v) in input.into_iter() {
             let kk: Value = k.into_value(vm, mc)?;
             let vv = v.into_value(vm, mc)?;
-            data.insert(kk, vv);
+            t.set(kk, vv);
         }
-        Ok(Table {
-            data,
-            meta: None,
-            counter: 0,
-            id,
-        })
+        Ok(t)
+    }
+
+    /// Array slot for integer key `i`, if it is in the array range.
+    #[inline]
+    fn slot(&self, i: i64) -> Option<usize> {
+        if i >= 1 && (i as usize) <= self.array.len() {
+            Some(i as usize - 1)
+        } else {
+            None
+        }
+    }
+
+    /// The value at `key`, or `None` when absent (a `Nil` hole counts as absent).
+    #[inline]
+    fn get_ref(&self, key: &Value<'v>) -> Option<&Value<'v>> {
+        if let Value::Integer(i) = key {
+            if let Some(idx) = self.slot(*i) {
+                let v = &self.array[idx];
+                return if matches!(v, Value::Nil) {
+                    None
+                } else {
+                    Some(v)
+                };
+            }
+        }
+        self.hash.get(key)
+    }
+
+    /// Drop trailing `Nil`s so `array.last()` is a real value (or the array is empty).
+    #[inline]
+    fn trim(&mut self) {
+        while matches!(self.array.last(), Some(Value::Nil)) {
+            self.array.pop();
+        }
+    }
+
+    /// After the array grew, pull over any `array.len() + 1, +2, …` keys that had
+    /// landed in the hash part because they arrived out of order.
+    #[inline]
+    fn absorb(&mut self) {
+        if self.hash.is_empty() {
+            return;
+        }
+        while let Some(v) = self
+            .hash
+            .remove(&Value::Integer(self.array.len() as i64 + 1))
+        {
+            self.array.push(v);
+        }
+    }
+
+    /// Store `v` at integer key `i`, routing between the two parts.
+    fn set_int(&mut self, i: i64, v: Value<'v>) -> Option<Value<'v>> {
+        let is_nil = matches!(v, Value::Nil);
+        if let Some(idx) = self.slot(i) {
+            let old = std::mem::replace(&mut self.array[idx], v);
+            if is_nil && idx + 1 == self.array.len() {
+                self.trim();
+            }
+            return if matches!(old, Value::Nil) {
+                None
+            } else {
+                Some(old)
+            };
+        }
+        if i as usize == self.array.len() + 1 && i >= 1 {
+            if is_nil {
+                return self.hash.remove(&Value::Integer(i));
+            }
+            self.array.push(v);
+            self.absorb();
+            return None;
+        }
+        if is_nil {
+            self.hash.remove(&Value::Integer(i))
+        } else {
+            self.hash.insert(Value::Integer(i), v)
+        }
     }
 
     // same as get but accepts reference Into<&Value> which is better
@@ -62,7 +143,7 @@ impl<'v> Table<'v> {
         'v: 'f,
         T: Into<&'f Value<'v>>,
     {
-        self.data.get(key.into())
+        self.get_ref(key.into())
     }
 
     pub fn get<'f, T>(&self, key: T) -> Option<&Value<'v>>
@@ -70,31 +151,42 @@ impl<'v> Table<'v> {
         'v: 'f,
         T: Into<Value<'v>>,
     {
-        self.data.get(&key.into())
+        self.get_ref(&key.into())
     }
 
     pub fn getn(&self, i: usize) -> Option<&Value<'v>> {
-        self.data.get(&Value::Integer(i as i64))
+        self.get_ref(&Value::Integer(i as i64))
     }
 
     pub fn get_value(&self, key: &Value<'v>) -> Value<'v> {
-        let r = self.data.get(key);
-        match r {
+        match self.get_ref(key) {
             Some(v) => v.clone(),
             None => Value::Nil,
         }
     }
 
     /// Stateless iteration step for `next`/`pairs`. Given the previous key
-    /// (`Nil` to start), return the next `(key, value)` in the hashmap's
-    /// iteration order, or `None` when exhausted. Order is unspecified (Lua
-    /// makes no guarantee) but stable for an unmodified table within one pass.
+    /// (`Nil` to start), return the next `(key, value)`: the array part in
+    /// index order (skipping holes), then the hash part in its (unspecified but
+    /// stable) order. `None` when exhausted.
     pub fn next_entry(&self, key: &Value<'v>) -> Option<(Value<'v>, Value<'v>)> {
-        let mut iter = self.data.iter();
-        if matches!(key, Value::Nil) {
-            return iter.next().map(|(k, v)| (k.clone(), v.clone()));
+        // Where to resume in the array part, if the key points into it.
+        let array_from = match key {
+            Value::Nil => Some(0),
+            Value::Integer(i) => self.slot(*i).map(|idx| idx + 1),
+            _ => None,
+        };
+        if let Some(from) = array_from {
+            for (idx, v) in self.array.iter().enumerate().skip(from) {
+                if !matches!(v, Value::Nil) {
+                    return Some((Value::Integer(idx as i64 + 1), v.clone()));
+                }
+            }
+            // array exhausted: fall through to the start of the hash part
+            return self.hash.iter().next().map(|(k, v)| (k.clone(), v.clone()));
         }
-        // advance past `key`, then yield the following entry
+        // advance past `key` in the hash part, then yield the following entry
+        let mut iter = self.hash.iter();
         for (k, _) in iter.by_ref() {
             if k == key {
                 break;
@@ -110,8 +202,7 @@ impl<'v> Table<'v> {
         R: FromLua<'v>,
         R: Default,
     {
-        self.data
-            .get(&key.into())
+        self.get_ref(&key.into())
             .map(|v| R::from_lua(v, vm, mc).unwrap_or_default())
     }
     pub fn get_type<'f, T, R>(&self, key: T, vm: &VM<'v>, mc: &Mutation<'v>) -> R
@@ -121,7 +212,7 @@ impl<'v> Table<'v> {
         R: FromLua<'v>,
         R: Default,
     {
-        match self.data.get(&key.into()) {
+        match self.get_ref(&key.into()) {
             Some(v) => R::from_lua(v, vm, mc).unwrap_or_default(),
             None => R::default(),
         }
@@ -132,44 +223,41 @@ impl<'v> Table<'v> {
         'v: 'f,
         T: Into<Value<'v>>,
     {
-        match self.data.get(&key.into()) {
+        match self.get_ref(&key.into()) {
             Some(v) => v.into(),
             _ => 0.,
         }
     }
 
-    /// set at key without checking re-evaluating indicies
+    /// `t[key] = val`. A `nil` value removes the key. Returns the previous value.
     pub fn set<'f, K, V>(&mut self, key: K, val: V) -> Option<Value<'v>>
     where
         'v: 'f,
         K: Into<Value<'v>>,
         V: Into<Value<'v>>,
     {
-        let k=key.into();
-        let v=val.into();
-        // println!(" WE SET {} {}",k.clone(),v.clone());
-        self.data.insert(k,v)
+        let k = key.into();
+        let v = val.into();
+        if let Value::Integer(i) = k {
+            return self.set_int(i, v);
+        }
+        if matches!(v, Value::Nil) {
+            self.hash.remove(&k)
+        } else {
+            self.hash.insert(k, v)
+        }
     }
 
+    /// Constructor positional element: `{a, b, c}` appends in order. A `nil`
+    /// here keeps its position (`{1, nil, 3}` puts 3 at index 3).
     pub fn raw_push<'f, V>(&mut self, val: V) -> Option<Value<'v>>
     where
         'v: 'f,
         V: Into<Value<'v>>,
     {
-        self.counter += 1;
-        let key = self.counter;
-        self.data.insert(key.into(), val.into())
-    }
-
-    fn recursion(&mut self, i: i64) {
-        let prev = i - 1;
-        if self.data.contains_key(&prev.into()) {
-            if self.counter == prev {
-                self.counter = i;
-            } else {
-                self.recursion(prev);
-            }
-        }
+        self.array.push(val.into());
+        self.absorb();
+        None
     }
 
     pub fn set_and_check<'f, K, V>(&mut self, key: K, val: V) -> Option<Value<'v>>
@@ -178,13 +266,9 @@ impl<'v> Table<'v> {
         K: Into<Value<'v>>,
         V: Into<Value<'v>>,
     {
-        let key = key.into();
-        if let Ok(i) = key.strict_int() {
-            if i >= self.counter {
-                self.recursion(i);
-            }
-        }
-        self.data.insert(key, val.into())
+        // `absorb` keeps the border right for out-of-order builds; nothing
+        // extra to check any more.
+        self.set(key, val)
     }
 
     pub fn to_array<'f, T, const N: usize>(&self) -> [T; N]
@@ -194,12 +278,9 @@ impl<'v> Table<'v> {
         T: Copy,
         T: From<Value<'v>>,
     {
-        // Read the array part by index (Lua is 1-indexed). Iterating `self.data`
-        // (a HashMap) yields hash order, not 1..N, so `{a, b, c}` came out as an
-        // arbitrary cyclic rotation that varied per table.
         let mut out: [T; N] = [T::default(); N];
-        for i in 0..N {
-            out[i] = match self.data.get(&Value::Integer((i + 1) as i64)) {
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = match self.getn(i + 1) {
                 Some(v) => T::from(v.clone()),
                 None => T::default(),
             };
@@ -207,29 +288,24 @@ impl<'v> Table<'v> {
         out
     }
 
+    /// The sequence `1..n` up to the first missing index, like `ipairs`.
     pub fn to_vec<'f, T>(&self, vm: &VM<'v>, mc: &Mutation<'v>) -> Vec<T>
     where
         'v: 'f,
         T: Default,
-        // T: Copy,
         T: FromLua<'v>,
     {
-        // Read the sequence 1..n by index, like `ipairs` and `to_array`.
-        // Iterating `self.data` (a HashMap) yields hash order, so an ordered
-        // list — quad corners, PCM samples, notes — came back scrambled.
-        let mut out = Vec::new();
-        let mut i = 1;
-        while let Some(v) = self.data.get(&Value::Integer(i)) {
-            out.push(T::from_lua(v, vm, mc).unwrap_or_default());
-            i += 1;
-        }
-        out
+        self.array
+            .iter()
+            .take_while(|v| !matches!(v, Value::Nil))
+            .map(|v| T::from_lua(v, vm, mc).unwrap_or_default())
+            .collect()
     }
 
     pub fn to_exval(&self) -> ExTable {
         let mut map = HashMap::new();
-        for (k, v) in self.data.iter() {
-            map.insert(k.clone().into(), v.clone().into());
+        for (k, v) in self.iter() {
+            map.insert(k.into(), v.clone().into());
         }
         ExTable {
             id: self.id,
@@ -237,85 +313,64 @@ impl<'v> Table<'v> {
         }
     }
 
+    /// Lua's `#t`: the array border.
     pub fn len(&self) -> usize {
-        self.data.len()
+        let mut n = self.array.len();
+        while n > 0 && matches!(self.array[n - 1], Value::Nil) {
+            n -= 1;
+        }
+        n
     }
 
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.array.iter().all(|v| matches!(v, Value::Nil)) && self.hash.is_empty()
     }
 
-    /** push by counter's current index, if it aready exists keep incrementing until empty position is found */
+    /// Positional insert — Lua `table.insert(t, pos, v)`: open a slot at `pos` by
+    /// shifting every element from `pos` up one index, then store `v` there.
     pub fn insert(&mut self, key: Value<'v>, value: Value<'v>) -> Result<Value<'v>, SiltError> {
-        // let key = key.strict_int()?;
-        //
-        // // DEV this just feels clunky to replicate lua's behavior
-        // self.counter += 1;
-        // let mut key = Value::Integer(self.counter);
-        // while self.data.contains_key(&key) {
-        //     self.counter += 1;
-        //     key.force_to_int(self.counter);
-        // }
-        // self.data.insert(key, value);
-        // Ok(())
-
-        // Positional insert — Lua `table.insert(t, pos, v)`: open a slot at `pos` by
-        // shifting every element in `pos..=counter` up one index, then store `v` there.
-        // The old loop ran `counter..pos`, which is empty whenever `pos < counter`, so
-        // nothing shifted and the element already at `pos` was silently overwritten.
         let i = key.strict_int()?;
-        let mut k = self.counter;
-        while k >= i && k >= 1 {
-            if let Some(v) = self.data.remove(&Value::Integer(k)) {
-                self.data.insert(Value::Integer(k + 1), v);
-            }
-            k -= 1;
+        if i >= 1 && (i as usize) <= self.array.len() + 1 {
+            self.array.insert(i as usize - 1, value);
+            self.absorb();
+        } else {
+            self.set_int(i, value);
         }
-        self.counter += 1;
-        self.data.insert(Value::Integer(i), value);
         Ok(Value::Nil)
     }
 
+    /// Append at the border (`t[#t + 1] = v`).
     pub fn push(&mut self, value: Value<'v>) {
-        // Append at the array border. `counter` is the last used integer index (0 for a
-        // fresh table), so the new element goes at `counter + 1` — Lua tables are
-        // 1-indexed. Incrementing FIRST (matching `raw_push`) was the bug: reading
-        // `counter` before the bump appended at index 0 and clobbered the last slot.
-        self.counter += 1;
-        let key = self.counter.into();
-        self.data.insert(key, value);
+        let b = self.len() as i64;
+        self.set_int(b + 1, value);
     }
 
-    /// The current array border (last integer index in use, 0 when empty) — Lua's `#t`
-    /// for a hole-free table. Used as the default position for `table.remove`.
+    /// The current array border (last integer index in use, 0 when empty) — Lua's `#t`.
     pub fn border(&self) -> i64 {
-        self.counter
+        self.len() as i64
     }
 
-    /// Remove the element at `pos` (Lua `table.remove`): return it, then shift every
-    /// element in `pos+1..=counter` DOWN one index to close the gap, and shrink the
-    /// border. The old `remove` removed by *value*, shifted the wrong direction, and
-    /// decremented the border unconditionally — it never actually removed anything
-    /// (the standard-lib wrapper even called `insert` instead). See `tests/tables.rs`.
+    /// Remove the element at `pos` (Lua `table.remove`): return it and shift every
+    /// element above it down one index to close the gap.
     pub fn remove_at(&mut self, pos: i64) -> Value<'v> {
-        let removed = self.data.remove(&Value::Integer(pos)).unwrap_or_default();
-        let mut k = pos + 1;
-        while k <= self.counter {
-            if let Some(v) = self.data.remove(&Value::Integer(k)) {
-                self.data.insert(Value::Integer(k - 1), v);
-            }
-            k += 1;
+        if let Some(idx) = self.slot(pos) {
+            let removed = self.array.remove(idx);
+            self.trim();
+            removed
+        } else {
+            self.hash.remove(&Value::Integer(pos)).unwrap_or_default()
         }
-        if self.counter > 0 {
-            self.counter -= 1;
-        }
-        removed
     }
 
     pub fn pop(&mut self) -> Value<'v> {
-        let k = self.counter.into();
-        self.counter -= 1;
-        self.data.remove(&k).unwrap_or_default()
+        let b = self.len();
+        if b == 0 {
+            return Value::Nil;
+        }
+        self.array.truncate(b);
+        let v = self.array.pop().unwrap_or_default();
+        self.trim();
+        v
     }
 
     pub fn concat_array<A, I>(&mut self, array: I)
@@ -323,11 +378,8 @@ impl<'v> Table<'v> {
         I: IntoIterator<Item = A>,
         A: Into<Value<'v>>,
     {
-        self.counter += 1;
         for v in array.into_iter() {
-            let key = Value::Integer(self.counter);
-            self.data.insert(key, A::into(v));
-            self.counter += 1;
+            self.push(v.into());
         }
     }
 
@@ -336,17 +388,13 @@ impl<'v> Table<'v> {
         I: IntoIterator<Item = A>,
         A: ToLua<'v>,
     {
-        self.counter += 1;
         for v in array.into_iter() {
-            let key = Value::Integer(self.counter);
             let res = v.to_lua(lua, mc).unwrap_or_default();
-            self.data.insert(key, res);
-            self.counter += 1;
+            self.push(res);
         }
     }
 
     pub fn set_metatable(&mut self, metatable: Value<'v>) {
-        // println!("setting metatable: {}", metatable);
         self.meta = Some(metatable);
     }
 
@@ -360,9 +408,7 @@ impl<'v> Table<'v> {
     /// pattern). Returns `None` when there is no metatable or no `__index`.
     pub fn meta_index(&self) -> Option<Value<'v>> {
         if let Some(Value::Table(mt)) = &self.meta {
-            let v = mt
-                .borrow()
-                .get_value(&Value::String("__index".to_string()));
+            let v = mt.borrow().get_value(&Value::String("__index".to_string()));
             if !matches!(v, Value::Nil) {
                 return Some(v);
             }
@@ -371,15 +417,11 @@ impl<'v> Table<'v> {
     }
 
     pub fn by_meta_method(&self, method: MetaMethod) -> Result<Value<'v>, SiltError> {
-        // println!("meta: {}", self.meta.clone().unwrap_or(Value::Nil));
         if let Some(Value::Table(t)) = &self.meta {
-            // let s = method.as_table_key().to_string();
-            // println!("looking for meta method: {}", s);
             if let Some(func) = t
                 .borrow()
                 .get(Value::String(method.as_table_key().to_string()))
             {
-                // println!("found meta method: {}", func);
                 return if let Value::Closure(_) = func {
                     Ok(func.clone())
                 } else {
@@ -389,13 +431,23 @@ impl<'v> Table<'v> {
         }
         Err(SiltError::MetaMethodMissing(method))
     }
-    pub fn iter(&self) -> Iter<'_, Value<'v>, Value<'v>> {
-        self.data.iter()
+
+    /// Every `(key, value)` pair: the array part (holes skipped) in index order,
+    /// then the hash part.
+    pub fn iter(&self) -> impl Iterator<Item = (Value<'v>, &Value<'v>)> + '_ {
+        self.array
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| !matches!(v, Value::Nil))
+            .map(|(i, v)| (Value::Integer(i as i64 + 1), v))
+            .chain(self.hash.iter().map(|(k, v)| (k.clone(), v)))
     }
 
-    pub fn list_keys(&self)-> String{
-        self.data.keys().map(|k| k.to_string()).collect::<Vec<String>>().join(",")
-        
+    pub fn list_keys(&self) -> String {
+        self.iter()
+            .map(|(k, _)| k.to_string())
+            .collect::<Vec<String>>()
+            .join(",")
     }
 }
 
@@ -404,9 +456,8 @@ impl ToString for Table<'_> {
         format!(
             "table{}[{}]{{{}}}",
             self.id,
-            self.data.len(),
-            self.data
-                .iter()
+            self.iter().count(),
+            self.iter()
                 .map(|(k, v)| format!("{}: {}", k, v))
                 .collect::<Vec<String>>()
                 .join(", ")

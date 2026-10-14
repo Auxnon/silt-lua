@@ -90,6 +90,12 @@ pub enum OpCode {
     /// Call function with CALL.0 parameters, and CALL.1 count of desired assignments. On call frame return, pops
     /// stack until CALL.1 is met, even if nils
     CALL(u8, u8,bool),
+    /// `return f(args)` in a non-root function: like CALL(.0, _, .1) but the callee
+    /// *replaces* the current frame (its upvalues closed, `[f, args]` slid down to
+    /// the frame's base) and returns with the caller's `multi_return`. Constant
+    /// stack for tail recursion, and all of `f`'s results pass through. A native
+    /// callee takes the plain CALL path, followed by the RETURN that follows it.
+    TAILCALL(u8, bool),
     /// Push vararg values onto stack from starting point
     VARARG {
         /// is the argument of a function call or a table, not assignment
@@ -175,6 +181,7 @@ impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::CALL(i, m,v) => write!(f, "OP_CALL({},{},{})", i, m,v),
+            Self::TAILCALL(i, v) => write!(f, "OP_TAILCALL({},{})", i, v),
             Self::VARARG { is_arg, count } => write!(f, "OP_VARARG({},{})", is_arg, count),
             Self::REGISTER_UPVALUE {
                 index: i,

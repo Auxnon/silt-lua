@@ -585,8 +585,8 @@ handles `t.a.b`). Grouped/call results are rvalues, so `(t).x = 5` correctly err
 
 ## 4. Known deviations (documented, lower priority)
 
-- **`#` on tables returns hashmap length, not a border** (README limitation). Lua's `#`
-  returns *a* border for sequences. Revisit when the table type is split into array+hash (§6).
+- ~~**`#` on tables returns hashmap length, not a border**~~ — resolved: `Table` now has a
+  dense array part + hash part (SPEC-dual-array-table.md), and `#t` is the array border.
 - **No real GC** — reference counting only; self-referential structures leak until VM drop
   (README). `gc-arena` is a dependency; wiring a tracing collector is a separate epic.
 - **Integer/float**: correct already; just noting it so future test authors don't "fix" it.

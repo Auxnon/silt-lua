@@ -11,6 +11,7 @@ pub mod lua;
 pub mod prelude;
 pub mod standard;
 pub mod table;
+pub mod hash;
 mod token;
 #[cfg(feature = "typing")]
 pub mod types;

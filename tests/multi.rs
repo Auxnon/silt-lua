@@ -52,8 +52,10 @@ fn multiple_returns_extra() {
 
     if let ExVal::Table(t) = simple(source_in) {
         assert_eq!(t.get("a"), Some(&ExVal::Integer(42)));
-        assert_eq!(t.get("b"), Some(&ExVal::Nil));
-        assert_eq!(t.get("c"), Some(&ExVal::Nil));
+        // `b = nil` in a constructor creates no key in Lua; absent and nil are
+        // both "nil" here.
+        assert!(matches!(t.get("b"), None | Some(&ExVal::Nil)));
+        assert!(matches!(t.get("c"), None | Some(&ExVal::Nil)));
     } else {
         panic!("Expected table result");
     }

@@ -38,7 +38,7 @@ With `--run`/`-r`, everything after the flag is treated as the Lua source (quote
 - Currently lacks a true garbage collector for the time being, some objects use basic reference counting but nothing sophisticated. This means it's **currently possible to create memory leaks in the VM with self-referencing structures liked linked lists**, but simple scripts and config loading should have no issues. Memory "leaks" will still drop when the VM instance is dropped.
 - The stack is not well maintained yet. Aside from lack of a complete safety guarantee at this time, some values MAY remain on the stack after being popped. These values are not forgotten and can be overwrote and dropped. Extensive testing is still needed. Despite this there's a program that peaks in usage will keep that memory it's full run. This is being looked into as the feature flags for safety levels are added.
 - Metamethods are still WIP
-- Tables use a hashmap and although mixing indexed values with non will generate correctly, using `#` will give the actual hashmap length, not the "consecutive length" that lua does.
+- Tables keep the sequence `1..n` in a dense array part and other keys in a hash part (as PUC-Lua does); `#t` is the array border. A table with holes may report any border, as in Lua.
 - Standard library is only `print` and `clock` function for testing. Feel free to utilize `register_native_function` on the VM instance to fill any gaps for now
 
 ## WebAssembly
