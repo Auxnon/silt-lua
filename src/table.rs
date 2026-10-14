@@ -214,10 +214,16 @@ impl<'v> Table<'v> {
         // T: Copy,
         T: FromLua<'v>,
     {
-        self.data
-            .iter()
-            .map(|f| T::from_lua(f.1, vm, mc).unwrap_or_default())
-            .collect()
+        // Read the sequence 1..n by index, like `ipairs` and `to_array`.
+        // Iterating `self.data` (a HashMap) yields hash order, so an ordered
+        // list — quad corners, PCM samples, notes — came back scrambled.
+        let mut out = Vec::new();
+        let mut i = 1;
+        while let Some(v) = self.data.get(&Value::Integer(i)) {
+            out.push(T::from_lua(v, vm, mc).unwrap_or_default());
+            i += 1;
+        }
+        out
     }
 
     pub fn to_exval(&self) -> ExTable {
