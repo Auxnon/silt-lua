@@ -24,6 +24,13 @@ pub enum Type {
     Table(Option<Box<TableShape>>),
     /// A callable; `Some(sig)` when its parameters/returns are known.
     Function(Option<Box<FnSig>>),
+    /// A function that can leave the VM as a snippet (`snippet`,
+    /// `snippet(number, number) -> number`): it captures and references values
+    /// only, never functions or other references, so an isolated VM can run it.
+    /// A snippet is a function in every other sense — it fits any `function`
+    /// slot — but only a function literal the checker verified fits a `snippet`
+    /// slot. Only relevant to a host that extracts snippets (`snippets` feature).
+    Snippet(Option<Box<FnSig>>),
     /// `T?` — a value of `T` or `nil`.
     Optional(Box<Type>),
     /// `A | B`.
@@ -41,6 +48,26 @@ pub struct FnSig {
     pub variadic: bool,
     /// `None` when the return types are not declared (results are `Any`).
     pub returns: Option<Vec<Type>>,
+    /// Whether the function this signature describes satisfies the snippet
+    /// rules. Set by the checker on every function literal; `Unknown` for a
+    /// signature that came from an annotation or a declaration.
+    pub snippet: Snippetness,
+}
+
+/// Can a function be extracted as a snippet? Decided per function literal at
+/// compile time from what its body captures and references.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum Snippetness {
+    /// Not a literal we analysed (an annotation, a declaration, a value of
+    /// unknown origin): gradual — accepted where a snippet is expected.
+    #[default]
+    Unknown,
+    /// Every capture and global reference is a value (or resolvable in the
+    /// snippet VM).
+    Yes,
+    /// Provably not a snippet; the string says why (names the offending
+    /// capture or global).
+    No(String),
 }
 
 /// A structural table type.
@@ -71,6 +98,7 @@ impl Type {
             "string" => Type::String,
             "table" => Type::Table(None),
             "function" => Type::Function(None),
+            "snippet" => Type::Snippet(None),
             other => Type::Named(other.to_string()),
         }
     }
@@ -187,6 +215,15 @@ pub fn assignable(target: &Type, value: &Type) -> bool {
         // functions: unknown signature on either side is fine
         (Function(None), Function(_)) | (Function(_), Function(None)) => true,
         (Function(Some(a)), Function(Some(b))) => sig_assignable(a, b),
+        // a snippet is a function
+        (Function(None), Snippet(_)) | (Function(_), Snippet(None)) => true,
+        (Function(Some(a)), Snippet(Some(b))) => sig_assignable(a, b),
+        // a function is a snippet only if the checker did not prove otherwise
+        (Snippet(_), Function(Some(v))) if matches!(v.snippet, Snippetness::No(_)) => false,
+        (Snippet(None), Function(_) | Snippet(_)) | (Snippet(_), Function(None) | Snippet(None)) => {
+            true
+        }
+        (Snippet(Some(a)), Function(Some(b)) | Snippet(Some(b))) => sig_assignable(a, b),
         (a, b) => a == b,
     }
 }
@@ -228,9 +265,10 @@ fn sig_assignable(target: &FnSig, value: &FnSig) -> bool {
             return false;
         }
     }
+    // the value must supply every declared return, each of a compatible type
     match (&target.returns, &value.returns) {
         (Some(t), Some(v)) => {
-            t.len() <= v.len() || t.iter().zip(v.iter()).all(|(a, b)| assignable(a, b))
+            t.len() <= v.len() && t.iter().zip(v.iter()).all(|(a, b)| assignable(a, b))
         }
         _ => true,
     }
@@ -248,8 +286,12 @@ impl fmt::Display for Type {
             Type::Table(Some(s)) => write!(f, "{}", s),
             Type::Function(None) => write!(f, "function"),
             Type::Function(Some(s)) => write!(f, "{}", s),
+            Type::Snippet(None) => write!(f, "snippet"),
+            Type::Snippet(Some(s)) => write!(f, "snippet{}", s),
             Type::Optional(t) => match **t {
-                Type::Union(_) | Type::Function(Some(_)) => write!(f, "({})?", t),
+                Type::Union(_) | Type::Function(Some(_)) | Type::Snippet(Some(_)) => {
+                    write!(f, "({})?", t)
+                }
                 _ => write!(f, "{}?", t),
             },
             Type::Union(parts) => {

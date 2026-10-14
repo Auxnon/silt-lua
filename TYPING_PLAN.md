@@ -210,6 +210,34 @@ feature in `src/compiler/typecheck.rs` + `src/types.rs`, with `tests/typing_chec
   forward references and mutually-recursive aliases work and a cyclic alias degrades to `any`.
 - **Signatures are keyed by name** in the pre-scan (`function f(...)` / `local function f`);
   a shadowed same-named local function could see the wrong signature — accepted as gradual.
-- **Native callees** keep `Any` results except for `type`/`tostring`/`tonumber`/`print`.
+- **Native callees** keep `Any` results except for `type`/`tostring`/`tonumber`/`print` — or
+  whatever the host declares (below).
 - **Not done:** generics, `A & B`, `export type`, constructor shape inference (`{x = 1}` is
   `table`, not `{x: number}`), `while`-condition narrowing, a warning tier.
+
+## 8. Host declarations and the `snippet` type (2026-10)
+
+- **`Compiler::declare(name, ty)`** gives a host-provided global a static type in annotation
+  syntax (`"(number, string) -> nil"`). Declarations are the one piece of checker state that
+  survives the per-compile reset, since they describe the embedding rather than a chunk.
+  `Compiler::declare_in_snippet` additionally promises the native exists inside snippet VMs.
+  The language server takes them from `initializationOptions.declare` / `.declareInSnippet`;
+  `lsp::diagnostics_with` is the in-process form.
+- **`Type::Snippet(Option<FnSig>)`** — `snippet` / `snippet(number) -> number` — a function
+  that can be extracted by the `snippets` feature. Every function literal gets a
+  **snippet verdict** (`FnSig::snippet: Snippetness::{Unknown, Yes, No(reason)}`) when its
+  body ends, from the compiler's own bookkeeping: its upvalue list (a capture whose resolved
+  type is a function, or a table shape holding one, is a `No`) and the globals its body or any
+  nested function touches (a script function or an undeclared host native would be `nil` in
+  the snippet VM: `No`; the standard library, `declare_in_snippet` natives and unknown names
+  pass). Nothing is emitted at that point — the verdict only matters when the value meets a
+  `snippet` slot: `assignable(Snippet(_), Function(sig))` is false for `No`, and the error
+  message appends the reason (*"it captures 'helper' ((number) -> number); a snippet can only
+  capture values"*). A snippet fits any `function` slot; a function of unknown origin fits a
+  `snippet` slot (gradual). Display never shows `snippet` for an inferred function, so hover
+  stays `(x) -> any`.
+- The nested-function case works because a grandparent capture passes through the enclosing
+  function's own upvalue list (the same chaining the extractor relies on), and nested bodies
+  merge their global references into the parent's when they end.
+- Fixed on the way: `sig_assignable` never compared return types when the counts fit (`||`
+  for `&&`).

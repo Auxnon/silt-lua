@@ -120,6 +120,47 @@ impossible in the defining script (`helper(x)` → "attempt to call a nil value"
 Creation-time errors are explicit: `NotAFunction`, `EscapingReference(i)`, `NonConstantConstant`,
 `PrototypeOnly`.
 
+## Static checking (`typing` feature)
+
+Nothing in the source marks a function as a snippet; the consumer decides. With `typing` the
+host can say so at the type level and the rules above become compile errors — in the editor,
+before the audio thread ever sees the function:
+
+```rust
+compiler.declare("instr", "(number, snippet(number, number) -> number) -> nil")?;
+compiler.declare_in_snippet("emit", "(number) -> nil")?;   // registered in every SnippetVm
+```
+
+```lua
+--!strict
+local gain = 0.3
+local shape = function(x) return x * x end
+instr(1, function(p, f) return shape(p) * gain end)
+--        ^ Type '(any, any) -> any' could not be converted into
+--          'snippet(number, number) -> number': it captures 'shape' ((any) -> any);
+--          a snippet can only capture values (argument 2)
+```
+
+(`--!strict` so the unannotated `shape` gets its inferred type; in nonstrict mode annotate it
+or it stays `any` and passes gradually. A root-level `local function shape` is a *global* in
+silt and gets the global message instead: *"it references global 'shape', a function of this
+script; it would be nil in the snippet VM"*.)
+
+`snippet` is a type (`Type::Snippet`), a subtype of `function`: a snippet goes anywhere a
+function does; a function literal goes where a snippet is expected only if the checker could
+not prove it is not one. The verdict is computed for every function literal from the compiler's
+own upvalue list and the globals the body (and nested bodies) touch, mirroring extraction rules
+3–4: a captured local whose static type is a function (or a table shape holding one) is an
+`EscapingReference` in waiting; a referenced global that is a script function or an undeclared
+host native would be `nil` in the snippet VM. The standard library, `declare_in_snippet`
+natives and unknown names pass — gradual, like the rest of the checker. Signature and return
+types are checked as for any function type. Value-dependent cases (an `any` capture, a table
+that only sometimes holds a function) remain runtime `[snippet]` errors.
+
+The language server reads the declarations from `initializationOptions` (`declare`,
+`declareInSnippet`); `lsp::diagnostics_with` is the in-process form. Bytecode and `type(f)`
+are unchanged — a snippet is a function in every sense.
+
 ## Performance (release, desktop)
 
 | | |
@@ -150,6 +191,12 @@ params; a multi-value `return` at the root yielded its last value instead of its
 ## Open / future
 
 - **Lua-side handle** (`snippet(fn)` → userdata) if a script ever needs to hold one.
+- **Runtime provenance bit**: a flag on the prototype saying the literal was typed as a
+  snippet, so `Snippet::extract` could refuse untyped functions for a host that wants
+  strictness. Not needed while the type check runs before the code does.
+- **A `snippet(...) ... end` literal** as syntax sugar for the annotation. Would reserve a word;
+  the annotation (`local v: snippet = function ... end`) and the declared consumer cover the
+  use so far.
 - **Serde**: `Snippet` is all owned data (`OpCode`, `ExVal`); deriving `Serialize` would let a
   snippet cross a process/worker boundary (e.g. a browser AudioWorklet fed over MessagePack).
   That worklet would then need the silt VM compiled into it — a size trade-off for the host.

@@ -54,9 +54,17 @@ pub struct Diagnostic {
 /// [`Diagnostic`]. A clean compile yields an empty vec (callers should publish that
 /// to clear stale diagnostics). This is the in-process entry point — no JSON.
 pub fn diagnostics(source: &str) -> Vec<Diagnostic> {
+    diagnostics_with(source, |_| {})
+}
+
+/// [`diagnostics`] with a hook to configure the compiler first — typically the
+/// host's type declarations (`compiler.declare("instr", "...")`, `typing` feature),
+/// so a script is checked against the natives it will actually run with.
+pub fn diagnostics_with(source: &str, configure: impl FnOnce(&mut Compiler)) -> Vec<Diagnostic> {
     let mut lua = Lua::new();
     // Match the CLI's language-flag configuration (implicit return, arrow fns).
     let mut compiler = Compiler::new_with_flags(true, true, false);
+    configure(&mut compiler);
     let result = lua.compile(Some("lsp"), source, &mut compiler);
     // `compile` (unlike `run`) doesn't drive GC, so reclaim the arena ourselves —
     // important under rapid didChange storms.
@@ -815,7 +823,7 @@ pub fn semantic_tokens(source: &str) -> Vec<(u32, u32, u32, u32)> {
 #[cfg(feature = "lsp-server")]
 mod server {
     use super::{
-        completion, definition, diagnostics, document_symbols, format_with, hover, references,
+        completion, definition, diagnostics_with, document_symbols, format_with, hover, references,
         rename, semantic_tokens, signature_help, CompletionKind, Diagnostic, Position, Range,
         Severity, SymbolKind, SEMANTIC_TOKEN_TYPES,
     };
@@ -983,6 +991,25 @@ mod server {
 
         let mut docs: HashMap<String, String> = HashMap::new();
         let mut shutdown_requested = false;
+        // Host type declarations from `initializationOptions`:
+        //   { "declare": { "instr": "(number, snippet(number, number) -> number) -> nil" },
+        //     "declareInSnippet": { "emit": "(number) -> nil" } }
+        // (name, type, also available inside snippet VMs)
+        let mut declarations: Vec<(String, String, bool)> = Vec::new();
+        let diagnose = |text: &str, declarations: &[(String, String, bool)]| {
+            diagnostics_with(text, |compiler| {
+                for (name, ty, in_snippet) in declarations {
+                    let r = if *in_snippet {
+                        compiler.declare_in_snippet(name, ty)
+                    } else {
+                        compiler.declare(name, ty)
+                    };
+                    if let Err(e) = r {
+                        eprintln!("silt lsp: ignoring declaration of `{}`: {}", name, e);
+                    }
+                }
+            })
+        };
 
         while let Some(msg) = read_message(&mut reader) {
             let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
@@ -990,6 +1017,16 @@ mod server {
 
             match method {
                 "initialize" => {
+                    let opts = &msg["params"]["initializationOptions"];
+                    for (key, in_snippet) in [("declare", false), ("declareInSnippet", true)] {
+                        if let Some(map) = opts[key].as_object() {
+                            for (name, ty) in map {
+                                if let Some(ty) = ty.as_str() {
+                                    declarations.push((name.clone(), ty.to_string(), in_snippet));
+                                }
+                            }
+                        }
+                    }
                     let result = json!({
                         "capabilities": {
                             "textDocumentSync": 1, // Full
@@ -1020,7 +1057,7 @@ mod server {
                     let td = &msg["params"]["textDocument"];
                     if let (Some(uri), Some(text)) = (td["uri"].as_str(), td["text"].as_str()) {
                         let uri = uri.to_string();
-                        let diags = diagnostics(text);
+                        let diags = diagnose(text, &declarations);
                         docs.insert(uri.clone(), text.to_string());
                         publish(&mut writer, &uri, &diags);
                     }
@@ -1036,7 +1073,7 @@ mod server {
                         .and_then(|c| c.last())
                         .and_then(|c| c["text"].as_str())
                     {
-                        let diags = diagnostics(text);
+                        let diags = diagnose(text, &declarations);
                         docs.insert(uri.clone(), text.to_string());
                         publish(&mut writer, &uri, &diags);
                     }
