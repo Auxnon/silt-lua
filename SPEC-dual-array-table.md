@@ -1,8 +1,8 @@
 # Spec: hybrid array + hash `Table` (PUC-Lua layout)
 
-Status: **proposed** · Feature gate: `array-table` (default-on candidate once proven) ·
-Supersedes the stale `copilot/explore-dual-array-hashmap` branch (do **not** cherry-pick — it
-lacks `remove`/border/migration and predates this release's `table.*` fixes).
+Status: **implemented** (`src/table.rs`, no feature gate — one code path; see "Deviations" at the
+end) · Supersedes the stale `copilot/explore-dual-array-hashmap` branch (do **not** cherry-pick —
+it lacks `remove`/border/migration and predates this release's `table.*` fixes).
 
 ## Why do this at all (post-hash-fix)
 
@@ -124,3 +124,18 @@ rather than re-scanning (the current impl re-derives position — preserve or im
 4. Bench memory on a large-array workload to confirm the 2–4× claim on real data.
 5. Flip default-on for a release once soaked, keeping the flag as an escape hatch.
 ```
+
+## Deviations in the implementation
+
+- **Holes stay in the array part.** `t[k] = nil` for `k < #t` writes a `Nil` into `array[k-1]`
+  instead of splitting and migrating the tail into `hash`. Reads of a hole return "absent";
+  `pairs`/`ipairs`/`to_vec` skip or stop at it; the array is trimmed whenever its *last* slot
+  becomes `Nil`. This is what PUC-Lua does too, and it keeps `set` O(1) with no migration code.
+  The invariant that matters is unchanged: no integer key in `1..=array.len()` ever lives in `hash`,
+  and `hash` never holds `array.len() + 1` (`absorb` runs after every append).
+- **No `MAX_ARRAY_SIZE` cap needed.** The array only grows by appending at `len + 1`, so
+  `t[10_000_000] = x` on an empty table goes to the hash part by construction.
+- **No feature gate.** The flat-hash path was removed rather than kept as a fallback; the existing
+  suites plus `tests/table_array_part.rs` are the proof. `ExTable` stays flat as the spec prefers.
+- **`#t` is the border.** It was the hashmap entry count (string keys included) — a documented
+  deviation in `PLAN.md`, now gone.
