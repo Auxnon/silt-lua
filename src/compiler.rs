@@ -2480,9 +2480,13 @@ fn begin_scope(this: &mut Compiler) {
 fn begin_functional_scope(this: &mut Compiler) {
     this.functional_depth += 1;
     this.functional_states.push(FunctionalState::new());
-    let cumulative: usize = this.local_functional_offset.iter().sum();
+    // Slot of a local in this function = its index in `locals` minus this offset, with
+    // slot 0 reserved for the function itself. `locals.len() - 1` is exactly that base.
+    // (The previous formula summed earlier offsets and so double-counted them, giving
+    // off-by-one slots for any function nested three or more levels deep that captured
+    // a grandparent's local.)
     this.local_functional_offset
-        .push(this.local_count + cumulative - 1);
+        .push(this.locals.len().saturating_sub(1));
     this.local_offset.push(this.local_count);
     this.local_count = 1;
 }

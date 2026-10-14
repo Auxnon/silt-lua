@@ -165,3 +165,59 @@ fn method_call_deep_chain() {
         ExVal::Integer(7)
     );
 }
+
+// Deep nesting: a function three or more levels down capturing a *grandparent's* local. The
+// compiler's per-function local offset was computed from a cumulative sum of earlier offsets,
+// double-counting them, so the inner function's own params landed one slot too low (slot 0 =
+// the function itself): `base + x` became "Cannot + 'integer' and '(function)'".
+
+#[test]
+fn three_level_capture_of_root_local() {
+    valeq!(
+        r#"
+        local base = 100
+        local function outer(k)
+            local function mk(m) return function(x) return base + x end end
+            return mk(k)(2)
+        end
+        return outer(5)
+    "#,
+        ExVal::Integer(102)
+    );
+}
+
+#[test]
+fn three_level_capture_mixes_parent_and_grandparent() {
+    valeq!(
+        r#"
+        local base = 100
+        local function outer(k)
+            local function mk(m) return function(x) return base + m * x end end
+            return mk(k)
+        end
+        return outer(5)(2)
+    "#,
+        ExVal::Integer(110)
+    );
+}
+
+#[test]
+fn four_level_capture_chain() {
+    valeq!(
+        r#"
+        local a = 1000
+        local function f1()
+            local b = 200
+            return function()
+                local c = 30
+                return function()
+                    local d = 4
+                    return function() return a + b + c + d end
+                end
+            end
+        end
+        return f1()()()()
+    "#,
+        ExVal::Integer(1234)
+    );
+}

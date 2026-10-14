@@ -533,6 +533,131 @@ impl<'gc> Lua {
         out
     }
 
+    /// Extract a [`Snippet`](crate::snippet::Snippet) from a script. `code` is **run** in this
+    /// VM and must *return* the function to capture, e.g.
+    /// `local gain = 0.5  return function(p) return math.sin(p) * gain end`. Locals the function
+    /// closes over are captured **by value** (they must be value-typed: numbers, strings,
+    /// booleans, pure-data tables); globals it references are classified against this VM's
+    /// globals (value → snapshot, reference → resolve from the snippet VM at run time).
+    ///
+    /// A host native that receives a function `Value` directly can call
+    /// [`Snippet::extract`](crate::snippet::Snippet::extract) on it instead — that is the
+    /// primary embedding path (e.g. `instr(1, function(p) ... end)`).
+    #[cfg(feature = "snippets")]
+    pub fn extract_snippet(
+        &mut self,
+        name: Option<&str>,
+        code: &str,
+        compiler: &mut Compiler,
+    ) -> Result<crate::snippet::Snippet, String> {
+        self.run(name, code, compiler).map_err(|e| {
+            e.errors
+                .iter()
+                .map(|t| format!("{}", t.code))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+        self.enter(|vm, mc| {
+            // The root frame has returned; its locals are gone from the live stack, so make
+            // sure every upvalue a returned closure captured is closed (holds its own copy)
+            // before we read it.
+            vm.close_all_upvalues(mc);
+            let value = vm.last_return.take().unwrap_or(Value::Nil);
+            crate::snippet::Snippet::extract(vm, &value).map_err(|e| e.to_string())
+        })
+    }
+
+    /// Build a snippet into a **fresh, isolated VM** (its own arena and standard library, the
+    /// snippet's globals injected, the materialized closure stored) and return it as a
+    /// [`SnippetVm`](crate::snippet::SnippetVm) you can call repeatedly. Fully decoupled from the
+    /// VM that defined it — build it on whatever thread will run it.
+    #[cfg(feature = "snippets")]
+    pub fn build_snippet(
+        snippet: &crate::snippet::Snippet,
+    ) -> Result<crate::snippet::SnippetVm, String> {
+        crate::snippet::SnippetVm::build(snippet)
+    }
+
+    /// One-shot convenience: build the snippet into a fresh VM and run it once. Equivalent to
+    /// `build_snippet(snippet)?.call(&args)`.
+    #[cfg(feature = "snippets")]
+    pub fn run_snippet(
+        snippet: &crate::snippet::Snippet,
+        args: Vec<ExVal>,
+    ) -> Result<ExVal, String> {
+        Lua::build_snippet(snippet)?.call(&args)
+    }
+
+    /// Materialize `snippet` into this (fresh) VM and store its closure in the snippet slot.
+    #[cfg(feature = "snippets")]
+    pub(crate) fn snippet_install(
+        &mut self,
+        snippet: &crate::snippet::Snippet,
+    ) -> Result<(), SiltError> {
+        let r = self.enter(|vm, mc| {
+            let closure = crate::snippet::instantiate(snippet, vm, mc)?;
+            vm.snippet_closure = Some(closure);
+            Ok(())
+        });
+        self.arena.collect_debt();
+        r
+    }
+
+    /// Call the installed snippet with `ExVal` arguments; the single result comes back as an
+    /// `ExVal` (a returned table is deep-copied out).
+    #[cfg(feature = "snippets")]
+    pub(crate) fn snippet_call(&mut self, args: &[ExVal]) -> Result<ExVal, SiltError> {
+        let out = self.enter(|vm, mc| {
+            let closure = vm.snippet_closure.clone().ok_or_else(|| {
+                SiltError::Custom("no snippet installed in this VM".to_string())
+            })?;
+            let mut arg_vals: Vec<Value> = Vec::with_capacity(args.len());
+            for a in args {
+                arg_vals.push(a.into_value(vm, mc)?);
+            }
+            let result = vm.call_protected(mc, closure, &arg_vals)?;
+            Ok(ExVal::from(result))
+        });
+        self.arena.collect_debt();
+        out
+    }
+
+    /// Hot path for numeric snippets (a synth voice, an easing curve …): call the installed
+    /// snippet with `f64` arguments and read a single number back, with no `ExVal`
+    /// marshalling and no heap allocation beyond the VM stack. Integers are widened; any
+    /// other result type is an error.
+    #[cfg(feature = "snippets")]
+    pub(crate) fn snippet_call_f64(&mut self, args: &[f64]) -> Result<f64, SiltError> {
+        const MAX_ARGS: usize = 8;
+        self.enter(|vm, mc| {
+            let closure = vm.snippet_closure.clone().ok_or_else(|| {
+                SiltError::Custom("no snippet installed in this VM".to_string())
+            })?;
+            if args.len() > MAX_ARGS {
+                return Err(SiltError::Custom(format!(
+                    "snippet f64 call takes at most {} arguments",
+                    MAX_ARGS
+                )));
+            }
+            let mut buf: [Value; MAX_ARGS] = Default::default();
+            for (slot, a) in buf.iter_mut().zip(args) {
+                *slot = Value::Number(*a);
+            }
+            match vm.call_protected(mc, closure, &buf[..args.len()])? {
+                Value::Number(n) => Ok(n),
+                Value::Integer(i) => Ok(i as f64),
+                Value::Infinity(pos) => Ok(if pos { f64::INFINITY } else { f64::NEG_INFINITY }),
+                other => Err(SiltError::Custom(format!(
+                    "snippet returned {} where a number was expected",
+                    other
+                ))),
+            }
+        })
+        // No `collect_debt` here: SnippetVm batches collection every N calls (a numeric
+        // snippet allocates nothing per call, and the debt check itself costs on the
+        // hot path).
+    }
+
     pub fn compile(
         &mut self,
         name: Option<&str>,
@@ -707,6 +832,13 @@ pub struct VM<'gc> {
     userdata_stack: Option<UDVec>,
     /// Used to quickly run in-VM functions externally
     external_functions: Vec<Gc<'gc, FunctionObject<'gc>>>,
+    /// Snippets: the value the last root `RETURN` produced (so a closure a script returns can
+    /// be extracted — `ExVal` has no function form).
+    #[cfg(feature = "snippets")]
+    pub(crate) last_return: Option<Value<'gc>>,
+    /// Snippets: in a snippet VM, the materialized snippet closure.
+    #[cfg(feature = "snippets")]
+    pub(crate) snippet_closure: Option<Value<'gc>>,
     /// Reused buffer for marshalling a native call's `fn + args` off the stack, so each
     /// native call doesn't heap-allocate a fresh Vec (see the CALL handler). Taken out
     /// via `mem::take` during the call to avoid aliasing `&mut VM`, then restored.
@@ -795,6 +927,10 @@ impl<'gc> VM<'gc> {
             userdata_registry: UserDataRegistry::new(),
             userdata_stack: Some(UDVec(vec![])),
             external_functions: vec![],
+            #[cfg(feature = "snippets")]
+            last_return: None,
+            #[cfg(feature = "snippets")]
+            snippet_closure: None,
             arg_scratch: Vec::with_capacity(8),
         }
     }
@@ -1243,6 +1379,19 @@ impl<'gc> VM<'gc> {
         }
     }
 
+    /// The live value stack (for reading open upvalues from outside the interpreter loop).
+    #[cfg(feature = "snippets")]
+    pub(crate) fn stack_slice(&self) -> &[Value<'gc>] {
+        &self.stack
+    }
+
+    /// Close every open upvalue, moving each captured value into its own cell. Used after a
+    /// root run has returned, when the stack slots those upvalues alias are no longer live.
+    #[cfg(feature = "snippets")]
+    pub(crate) fn close_all_upvalues(&mut self, mc: &Mutation<'gc>) {
+        self.close_upvalues_by_return(mc, 0);
+    }
+
     /** pop and return top of stack */
     #[inline]
     fn pop(&mut self) -> Value<'gc> {
@@ -1329,8 +1478,36 @@ impl<'gc> VM<'gc> {
                 for a in args {
                     self.push(a.clone());
                 }
-                let mut frame = CallFrame::new(c, snapshot, args.len() as u8, 1);
-                frame.base = snapshot;
+                // Mirror the CALL handler's parameter adjust: pad parameters the caller
+                // left out with nil (the body would otherwise read stale slots), and for
+                // a variadic callee copy `[f, fixed params]` above the overflow so the
+                // frame base sits past the varargs (see CallFrame::get_varargs).
+                let fixed = if c.is_variadic() {
+                    c.get_variadic()
+                } else {
+                    c.get_arity()
+                };
+                let mut ar = args.len() as u8;
+                while ar < fixed {
+                    self.push(Value::Nil);
+                    ar += 1;
+                }
+                let mut frame = if c.is_variadic() {
+                    let numfixed = c.get_variadic() as usize;
+                    let frame_top = self.stack_count;
+                    self.ensure_stack();
+                    for i in 0..=numfixed {
+                        let v = self.stack[snapshot + i].clone();
+                        self.push(v);
+                    }
+                    let mut frame = CallFrame::new(c, snapshot, ar, 1);
+                    frame.base = frame_top;
+                    frame
+                } else {
+                    let mut frame = CallFrame::new(c, snapshot, ar, 1);
+                    frame.base = snapshot;
+                    frame
+                };
                 // Every function body begins with a placeholder POP that the main loop
                 // skips via its trailing `iterate()` right after a CALL (it never runs).
                 // A freshly-entered nested loop would otherwise execute it and eat the
@@ -1403,12 +1580,23 @@ impl<'gc> VM<'gc> {
                     let count = *c;
                     frame_count -= 1;
                     if frame_count <= 0 {
-                        let out = self.pop().into();
-                        // if self.stack_count <= 1 {
-                        //     return Ok(ExVal::Nil);
-                        // }
-                        // let out: ExVal = self.safe_pop().into();
-                        return Ok(out);
+                        // A multi-value `return a, b` at the root (a script, or a function
+                        // run via call_protected) yields its FIRST value, as Lua does when
+                        // a single value is wanted — not whatever happens to be on top.
+                        let out = match count {
+                            // RETURN(0) keeps the long-standing "value left on top"
+                            // behaviour (a script ending in a bare call yields that
+                            // call's result); callers rely on it.
+                            0 | 1 => self.pop(),
+                            n => self.pop_offset(n as usize),
+                        };
+                        // Keep the raw value so a closure returned by the script can be
+                        // extracted as a snippet (`ExVal` has no function form).
+                        #[cfg(feature = "snippets")]
+                        {
+                            self.last_return = Some(out.clone());
+                        }
+                        return Ok(out.into());
                     }
 
                     devout!(
