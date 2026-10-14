@@ -107,3 +107,25 @@ fn repeated_garbage_stays_bounded() {
     // The genuinely-live global is untouched.
     assert_eq!(run(&mut lua, "return keep"), ExVal::Integer(7));
 }
+
+// ── A chunk's locals die with the chunk ──────────────────────────────────────
+
+#[test]
+fn root_locals_are_released_after_the_run() {
+    // The root frame's locals used to linger in their stack slots after the chunk
+    // returned, keeping everything they referenced alive until a later run overwrote them.
+    let mut lua = Lua::new_with_standard();
+    run(&mut lua, "return 1");
+    settle_gc(&mut lua);
+    let baseline = lua.allocated_bytes();
+    run(
+        &mut lua,
+        "local t = {} for i = 1, 20000 do t[i] = {i} end return #t",
+    );
+    settle_gc(&mut lua);
+    let after = lua.allocated_bytes();
+    assert!(
+        after < baseline + 100_000,
+        "root local retained after run: {baseline} -> {after} bytes"
+    );
+}

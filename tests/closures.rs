@@ -221,3 +221,46 @@ fn four_level_capture_chain() {
         ExVal::Integer(1234)
     );
 }
+
+#[test]
+fn root_local_captured_by_a_global_survives_the_next_chunk() {
+    // A chunk's locals are closed when the chunk ends. The upvalue used to stay open on the
+    // dead stack slot, so the next chunk's first local silently took its place (`get()`
+    // returned 99 here).
+    let mut lua = silt_lua::Lua::new_with_standard();
+    let mut c = silt_lua::Compiler::new();
+    lua.run(None, "local n = 10 function get() return n end", &mut c)
+        .map_err(|e| e.to_string())
+        .unwrap();
+    assert_eq!(
+        lua.run(None, "local m = 99 return get()", &mut c)
+            .map_err(|e| e.to_string())
+            .unwrap(),
+        ExVal::Integer(10)
+    );
+}
+
+#[test]
+fn root_local_counter_keeps_counting_across_chunks() {
+    let mut lua = silt_lua::Lua::new_with_standard();
+    let mut c = silt_lua::Compiler::new();
+    lua.run(
+        None,
+        "local n = 0 function inc() n = n + 1 return n end",
+        &mut c,
+    )
+    .map_err(|e| e.to_string())
+    .unwrap();
+    assert_eq!(
+        lua.run(None, "local x, y = 100, 200 return inc()", &mut c)
+            .map_err(|e| e.to_string())
+            .unwrap(),
+        ExVal::Integer(1)
+    );
+    assert_eq!(
+        lua.run(None, "return inc()", &mut c)
+            .map_err(|e| e.to_string())
+            .unwrap(),
+        ExVal::Integer(2)
+    );
+}

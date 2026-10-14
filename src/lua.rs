@@ -1244,7 +1244,14 @@ impl<'gc> VM<'gc> {
         let frame = CallFrame::new(closure, 0, 0, 0);
         self.push(Value::Function(object)); // frame base / self slot
         let frames = vec![frame];
-        self.process(&mut ep, frames)
+        let out = self.process(&mut ep, frames);
+        // The chunk is over. Close every upvalue still pointing into its stack slots — a
+        // root local captured by a global function keeps its value instead of aliasing
+        // whatever the next chunk puts in that slot — then drop the dead slots so the
+        // chunk's locals (and anything they held) can be collected.
+        self.close_upvalues_by_return(mc, 0);
+        self.stack.iter_mut().for_each(|v| *v = Value::Nil);
+        out
     }
 
     /// dump all newest userdata as weak references but keep atomic strong references within the lua
@@ -1390,6 +1397,21 @@ impl<'gc> VM<'gc> {
     #[cfg(feature = "snippets")]
     pub(crate) fn close_all_upvalues(&mut self, mc: &Mutation<'gc>) {
         self.close_upvalues_by_return(mc, 0);
+    }
+
+    /// Like [`close_upvalues_by_return`](Self::close_upvalues_by_return) but leaves the
+    /// stack slots in place: used when the returning frame's result has not been popped yet.
+    fn close_upvalues_keeping(&mut self, mc: &Mutation<'gc>, last: usize) {
+        let mut i = 0;
+        while i < self.open_upvalues.len() {
+            let loc = self.open_upvalues[i].borrow().slot();
+            if matches!(loc, Some(s) if s >= last) {
+                let up = self.open_upvalues.remove(i);
+                up.borrow_mut(mc).close_keep(&self.stack);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /** pop and return top of stack */
@@ -1580,6 +1602,13 @@ impl<'gc> VM<'gc> {
                     let count = *c;
                     frame_count -= 1;
                     if frame_count <= 0 {
+                        // The outermost frame of this run is over (a chunk, or the callee
+                        // of call_protected): close the upvalues over its locals while
+                        // they are still in place. A chunk-level local captured by a global
+                        // function must keep its value rather than alias whatever the next
+                        // chunk puts in that slot. Frames below `stack_snapshot` (an
+                        // enclosing script under pcall) are still live and stay open.
+                        self.close_upvalues_keeping(ep.mc, frame.stack_snapshot);
                         // A multi-value `return a, b` at the root (a script, or a function
                         // run via call_protected) yields its FIRST value, as Lua does when
                         // a single value is wanted — not whatever happens to be on top.
