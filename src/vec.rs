@@ -14,17 +14,10 @@ use gc_arena::Collect;
 
 macro_rules! vec_wrapper {
     ($name:ident, $glam:ty) => {
-        #[derive(Debug, Clone, Copy, PartialEq)]
+        // POD — no `Gc` pointers inside, so there is nothing to trace.
+        #[derive(Debug, Clone, Copy, PartialEq, Collect)]
+        #[collect(require_static)]
         pub struct $name(pub $glam);
-
-        // POD — no `Gc` pointers inside, so there is nothing to trace. Mirrors the
-        // `UDVec` impl in `src/lua.rs`.
-        unsafe impl Collect for $name {
-            fn needs_trace() -> bool {
-                false
-            }
-            fn trace(&self, _cc: &gc_arena::Collection) {}
-        }
 
         impl Deref for $name {
             type Target = $glam;

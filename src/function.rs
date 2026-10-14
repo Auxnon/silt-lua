@@ -20,18 +20,20 @@ pub struct CallFrame<'gc> {
     /// through this (see `VM::get_chunk`) so a hot-swapped body executes while the
     /// closure keeps its own upvalues.
     pub proto: Gc<'gc, FunctionObject<'gc>>,
-    // ip: *const OpCode
-    // pub base: usize,
-    // pointer points into VM values stack
+    /// `proto.chunk.code`, borrowed for `'gc` so the dispatch loop indexes one
+    /// slice instead of walking Gc -> FunctionObject -> Chunk -> Vec each step.
+    code: &'gc [OpCode],
+    /// Stack height when this frame was entered; RETURN truncates back to it.
     pub stack_snapshot: usize,
-    pub local_stack: *mut Value<'gc>,
-    pub ip: *const OpCode,
-    // pub need: u8,
+    /// Index of this frame's slot 0 in the VM stack (the function value; locals
+    /// follow). For variadic calls it sits above the overflow args.
+    pub base: usize,
+    /// Index of the current instruction in `code`.
+    pub ip: usize,
     /// Call frame is made aware of how many variables need a return and will pop that amount until nil on return
     pub multi_return: u8,
     // how many values we're calling the function with, potential for varargs
     pub call_arity: u8,
-    // pub mark: usize
 }
 
 impl<'frame> CallFrame<'frame> {
@@ -54,12 +56,13 @@ impl<'frame> CallFrame<'frame> {
         };
         #[cfg(not(feature = "hot-swap"))]
         let proto = function.function;
-        let ip = proto.chunk.code.as_ptr();
+        let code = Gc::as_ref(proto).chunk.code.as_slice();
         Self {
             function,
             proto,
-            ip,
-            local_stack: std::ptr::null_mut(),
+            code,
+            ip: 0,
+            base: 0,
             stack_snapshot,
             call_arity,
             multi_return,
@@ -68,152 +71,80 @@ impl<'frame> CallFrame<'frame> {
 
     #[inline]
     pub fn current_instruction(&self) -> &crate::code::OpCode {
-        // &self.function.chunk.code[self.ip]
-        unsafe { &*self.ip }
+        &self.code[self.ip]
     }
 
     /** shift ip by 1 instruction */
     #[inline]
     pub fn iterate(&mut self) {
-        // self.ip += 1;
-        self.ip = unsafe { self.ip.add(1) };
+        self.ip += 1;
     }
 
-    /** DANGER: does not shift ip, only returns instruction set in range past ip */
+    /** does not shift ip, only returns the `n` instructions after the current one */
     pub fn get_next_n_codes(&self, n: usize) -> &[OpCode] {
-        // &self.function.chunk.code[self.ip..self.ip + n]
-        const SIZE: usize = std::mem::size_of::<OpCode>();
-        unsafe { std::slice::from_raw_parts(self.ip.add(1), n * SIZE) }
+        &self.code[self.ip + 1..self.ip + 1 + n]
     }
 
     /** move ip N instructions over */
     pub fn shift(&mut self, n: usize) {
-        // self.ip += n;
-        self.ip = unsafe { self.ip.add(n) };
+        self.ip += n;
+    }
+
+    /// VM stack index of local `index`.
+    #[inline]
+    pub fn slot(&self, index: u8) -> usize {
+        self.base + index as usize
     }
 
     #[inline]
-    pub fn set_val(&mut self, index: u8, value: Value<'frame>) {
-        // self.stack[index as usize] = value;
-        unsafe { *self.local_stack.add(index as usize) = value };
+    pub fn set_val(&self, stack: &mut [Value<'frame>], index: u8, value: Value<'frame>) {
+        stack[self.slot(index)] = value;
     }
 
     #[inline]
-    pub fn get_val(&self, index: u8) -> &Value<'frame> {
-        // &self.stack[index as usize]
-        // println!("get_val: {}", index);
-        // println!("top: {}", unsafe { &*self.local_stack });
-        unsafe { &*self.local_stack.add(index as usize) }
-    }
-
-    /// get a slice of size count from local stack offset by index.
-    /// Exclusive to VarArg
-    pub fn get_vals(&self, index: u8, count: u8) -> &[Value<'frame>] {
-        // &self.stack[index as usize]
-        unsafe {
-            let i = self.local_stack.add((index) as usize);
-            std::slice::from_raw_parts(i, count as usize)
-        }
+    pub fn get_val<'s>(&self, stack: &'s [Value<'frame>], index: u8) -> &'s Value<'frame> {
+        &stack[self.slot(index)]
     }
 
     /// Read the variadic overflow values for this frame. In a variadic call the
     /// extra arguments are left on the stack *below* the frame base (the fixed
     /// params and function are copied above them at call time), so the `nextra`
-    /// values sit at `local_stack[-nextra .. 0]`.
-    pub fn get_varargs(&self, nextra: u8) -> &[Value<'frame>] {
-        unsafe {
-            let start = self.local_stack.sub(nextra as usize);
-            std::slice::from_raw_parts(start, nextra as usize)
-        }
+    /// values sit at `stack[base - nextra .. base]`.
+    pub fn get_varargs<'s>(&self, stack: &'s [Value<'frame>], nextra: u8) -> &'s [Value<'frame>] {
+        &stack[self.base - nextra as usize..self.base]
     }
 
-    // get_vararg
-
     #[inline]
-    pub fn get_val_mut(&mut self, index: u8) -> &mut Value<'frame> {
-        unsafe { &mut *self.local_stack.add(index as usize) }
+    pub fn get_val_mut<'s>(
+        &self,
+        stack: &'s mut [Value<'frame>],
+        index: u8,
+    ) -> &'s mut Value<'frame> {
+        &mut stack[self.slot(index)]
     }
 
     #[cfg(feature = "dev-out")]
-    pub fn print_local_stack(&self) {
-        print!("local stack: {:?}", unsafe {
-            std::slice::from_raw_parts(self.local_stack, 10)
-        });
-        println!("(top: {})", unsafe { &*self.local_stack });
+    pub fn print_local_stack(&self, stack: &[Value<'frame>]) {
+        let end = (self.base + 10).min(stack.len());
+        print!("local stack: {:?}", &stack[self.base..end]);
+        println!("(top: {})", stack[self.base]);
     }
 
-    // pub fn push(&mut self, value: Value) {
-    //     // TODO can we push to the stack by pointer? Or should we just push on a Vec?
-    //     // *self.stack_top= value;
-
-    //     // unsafe { *self.stack_top = value };
-    //     // self.stack.push(value);
-    //     // self.stack_top = self.stack.as_ptr().add(self.stack.len());
-
-    //     // unsafe { *self.stack_top = value };
-    //     // self.stack_top = unsafe { self.stack_top.add(1) };
-    //     self.stack.push(value);
-    // }
-
-    // pub fn push(&mut self, value: Value) {
-    //     println!("pushing: {}", value);
-    //     // self.stack.push(value);
-    //     self.stack = unsafe { self.stack.add(1) };
-    //     unsafe { *self.stack = value };
-    // }
-
-    /** pop and return top of stack */
-    // pub fn pop(&mut self) -> Value {
-    //     // self.stack.pop().unwrap()
-    //     // let d = self.stack.wrapping_add(1);
-    //     // take value
-    //     let v = unsafe { std::mem::replace(&mut *self.stack, Value::Nil) };
-    //     self.stack = unsafe { self.stack.sub(1) };
-    //     v
-
-    //     // let o = unsafe { &*self.stack };
-    //     // o
-    // }
-
-    /** pop N number of values from stack */
-    // pub fn popn(&mut self, n: u8) {
-    //     // self.stack.truncate(self.stack.len() - n as usize);
-    //     self.stack = unsafe { self.stack.sub(n as usize) };
-    // }
-
-    /** take and replace with a Nil */
-    #[allow(dead_code)]
-    pub fn take<'a>(&'frame mut self) -> &'a Value<'frame> {
-        // self.stack_top = unsafe { self.stack_top.sub(1) };
-        // unsafe { *self.stack_top }
-        let v = unsafe { &*self.local_stack };
-        unsafe { *self.local_stack = Value::Nil };
-        v
-    }
-
-    // TODO validate safety of this, compiler has to be solid af!
     #[inline]
     pub fn forward(&mut self, offset: u16) {
-        // self.ip += offset as usize;
-        self.ip = unsafe { self.ip.add(offset as usize) };
+        self.ip += offset as usize;
     }
 
     #[inline]
     pub fn rewind(&mut self, offset: u16) {
-        // self.ip -= offset as usize;
-        self.ip = unsafe { self.ip.sub(offset as usize) };
-        // println!("rewind: {}", unsafe { &*self.ip });
+        self.ip -= offset as usize;
     }
-    /// Source span of the instruction `ip` points at. `ip` walks the
-    /// effective prototype's code (see `proto`), so its offset from that code's
-    /// start is the instruction index into the parallel `locations` table.
+
+    /// Source span of the instruction `ip` points at. `ip` indexes the
+    /// effective prototype's code (see `proto`), which is parallel to the
+    /// `locations` table.
     pub fn current_span(&self) -> ((usize, usize), (usize, usize)) {
-        let chunk = &self.proto.chunk;
-        let i = unsafe { self.ip.offset_from(chunk.code.as_ptr()) };
-        if i < 0 {
-            return ((0, 0), (0, 0));
-        }
-        chunk.get_span(i as usize)
+        self.proto.chunk.get_span(self.ip)
     }
 }
 #[derive(Default, Collect)]
@@ -311,30 +242,13 @@ impl<'chnk> FunctionObject<'chnk> {
             }
         }
 
-        vm.push(ep, Value::Closure(Gc::new(ep.mc, closure)));
+        vm.push(Value::Closure(Gc::new(ep.mc, closure)));
         // }
         // else {
         //     return Err(SiltError::VmRuntimeError);
         // }
         frame.shift(func.upvalue_count as usize);
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    #[allow(unused_assignments)]
-    pub(crate) fn call_closure<'gc, 'a: 'gc>(
-        clos: &'a Gc<Closure<'gc>>,
-        frames: &'a mut Vec<CallFrame<'gc>>,
-        stack_count: usize,
-        arity: usize,
-        mut frame: &'a mut CallFrame<'gc>,
-        ep: &mut Ephemeral<'_, 'a>,
-    ) {
-        let frame_top = unsafe { ep.ip.sub(arity + 1) };
-        let new_frame = CallFrame::new(clos.clone(), stack_count - arity - 1, arity as u8, 0);
-        frames.push(new_frame);
-        frame = frames.last_mut().unwrap();
-        frame.local_stack = frame_top;
     }
 
     pub fn print(&self) {
@@ -526,10 +440,11 @@ impl<'chnk> Closure<'chnk> {
     pub fn get_variadic(&self) -> u8 {
         self.function.varidic_index
     }
-    pub fn get_arity(&self)->u8{
+    pub fn get_arity(&self) -> u8 {
         self.function.arity
-}
+    }
 
+    #[allow(dead_code)]
     pub fn print_upvalues(&self) {
         self.upvalues.iter().enumerate().for_each(|(i, f)| {
             println!("fn-up {}:{}", i, f.borrow());
@@ -537,79 +452,67 @@ impl<'chnk> Closure<'chnk> {
     }
 }
 
+/// A captured local. While the local's frame is live the upvalue is *open* and
+/// aliases its VM stack slot; when the frame returns (or the block ends) it is
+/// *closed* and the value moves into `closed`, so surviving closures keep it.
+#[derive(Collect)]
+#[collect(no_drop)]
 pub struct UpValue<'lua> {
-    // is_open: bool,
-    // obj?
     pub index: u8,
-    /** the value */
+    /** the value once closed */
     closed: Value<'lua>,
-    // pub location: NonNull<Value<'lua>>,
-    /** the pointer to the closed value */
-    pub location: *mut Value<'lua>,
-    // pub value: *mut Value, // TODO oshould be a RC mutex of the value ideally
+    /** the VM stack slot while open; `None` once closed */
+    slot: Option<usize>,
 }
 impl<'lua> UpValue<'lua> {
-    pub fn new(index: u8, location: *mut Value<'lua>) -> Self {
+    pub fn new(index: u8, slot: usize) -> Self {
         Self {
             index,
             closed: Value::Nil,
-            location,
+            slot: Some(slot),
         }
     }
 
-    pub fn set_value(&mut self, value: Value<'lua>) {
-        unsafe { *self.location = value }
+    /// The stack slot this upvalue aliases, or `None` once closed.
+    #[inline]
+    pub fn slot(&self) -> Option<usize> {
+        self.slot
+    }
+
+    pub fn set_value(&mut self, stack: &mut [Value<'lua>], value: Value<'lua>) {
+        match self.slot {
+            Some(s) => stack[s] = value,
+            None => self.closed = value,
+        }
     }
 
     pub fn close_around(&mut self, value: Value<'lua>) {
         self.closed = value;
-        self.location = &mut self.closed as *mut Value;
+        self.slot = None;
     }
 
-    pub fn close(&mut self) {
-        #[cfg(feature = "dev-out")]
-        println!("closing: {}", unsafe { &*self.location });
-        self.closed = unsafe { self.location.replace(Value::Nil) };
+    /// Move the value out of its stack slot (leaving nil) and close.
+    pub fn close(&mut self, stack: &mut [Value<'lua>]) {
+        if let Some(s) = self.slot.take() {
+            self.closed = std::mem::take(&mut stack[s]);
+        }
         #[cfg(feature = "dev-out")]
         println!("closed: {}", self.closed);
-        self.location = &mut self.closed as *mut Value;
     }
 
-    pub fn copy_value(&self) -> Value<'lua> {
-        #[cfg(feature = "dev-out")]
-        println!("copying: {}", unsafe { &*self.location });
-        unsafe { (*self.location).clone() }
-    }
-
-    pub fn get_location(&self) -> *mut Value<'lua> {
-        #[cfg(feature = "dev-out")]
-        println!("getting location: {}", unsafe { &*self.location });
-        self.location
-    }
-
-    // pub fn get(&self) -> &Value {
-    //     unsafe { &*self.value }
-    // }
-    // pub fn set(&mut self, value: Value) {
-    //     unsafe { *self.value = value };
-    // }
-}
-
-unsafe impl<'lua> Collect for UpValue<'lua> {
-    fn trace(&self, cc: &gc_arena::Collection) {
-        // location is just a helper, it's a pointer to closed, is that stupid? Probably.
-        self.closed.trace(cc);
+    pub fn copy_value(&self, stack: &[Value<'lua>]) -> Value<'lua> {
+        match self.slot {
+            Some(s) => stack[s].clone(),
+            None => self.closed.clone(),
+        }
     }
 }
 
 impl Display for UpValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "⬆️{}x{}@{}",
-            unsafe { &*self.location },
-            self.closed,
-            self.index
-        )
+        match self.slot {
+            Some(s) => write!(f, "⬆️open@slot{}#{}", s, self.index),
+            None => write!(f, "⬆️{}#{}", self.closed, self.index),
+        }
     }
 }

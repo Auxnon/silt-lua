@@ -701,7 +701,9 @@ unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
     }
 }
 
-/// A wrapper for UserData objects
+/// A wrapper for UserData objects. Holds no `Gc` pointers, so nothing to trace.
+#[derive(Collect)]
+#[collect(require_static)]
 pub struct UserDataWrapper {
     data: Arc<Mutex<dyn Any + Send>>,
     id: usize,
@@ -925,15 +927,6 @@ impl Clone for UserDataWrapper {
     }
 }
 
-unsafe impl Collect for UserDataWrapper {
-    fn needs_trace() -> bool {
-        false
-    }
-
-    fn trace(&self, _cc: &gc_arena::Collection) {
-        // No GC references to trace
-    }
-}
 
 /// Example UserData implementation
 pub struct TestEnt {
