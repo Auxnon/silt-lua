@@ -480,7 +480,7 @@ is in place, so these are now straightforward.
 
 ---
 
-## 3.5 Static typing (Luau-style) — Phase 1 landed, behind `typing` feature (off by default)
+## 3.5 Static typing (Luau-style) — Phases 1–4 landed, behind `typing` feature (off by default)
 
 Goal: optional, gradual static types that error at **compile time**. The compiler is single-pass
 and AST-free, so checking will be done by a "type stack" mirroring the operand stack (woven into

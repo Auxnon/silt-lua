@@ -87,6 +87,8 @@ pub enum Token {
     Global,
     Flag(Flag),
     Type,
+    /// `?` — optional-type suffix (`T?`), only meaningful to the type parser.
+    Question,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,6 +195,7 @@ impl Display for Token {
             Token::VarArg => write!(f, "..."),
             // Token::Bang => write!(f, "!"),
             Token::Type => write!(f, "type"),
+            Token::Question => write!(f, "?"),
             Token::ColonIdentifier(ref ident) => write!(f, ":{}", ident),
             Token::Global => write!(f, "global"),
             Token::Flag(ref flag) => write!(f, "flag({})", flag),

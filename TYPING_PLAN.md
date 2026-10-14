@@ -113,7 +113,7 @@ Planned growth:
   no checking. Zero impact with the feature off.
 - Tests: `tests/typing.rs`.
 
-### Phase 1.5 — declaration pre-scan (the key enabler)
+### Phase 1.5 — declaration pre-scan (the key enabler) ✅ DONE (`compiler/typecheck.rs::tc_prescan`)
 - Before the main compile pass (or as a lightweight token pre-walk), scan for:
   - `type Name = <texpr>` aliases (and `export type` if we add modules)
   - top-level `function`/`local function` **signatures** (params + return types)
@@ -127,7 +127,7 @@ Planned growth:
 - Output feeds Phases 2–3 so a use of `Widget`/`f` before its definition checks
   correctly instead of degrading to `Any`.
 
-### Phase 2 — cheap, high-confidence checks (type stack)
+### Phase 2 — cheap, high-confidence checks (type stack) ✅ DONE (`tc_effect`, hooked in `write_code`)
 - Maintain a **type stack mirroring the operand stack**. Wherever emit pushes a
   runtime value, push its static `Type`; operators pop operand types, check
   compatibility, push the result type.
@@ -139,7 +139,7 @@ Planned growth:
 - Only flag when **both** sides are concretely known and incompatible (gradual).
 - Diagnostics collected into the existing `Compiler.errors`; non-fatal by default.
 
-### Phase 3 — function signatures + arg/return checking
+### Phase 3 — function signatures + arg/return checking ✅ DONE
 - Record `FnSig` per function (params from annotations, returns from `): T` —
   note the `)`-absorption quirk in `build_function` must be handled to capture
   return types; see PLAN §3.5/§3.6).
@@ -147,7 +147,7 @@ Planned growth:
   result type comes from the signature's returns.
 - Uses the Phase-1.5 environment so forward / mutually-recursive calls check.
 
-### Phase 4 — rich types + narrowing + strict mode
+### Phase 4 — rich types + narrowing + strict mode 🟢 MOSTLY DONE (`T?`, `A | B`, `{x: T}`/`{T}`/`{[K]: V}`, `(T) -> R`, aliases, `if` narrowing, `--!strict`; generics and `A & B` deliberately left out)
 - `T?` optionals (needs lexer `?`), `A | B` unions, `A & B` intersections,
   structural table shapes `{x: number, …}`, generics.
 - **Flow narrowing:** refine types inside `if type(x) == "…"` / `if x` branches.
@@ -186,3 +186,30 @@ Planned growth:
   through simple expressions? Start minimal (literals + annotated locals).
 - Error UX: dedicated `SiltError::TypeError { expected, found, loc }` with good
   messages; how to surface non-fatal diagnostics in the CLI.
+
+---
+
+## 7. What landed (2026-10)
+
+Everything above except generics, intersections and `export type`, all behind the `typing`
+feature in `src/compiler/typecheck.rs` + `src/types.rs`, with `tests/typing_checks.rs`.
+
+**Decisions taken while implementing:**
+- **Type errors are compile errors** (no warning tier). The feature is opt-in and silt's error
+  plumbing is all-or-nothing; a warning channel can be layered on later.
+- **Nonstrict checks only annotated boundaries** (Luau's nonstrict semantics): assignments to
+  typed locals/upvalues, arguments against typed params, returns against declared returns,
+  fields of typed table shapes. `--!strict` adds operator checks (arithmetic/concat/compare on a
+  value that can never be a number, indexing/calling a primitive, argument counts) and infers
+  unannotated locals from their initializers. This keeps every existing dynamic test (string
+  coercion, `nil + 1` under `pcall`) green with the feature on.
+- **The type stack is reset at every statement boundary and parked while a nested function
+  body compiles**, so bookkeeping drift can only ever cause a missed check within one
+  statement, never a false error later.
+- **Aliases are file-scoped** (not per-block as in Luau) and resolved lazily with a depth cap, so
+  forward references and mutually-recursive aliases work and a cyclic alias degrades to `any`.
+- **Signatures are keyed by name** in the pre-scan (`function f(...)` / `local function f`);
+  a shadowed same-named local function could see the wrong signature — accepted as gradual.
+- **Native callees** keep `Any` results except for `type`/`tostring`/`tonumber`/`print`.
+- **Not done:** generics, `A & B`, `export type`, constructor shape inference (`{x = 1}` is
+  `table`, not `{x: number}`), `while`-condition narrowing, a warning tier.

@@ -325,9 +325,8 @@ struct Local {
     /** how many layers deep the local value is nested in a function, with 0 being global (should only happen once to reserve the root func on the stack) */
     functional_depth: usize,
     is_captured: bool,
-    /// Phase-1 static type annotation (compile-time only). Defaults to `Any`.
-    /// Only written in Phase 1; the checking phases will read it.
-    #[cfg(feature = "typing")]
+    /// Static type (annotation, inference or narrowing). Compile-time only;
+    /// read by the `typing` checker, `Any` otherwise.
     #[allow(dead_code)]
     ty: crate::types::Type,
 }
@@ -341,6 +340,9 @@ struct LoopCtx {
     break_jumps: Vec<usize>,
 }
 
+#[cfg(feature = "typing")]
+mod typecheck;
+
 struct UpLocal {
     /** location on the overall stack */
     ident: u8,
@@ -348,6 +350,8 @@ struct UpLocal {
     // scoped_ident: u8,
     neighboring: bool,
     universal_ident: u8,
+    /// Static type of the captured local (compile-time only).
+    ty: crate::types::Type,
 }
 
 struct FunctionalState {
@@ -361,6 +365,9 @@ struct FunctionalState {
     pub expression_count: u8,
     /// hack to flip off a pop when an expression takes on statement properties, used only for := right now
     pub should_override_pop: bool,
+    /// Declared return types (`function f(): T`), checked at each RETURN.
+    #[cfg(feature = "typing")]
+    pub ret_types: Option<Vec<crate::types::Type>>,
 }
 impl FunctionalState {
     pub fn new() -> Self {
@@ -371,6 +378,8 @@ impl FunctionalState {
             argument_mode: false,
             expression_count: 0,
             should_override_pop: false,
+            #[cfg(feature = "typing")]
+            ret_types: None,
         }
     }
 }
@@ -382,6 +391,8 @@ struct AssignmentState {
     var_set_stack: Vec<Option<(OpCode, OpCode)>>,
     expected_multi: u8,
     can_multivar_set: bool,
+    #[cfg(feature = "typing")]
+    type_stack: Vec<crate::types::Type>,
 }
 
 type FnRef<'a, 'c> = &'a mut FunctionObject<'c>;
@@ -455,6 +466,9 @@ pub struct Compiler {
     /// `FunctionObject` produced in this pass (root and nested closures) is stamped
     /// with it, so a runtime error in any of them reports the right source.
     current_source_index: usize,
+    /// Static type checker state (see `compiler/typecheck.rs`).
+    #[cfg(feature = "typing")]
+    tc: typecheck::TypeCheck,
 }
 
 impl Compiler {
@@ -480,7 +494,6 @@ impl Compiler {
                 depth: 0,
                 functional_depth: 0,
                 is_captured: false,
-                #[cfg(feature = "typing")]
                 ty: crate::types::Type::Any,
             }],
             local_functional_offset: vec![],
@@ -503,6 +516,8 @@ impl Compiler {
             last_end_line: 0,
             source_counter: 0,
             current_source_index: crate::error::SOURCE_INDEX_UNKNOWN,
+            #[cfg(feature = "typing")]
+            tc: typecheck::TypeCheck::default(),
         }
     }
 
@@ -590,6 +605,8 @@ impl Compiler {
             var_set_stack: std::mem::take(&mut self.var_set_stack),
             expected_multi: self.expected_multi,
             can_multivar_set: self.can_multivar_set,
+            #[cfg(feature = "typing")]
+            type_stack: std::mem::take(&mut self.tc.stack),
         }
     }
 
@@ -598,6 +615,10 @@ impl Compiler {
         self.var_set_stack = s.var_set_stack;
         self.expected_multi = s.expected_multi;
         self.can_multivar_set = s.can_multivar_set;
+        #[cfg(feature = "typing")]
+        {
+            self.tc.stack = s.type_stack;
+        }
     }
 
     // fn get_chunk(&self,e: &'a mut Emphereal) -> &'chnk Chunk {
@@ -612,7 +633,9 @@ impl Compiler {
         f.chunk.code.len()
     }
 
-    fn write_code(&self, f: FnRef, byte: OpCode, location: TokenCell) -> usize {
+    fn write_code(&mut self, f: FnRef, byte: OpCode, location: TokenCell) -> usize {
+        #[cfg(feature = "typing")]
+        self.tc_effect(f, &byte, location);
         let span = self.span_for(location);
         f.chunk.write_code_span(byte, location, span)
     }
@@ -901,7 +924,7 @@ impl Compiler {
     }
 
     /** emit op code at current token location */
-    fn emit_at(&self, f: FnRef, op: OpCode) {
+    fn emit_at(&mut self, f: FnRef, op: OpCode) {
         #[cfg(feature = "dev-out")]
         {
             println!("emit_at ...{}", op);
@@ -1227,6 +1250,8 @@ fn set_trailing_vararg(&mut self,bool: bool){
         let source_index = self.source_counter;
         self.source_counter += 1;
         self.current_source_index = source_index;
+        #[cfg(feature = "typing")]
+        self.tc_prescan(source);
 
         let lexer = Lexer::new(source);
         let mut body = FunctionObject::new(to_op_string(name), true);
@@ -1254,7 +1279,15 @@ fn set_trailing_vararg(&mut self,bool: bool){
             self.drop_last_if(&mut body, &OpCode::POP);
         }
         // self.expression_count we should convert to tuple right? piping to CLI ???
+        #[cfg(feature = "typing")]
+        {
+            self.tc.implicit_return = true;
+        }
         self.emit(&mut body, OpCode::RETURN(0), (0, 0));
+        #[cfg(feature = "typing")]
+        {
+            self.tc.implicit_return = false;
+        }
         if !self.valid {
             body.chunk.invalidate();
         }
@@ -1607,6 +1640,8 @@ fn declaration<'a, 'c: 'a>(
 
     // Reset expression tracking for each declaration
     this.last_was_expression = false;
+    #[cfg(feature = "typing")]
+    this.tc_reset_statement();
 
     let start = match this.peek_triple(it) {
         Ok(t) => (t.1.line, t.1.col),
@@ -1626,6 +1661,16 @@ fn declaration_inner<'a, 'c: 'a>(
 ) -> Catch {
     let t = this.peek(it)?;
     match t {
+        // `--!strict` (and other `--!` flags): a directive, not a statement.
+        Token::Flag(flag) => {
+            #[cfg(feature = "typing")]
+            if matches!(flag, crate::token::Flag::Strict) {
+                this.tc.strict = true;
+            }
+            #[cfg(not(feature = "typing"))]
+            let _ = flag;
+            this.eat(it);
+        }
         Token::Local => declaration_keyword(this, mc, f, it, true, false)?,
         Token::Global => declaration_keyword(this, mc, f, it, false, false)?,
         Token::Function => {
@@ -1764,7 +1809,6 @@ fn _add_local(
         depth: this.scope_depth,
         functional_depth: this.functional_depth,
         is_captured: false,
-        #[cfg(feature = "typing")]
         ty: crate::types::Type::Any,
     });
     this.local_count += 1;
@@ -1808,6 +1852,7 @@ fn resolve_local(
                 let is_upvalue = l.functional_depth < this.functional_depth;
                 return if is_upvalue {
                     (*l).is_captured = true;
+                    let captured_ty = l.ty.clone();
                     let offset_ident = if l.functional_depth > 0 {
                         let offset = this.local_functional_offset[l.functional_depth - 1];
                         i - offset
@@ -1822,6 +1867,7 @@ fn resolve_local(
                             offset_ident,
                             this.functional_depth,
                             l.functional_depth,
+                            captured_ty,
                         ),
                         is_upvalue,
                     ))
@@ -1847,6 +1893,7 @@ fn resolve_upvalue(
     scoped_ident: u8,
     level: usize,
     target: usize,
+    ty: crate::types::Type,
 ) -> u8 {
     // `level` is a functional depth (1-based); the matching state lives at `level - 1`.
     let state = &mut functional_states[level - 1];
@@ -1862,17 +1909,19 @@ fn resolve_upvalue(
             ident: scoped_ident,
             universal_ident: ident,
             neighboring: true,
+            ty,
         });
         (m.len() - 1) as u8
     } else {
         // drop(m);
-        let higher = resolve_upvalue(functional_states, ident, scoped_ident, level - 1, target);
+        let higher = resolve_upvalue(functional_states, ident, scoped_ident, level - 1, target, ty.clone());
         let state = &mut functional_states[level - 1];
         let m = &mut state.up_values;
         m.push(UpLocal {
             ident: higher,
             universal_ident: ident,
             neighboring: false,
+            ty,
         });
         (m.len() - 1) as u8
         // resolve_upvalue(up_values, ident, level - 1, target)
@@ -2021,7 +2070,36 @@ fn define_function<'c>(
         Some((this.identifer_constant(f, ident), location))
     };
 
-    build_function(this, mc, f, it, ident_clone, false, false, location.0)?;
+    // A `local function f` may call itself: give the local its pre-scanned
+    // signature before the body compiles, then the real one after.
+    // (only when a local slot was really added — at root scope `local function`
+    // compiles as a global and `locals.last()` is some other variable)
+    #[allow(unused_variables)]
+    let added_local = global_ident.is_none() && existing_local.is_none();
+    #[cfg(feature = "typing")]
+    if added_local {
+        if let Some(sig) = this.tc.fn_sigs.get(&ident_clone).cloned() {
+            if let Some(l) = this.locals.last_mut() {
+                l.ty = crate::types::Type::Function(Some(Box::new(sig)));
+            }
+        }
+    }
+
+    build_function(this, mc, f, it, ident_clone.clone(), false, false, location.0)?;
+
+    #[cfg(feature = "typing")]
+    {
+        let fty = this.tc.stack.last().cloned().unwrap_or_default();
+        if added_local {
+            if let Some(l) = this.locals.last_mut() {
+                l.ty = fty;
+            }
+        } else if global_ident.is_some() {
+            if let crate::types::Type::Function(Some(sig)) = fty {
+                this.tc.fn_sigs.entry(ident_clone).or_insert(*sig);
+            }
+        }
+    }
 
     match existing_local {
         Some((index, true)) => this.emit(f, OpCode::SET_UPVALUE { index }, location),
@@ -2137,6 +2215,35 @@ fn build_function<'c>(
     // the placeholder POP below); now that a stray `)` is a real error, close it here.
     expect_token!(this it CloseParen);
 
+    // `function f(a: T): R` — optional return type(s); together with the typed
+    // params this is the function's signature, recorded for its CLOSURE and
+    // checked at every `return` in the body.
+    #[cfg(feature = "typing")]
+    let fn_sig = {
+        let returns = if matches!(this.peek(it)?, Token::Colon) {
+            this.eat(it);
+            Some(this.parse_return_types(it)?)
+        } else {
+            None
+        };
+        let depth = this.functional_depth;
+        let params: Vec<crate::types::Type> = this
+            .locals
+            .iter()
+            .filter(|l| l.functional_depth == depth && l.ident.is_some())
+            .map(|l| l.ty.clone())
+            .collect();
+        let variadic = this.is_vararg_function();
+        if let Some(st) = this.functional_states.last_mut() {
+            st.ret_types = returns.clone();
+        }
+        crate::types::FnSig {
+            params,
+            variadic,
+            returns,
+        }
+    };
+
     // A `local function f(...)` sets `local_declare_mode = true` in the enclosing
     // declaration; the body must not inherit it or its variable references compile
     // as fresh local declarations instead of gets. The phantom `)` statement used to
@@ -2176,7 +2283,15 @@ fn build_function<'c>(
             "=============================== return is".purple(),
             this.get_expression_count()
         );
+        #[cfg(feature = "typing")]
+        {
+            this.tc.implicit_return = true;
+        }
         this.emit_at(fr2, OpCode::RETURN(this.get_expression_count()));
+        #[cfg(feature = "typing")]
+        {
+            this.tc.implicit_return = false;
+        }
         this.set_expression_count(0);
     }
 
@@ -2203,6 +2318,10 @@ fn build_function<'c>(
     if true {
         // need closure
         let constant = this.write_constant(f, func_value);
+        #[cfg(feature = "typing")]
+        {
+            this.tc.pending_sig = Some(fn_sig);
+        }
         this.emit_at(f, OpCode::CLOSURE { constant });
         // emit upvalues
 
@@ -2433,13 +2552,25 @@ fn if_statement<'c>(
     devnote!(this it "if_statement");
     this.eat(it);
     expression(this, mc, f, it, false)?;
+    // `if x then` / `if x ~= nil then` / `if type(x) == "…" then` refine `x`
+    // inside the branches (restored at the end).
+    #[cfg(feature = "typing")]
+    let narrow = this.tc_narrow_from_condition(f);
     expect_token!(this it Then);
     let skip_if = this.emit_index(f, OpCode::POP_AND_GOTO_IF_FALSE(0));
+    #[cfg(feature = "typing")]
+    if let Some(n) = &narrow {
+        this.tc_narrow_then(n);
+    }
     scope_and_block_until!(this, mc, f, it, End | Else | ElseIf);
     // this.emit_at(OpCode::POP); // pop the if compare again as we skipped the pop from before
     match this.peek(it)? {
         Token::Else => {
             this.eat(it);
+            #[cfg(feature = "typing")]
+            if let Some(n) = &narrow {
+                this.tc_narrow_else(n);
+            }
             let skip_else = this.emit_index(f, OpCode::FORWARD(0));
             this.patch(f, skip_if)?; // patch to fo AFTER the forward so we actually run the else block
             scope_and_block_until!(this, mc, f, it, End);
@@ -2450,6 +2581,10 @@ fn if_statement<'c>(
             // Once this branch's block has run, jump over the rest of the
             // elseif/else chain (same role as `skip_else` in the Else arm).
             let skip_chain = this.emit_index(f, OpCode::FORWARD(0));
+            #[cfg(feature = "typing")]
+            if let Some(n) = &narrow {
+                this.tc_narrow_else(n);
+            }
             this.patch(f, skip_if)?; // false condition -> start of the elseif
             // Do NOT eat the `elseif` token here: the recursive if_statement's
             // own leading eat() consumes it exactly as it would an `if`. Eating
@@ -2467,6 +2602,10 @@ fn if_statement<'c>(
             // wrong scope. The Else arm already eats its `end` via expect_token.
             expect_token!(this it End);
         }
+    }
+    #[cfg(feature = "typing")]
+    if let Some(n) = &narrow {
+        this.tc_narrow_end(n);
     }
     Ok(())
 }
@@ -3211,6 +3350,9 @@ fn print_var_stack(_v: &[Option<(OpCode, OpCode)>]) {
 /// `:`; consumes it and a single type name, returning the parsed `Type`. Union,
 /// optional (`T?`), function, and table-shape syntax are deferred to later
 /// phases. Compile-time only — nothing is emitted.
+/// Parse a `: Type` annotation. Assumes the upcoming token is `:`; consumes
+/// it and a full type expression (`T?`, `A | B`, `{x: T}`, `{T}`, `(T) -> R`,
+/// aliases). Compile-time only — nothing is emitted.
 #[cfg(feature = "typing")]
 fn parse_type_annotation(
     this: &mut Compiler,
@@ -3218,13 +3360,7 @@ fn parse_type_annotation(
 ) -> Result<crate::types::Type, ErrorTuple> {
     devnote!(this it "parse_type_annotation");
     this.eat(it); // ':'
-    let (res, _) = this.pop(it);
-    Ok(match res? {
-        Token::Identifier(name) => crate::types::Type::from_name(&name),
-        Token::Nil => crate::types::Type::Nil,
-        Token::Function => crate::types::Type::Function,
-        other => return Err(this.error_at(SiltError::InvalidTokenPlacement(other))),
-    })
+    this.parse_type(it)
 }
 
 /// Map a compound-assignment token to the binary opcode it applies.
@@ -3314,6 +3450,23 @@ fn named_variable<'c>(
 
     // ident getter/setter gather for 1 variable, then continue on our while loop to check for
     // more. This should usually only hit for multi var assignment
+
+    // `type Name = T` — a type alias statement (Luau). Emits nothing.
+    #[cfg(feature = "typing")]
+    if let Token::Identifier(s) = &t {
+        if s == "type" && matches!(this.peek(it)?, Token::Identifier(_)) {
+            let (nres, _) = this.pop(it);
+            let name = match nres? {
+                Token::Identifier(n) => n,
+                _ => unreachable!(),
+            };
+            expect_token!(this it Assign);
+            let ty = this.parse_type(it)?;
+            this.tc.aliases.insert(name, ty);
+            this.override_pop();
+            return Ok(());
+        }
+    }
 
     let ops = if let Token::Identifier(ident) = t {
         // devout!("assigning to identifier: {}", ident);
@@ -3432,6 +3585,8 @@ fn named_variable<'c>(
     match this.peek(it)? {
         Token::Assign => {
             if can_assign {
+            #[allow(unused_variables)]
+            let declaring = this.local_declare_mode;
             // TODO is this the best fix for local passing?
             this.local_declare_mode=false;
                 this.eat(it);
@@ -3491,6 +3646,12 @@ fn named_variable<'c>(
                 //     this.emit_at(f, OpCode::NIL);
                 // }
 
+                // `local a: T, b = …`: the values now on the stack become the new
+                // locals — check annotations / infer (strict) before draining.
+                #[cfg(feature = "typing")]
+                if declaring {
+                    this.tc_declare_locals(assign_need as usize, this.current_location);
+                }
                 // println!("multivar drain 2");
                 this.drain_setters(f);
             } else {
