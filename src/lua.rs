@@ -144,6 +144,16 @@ macro_rules! num_op_str{
     }
 }
 
+/// Field/method name for a userdata access. Keys are almost always string
+/// constants, so borrow those; only non-string keys allocate.
+#[inline]
+fn field_key<'a>(key: &'a Value<'_>) -> std::borrow::Cow<'a, str> {
+    match key {
+        Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
+        other => std::borrow::Cow::Owned(other.pure_string()),
+    }
+}
+
 /// Coerce a value to an integer for bitwise ops, per Lua: integers pass through,
 /// floats with an exact integer value convert, everything else has "no integer
 /// representation" and is rejected by the caller.
@@ -2515,7 +2525,7 @@ impl<'gc> VM<'gc> {
                         // registry (same lookup as `ud.method`), leaving [method,
                         // receiver] so the userdata is passed as the implicit `self`.
                         Value::UserData(ud) => {
-                            let name = key.pure_string();
+                            let name = field_key(&key);
                             let mut mu = (*ud).borrow_mut(ep.mc);
                             let rud = mu.deref_mut();
                             match crate::userdata::vm_integration::get_field(
@@ -3104,7 +3114,7 @@ impl<'gc> VM<'gc> {
                                     (*t).borrow_mut(ep.mc).set(key, value);
                                 }
                                 Value::UserData(ud) => {
-                                    let name = key.pure_string();
+                                    let name = field_key(&key);
                                     let mut mu = (*ud).borrow_mut(ep.mc);
                                     crate::userdata::vm_integration::set_field(
                                         self,
@@ -3123,7 +3133,7 @@ impl<'gc> VM<'gc> {
                             let out = match &current {
                                 Value::Table(t) => Self::meta_index_get(*t, &key),
                                 Value::UserData(ud) => {
-                                    let name = key.pure_string();
+                                    let name = field_key(&key);
                                     let mut mu = (*ud).borrow_mut(ep.mc);
                                     crate::userdata::vm_integration::get_field(
                                         self,
@@ -3143,7 +3153,7 @@ impl<'gc> VM<'gc> {
                     let check = match &current {
                         Value::Table(t) => t.borrow().getr(&key).cloned(),
                         Value::UserData(ud) => {
-                            let name = key.pure_string();
+                            let name = field_key(&key);
                             let mut mu = (*ud).borrow_mut(ep.mc);
                             Some(crate::userdata::vm_integration::get_field(
                                 self,

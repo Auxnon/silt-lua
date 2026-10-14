@@ -1,12 +1,94 @@
 use core::f64;
 use std::{
-    any::Any,
+    any::{Any, TypeId},
     collections::HashMap,
     error::Error,
+    hash::{BuildHasherDefault, Hasher},
     marker::PhantomData,
     rc::Rc,
     sync::{Arc, Mutex, Weak},
 };
+
+/// FxHash (rustc's hasher): a multiply-rotate per word. Field and method names
+/// are short identifiers looked up on every `ud.x` / `ud:m()`, where SipHash's
+/// per-lookup setup dominated. Not DoS-resistant, which is fine for a table of
+/// names the host registered itself.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+impl FxHasher {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    #[inline]
+    fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(Self::K);
+    }
+}
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut b = bytes;
+        while b.len() >= 8 {
+            self.add(u64::from_le_bytes(b[..8].try_into().unwrap()));
+            b = &b[8..];
+        }
+        if b.len() >= 4 {
+            self.add(u32::from_le_bytes(b[..4].try_into().unwrap()) as u64);
+            b = &b[4..];
+        }
+        for &x in b {
+            self.add(x as u64);
+        }
+    }
+    #[inline]
+    fn write_u8(&mut self, i: u8) {
+        self.add(i as u64);
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.add(i);
+    }
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// `TypeId` is already a hash; pass its bits through instead of re-hashing.
+#[derive(Default, Clone, Copy)]
+pub struct TypeIdHasher(u64);
+
+impl Hasher for TypeIdHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // TypeId hashes as one u128 (two u64 writes on older toolchains); fold
+        // whatever arrives.
+        for chunk in bytes.chunks(8) {
+            let mut w = [0u8; 8];
+            w[..chunk.len()].copy_from_slice(chunk);
+            self.0 ^= u64::from_le_bytes(w);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 ^= i;
+    }
+    #[inline]
+    fn write_u128(&mut self, i: u128) {
+        self.0 ^= (i as u64) ^ ((i >> 64) as u64);
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+type TypeIdMap<V> = HashMap<TypeId, V, BuildHasherDefault<TypeIdHasher>>;
 
 // use colored::Colorize;
 use gc_arena::{Collect, Gc, Mutation};
@@ -165,6 +247,8 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
     /// Clone out the metamethod closure at `index` (a cheap `Rc` clone) so the caller
     /// can drop its borrow on the registry before invoking it with `&mut VM`.
     fn get_meta_method(&self, index: usize) -> Option<UserDataMethodClosure<'gc>>;
+    /// Mark the `Gc` method values this map holds (see `create_method_function`).
+    fn trace(&self, cc: &gc_arena::Collection);
     fn get_field(
         &self,
         vm: &VM<'gc>,
@@ -184,27 +268,29 @@ pub trait UserDataMapTraitObj<'gc>: 'gc {
 
 /// Stores methods and fields for a specific UserData type T
 pub struct UserDataTypedMap<'gc, T: UserData + 'gc> {
-    methods: HashMap<String, UserDataMethodClosure<'gc>>,
-    // methods2: HashMap<String, dyn MethodHandler<'gc,T,_,_>>,
-    // method_cache: Vec<NativeFunctionRc<'gc>>,
+    /// Methods as registered; `create_method_function` turns them into
+    /// `method_values` once the registry has a `Mutation` to allocate with.
+    methods: FxMap<Box<str>, UserDataMethodClosure<'gc>>,
+    /// `ud:m()` / `ud.m` resolve here: one `Value::NativeFunction` per method,
+    /// allocated once at registration. The old getter built a fresh
+    /// `Gc<WrappedFn>` on every lookup, i.e. a GC allocation per method call.
+    method_values: FxMap<Box<str>, Value<'gc>>,
     // Keyed by `MetaMethod::as_ind()`; a Vec was indexed sparsely (e.g. index 25)
     // which panicked on insert into an empty Vec.
     meta_methods: HashMap<usize, UserDataMethodClosure<'gc>>,
-    getters: HashMap<String, Box<UserDataGetterFn<'gc, T>>>,
-    setters: HashMap<String, Box<UserDataSetterFn<'gc, T>>>,
-    // type_id: std::any::TypeId,
+    getters: FxMap<Box<str>, Box<UserDataGetterFn<'gc, T>>>,
+    setters: FxMap<Box<str>, Box<UserDataSetterFn<'gc, T>>>,
     _phantom: PhantomData<T>,
 }
 
 impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     pub fn new() -> Self {
         Self {
-            methods: HashMap::new(),
-            // method_cache: Vec::new(),
+            methods: FxMap::default(),
+            method_values: FxMap::default(),
             meta_methods: HashMap::new(),
-            getters: HashMap::new(),
-            setters: HashMap::new(),
-            // type_id: std::any::TypeId::of::<T>(),
+            getters: FxMap::default(),
+            setters: FxMap::default(),
             _phantom: PhantomData,
         }
     }
@@ -253,53 +339,18 @@ impl<'gc, T: UserData + 'static> UserDataTypedMap<'gc, T> {
     //     let rr=Box::leak(b);
     // }
 
-    // Create a NativeFunction that calls a UserData method
-    pub fn create_method_function(&mut self) {
-        self.methods.drain().for_each(|(st, method_fn)| {
-            // let type_id = self.type_id;
-            // let method_name = method_name.to_string();
-
-            // let native_fn = move |vm: &mut VM<'gc>,
-            //                       mc: &Mutation<'gc>,
-            //                       args: &[Value<'gc>]|
-            //       -> Value<'gc> {
-            //     let method_args = args[1..].to_vec();
-            //     // First argument should be the UserData instance
-            //     if let Value::UserData(ud_ref) = args[0] {
-            //         let ud_borrow = ud_ref.borrow();
-            //         if let Ok(mut data_lock) = ud_borrow.data.lock() {
-            //             if let Some(typed_data) = data_lock.downcast_mut::<T>() {
-            //                 // println!("we're here an dthen{:?}", method_fn);
-            //                 for ele in method_args.iter() {
-            //                     println!(" args {}", ele);
-            //                 }
-            //                 // Call the method with remaining arguments
-            //                 return method_fn(vm, mc, typed_data, method_args)?;
-            //             }
-            //         };
-            //     }
-            //     Err(SiltError::UDBadCast)
-            //     // Value::Nil
-            // };
-            let native_fn = method_fn;
+    /// Turn each registered method into a callable `Value`, allocated once here.
+    pub fn create_method_function(&mut self, mc: &Mutation<'gc>) {
+        for (name, native_fn) in self.methods.drain() {
             // wrap the single-value userdata method closure into the native ABI
             let raw = NativeFunctionRaw {
                 func: Box::new(move |vm, mc, args| {
                     Ok(NativeReturn::Single(native_fn(vm, mc, args)?))
                 }),
             };
-            let r = Rc::new(raw);
-            // self.method_cache.push(r.clone());
-            self.getters.insert(
-                st.to_string(),
-                Box::new(move |_, mc, _| {
-                    Ok(Value::NativeFunction(Gc::new(
-                        mc,
-                        WrappedFn::new(r.clone()),
-                    )))
-                }),
-            );
-        });
+            let value = Value::NativeFunction(Gc::new(mc, WrappedFn::new(Rc::new(raw))));
+            self.method_values.insert(name, value);
+        }
     }
 }
 
@@ -353,6 +404,12 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         self.meta_methods.get(&index).cloned()
     }
 
+    fn trace(&self, cc: &gc_arena::Collection) {
+        for v in self.method_values.values() {
+            v.trace(cc);
+        }
+    }
+
     fn get_field(
         &self,
         vm: &VM<'gc>,
@@ -360,9 +417,12 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
         ud: &UserDataWrapper,
         name: &str,
     ) -> InnerResult<'gc> {
-        // println!("name {}", name);
+        // Methods shadow same-named getters (they used to be inserted into the
+        // getter map after the fields, overwriting).
+        if let Some(m) = self.method_values.get(name) {
+            return Ok(m.clone());
+        }
         if let Some(getter_fn) = self.getters.get(name) {
-            // println!("yeah we exist {}", name);
             if let Ok(d) = ud.data.lock() {
                 return match d.downcast_ref() {
                     Some(typed_ud) => getter_fn(vm, mc, typed_ud),
@@ -395,14 +455,20 @@ impl<'gc, T: UserData + 'static> UserDataMapTraitObj<'gc> for UserDataTypedMap<'
 
 /// Type-erased container for UserData methods
 pub struct UserDataMap<'gc> {
+    type_name: &'static str,
     data: Box<dyn UserDataMapTraitObj<'gc> + 'gc>,
 }
 
 impl<'gc> UserDataMap<'gc> {
     pub fn new<T: UserData + 'static>(methods: UserDataTypedMap<'gc, T>) -> Self {
         Self {
+            type_name: T::type_name(),
             data: Box::new(methods),
         }
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        self.type_name
     }
 
     // pub fn call_method(
@@ -544,7 +610,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         F: MethodHandler<'gc, T, A, R> + 'gc,
     {
         self.methods.insert(
-            name.to_string(),
+            name.into(),
             Rc::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
                     match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
@@ -593,7 +659,7 @@ impl<'gc, T: UserData + 'static> UserDataMethods<'gc, T> for UserDataTypedMap<'g
         F: MethodHandler<'gc, T, A, R> + 'gc,
     {
         self.methods.insert(
-            name.to_string(),
+            name.into(),
             Rc::new(move |vm, mc, args| {
                 let res = if let Some(ud_val) = args.first() {
                     match ud_val.apply_userdata_mut::<T, _, R>(mc, |ud| {
@@ -623,7 +689,7 @@ impl<'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc
         // println!("add getter {}", name);
         let func: Box<UserDataGetterFn<T>> =
             Box::new(move |vm, mc, ud| R::to_lua(closure(vm, mc, ud), vm, mc));
-        self.getters.insert(name.to_string(), func);
+        self.getters.insert(name.into(), func);
     }
 
     fn add_field_method_set<F, V, R>(&mut self, name: &str, closure: F)
@@ -636,43 +702,47 @@ impl<'gc, T: UserData + 'static> UserDataFields<'gc, T> for UserDataTypedMap<'gc
         let func: Box<UserDataSetterFn<T>> = Box::new(move |vm, mc, ud, arg| {
             R::to_lua(closure(vm, mc, ud, V::from_lua(&arg, vm, mc)?), vm, mc)
         });
-        self.setters.insert(name.to_string(), func);
+        self.setters.insert(name.into(), func);
     }
 }
 
-/// Registry for UserData types
+/// Registry for UserData types.
+///
+/// Keyed by the Rust `TypeId`, not `type_name()`: two types that report the same
+/// name no longer silently share (and break) one map, and the per-access lookup
+/// is a pass-through hash of the id instead of SipHash over a string. Maps live
+/// in a dense `Vec` indexed by registration order.
 pub struct UserDataRegistry<'gc> {
-    maps: HashMap<&'static str, UserDataMap<'gc>>,
+    by_type: TypeIdMap<usize>,
+    maps: Vec<UserDataMap<'gc>>,
     instance_data: HashMap<usize, &'static str>, // Maps instance ID to type_name
 }
 
 impl<'gc> UserDataRegistry<'gc> {
     pub fn new() -> Self {
         Self {
-            maps: HashMap::new(),
+            by_type: TypeIdMap::default(),
+            maps: Vec::new(),
             instance_data: HashMap::new(),
         }
     }
 
-    /// Register a UserData type
-    pub fn register<T: UserData>(&mut self, _mc: &Mutation<'gc>) {
-        let type_name = T::type_name();
-        // Only register if not already registered
-        if !self.maps.contains_key(type_name) {
-            let mut typed_map = UserDataTypedMap::<T>::new();
-
-            // Register methods
-            T::add_methods(&mut typed_map);
-
-            // Register fields
-            T::add_fields(&mut typed_map);
-            // println!("TypedMap {}", typed_map.to_string());
-            typed_map.create_method_function();
-            let map = UserDataMap::new(typed_map);
-
-            // Store in registry
-            self.maps.insert(type_name, map);
+    /// Register a UserData type (no-op if already registered)
+    pub fn register<T: UserData>(&mut self, mc: &Mutation<'gc>) {
+        let type_id = TypeId::of::<T>();
+        if self.by_type.contains_key(&type_id) {
+            return;
         }
+        let mut typed_map = UserDataTypedMap::<T>::new();
+        T::add_methods(&mut typed_map);
+        T::add_fields(&mut typed_map);
+        typed_map.create_method_function(mc);
+        self.by_type.insert(type_id, self.maps.len());
+        self.maps.push(UserDataMap::new(typed_map));
+    }
+
+    pub fn is_registered<T: UserData>(&self) -> bool {
+        self.by_type.contains_key(&TypeId::of::<T>())
     }
 
     /// Register a UserData instance
@@ -680,9 +750,17 @@ impl<'gc> UserDataRegistry<'gc> {
         self.instance_data.insert(wrapper.id(), wrapper.type_name());
     }
 
-    /// Get methods for a UserData type
-    pub fn get_map(&self, type_name: &'static str) -> Option<&UserDataMap<'gc>> {
-        self.maps.get(type_name)
+    /// Methods/fields for the type a wrapper holds. The hot path: one
+    /// pass-through hash and a `Vec` index.
+    #[inline]
+    pub fn get_map_for(&self, ud: &UserDataWrapper) -> Option<&UserDataMap<'gc>> {
+        self.by_type.get(&ud.type_id).map(|&i| &self.maps[i])
+    }
+
+    /// Methods/fields by `type_name()`. Linear over registered types; kept for
+    /// callers that only have a name.
+    pub fn get_map(&self, type_name: &str) -> Option<&UserDataMap<'gc>> {
+        self.maps.iter().find(|m| m.type_name == type_name)
     }
 
     /// Get type name for a UserData instance
@@ -691,13 +769,14 @@ impl<'gc> UserDataRegistry<'gc> {
     }
 }
 
+// The maps hold `Rc<dyn Fn + 'gc>` closures (not traceable) and, since
+// `create_method_function`, one `Gc<WrappedFn>` per method — those are what
+// `trace` marks. Closures capturing other `Gc`s is still the host's problem.
 unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
-    fn needs_trace() -> bool {
-        false
-    }
-
-    fn trace(&self, _cc: &gc_arena::Collection) {
-        // No GC references to trace
+    fn trace(&self, cc: &gc_arena::Collection) {
+        for m in &self.maps {
+            m.data.trace(cc);
+        }
     }
 }
 
@@ -707,6 +786,7 @@ unsafe impl<'gc> Collect for UserDataRegistry<'gc> {
 pub struct UserDataWrapper {
     data: Arc<Mutex<dyn Any + Send>>,
     id: usize,
+    type_id: TypeId,
     type_name: &'static str,
     // Index in the VM's userdata_stack
     stack_index: Option<usize>,
@@ -715,6 +795,7 @@ pub struct UserDataWrapper {
 pub struct WeakWrapper {
     data: Weak<Mutex<dyn Any + Send>>,
     id: usize,
+    type_id: TypeId,
     type_name: &'static str,
     // Index in the VM's userdata_stack
     stack_index: Option<usize>,
@@ -726,6 +807,7 @@ impl WeakWrapper {
         Self {
             data: Arc::downgrade(&wrapper.data),
             id: wrapper.id,
+            type_id: wrapper.type_id,
             type_name: wrapper.type_name,
             stack_index: wrapper.stack_index,
         }
@@ -746,9 +828,15 @@ impl WeakWrapper {
         self.data.upgrade().map(|data| UserDataWrapper {
             data,
             id: self.id,
+            type_id: self.type_id,
             type_name: self.type_name,
             stack_index: self.stack_index,
         })
+    }
+
+    /// Whether the wrapped value is a `T`, without locking.
+    pub fn is_type<T: UserData>(&self) -> bool {
+        self.type_id == TypeId::of::<T>()
     }
 
     /// Check if the original UserDataWrapper has been dropped
@@ -804,6 +892,7 @@ impl UserDataWrapper {
         Self {
             data: Arc::new(Mutex::new(data)),
             id,
+            type_id: TypeId::of::<T>(),
             type_name,
             stack_index: None,
         }
@@ -817,6 +906,11 @@ impl UserDataWrapper {
     /// Get the type name of the wrapped UserData
     pub fn type_name(&self) -> &'static str {
         self.type_name
+    }
+
+    /// Rust `TypeId` of the wrapped value
+    pub fn type_id(&self) -> TypeId {
+        self.type_id
     }
 
     // Get a reference to the wrapped data as Any
@@ -851,12 +945,9 @@ impl UserDataWrapper {
         }
     }
 
+    /// Whether the wrapped value is a `T`. Compares the stored `TypeId`; no lock.
     pub fn is_type<T: UserData>(&self) -> bool {
-        if let Ok(d) = self.data.lock() {
-            d.is::<T>()
-        } else {
-            false
-        }
+        self.type_id == TypeId::of::<T>()
     }
 
     // pub fn lock()
@@ -921,6 +1012,7 @@ impl Clone for UserDataWrapper {
         Self {
             data: self.data.clone(),
             id: self.id,
+            type_id: self.type_id,
             type_name: self.type_name,
             stack_index: self.stack_index,
         }
@@ -1400,12 +1492,8 @@ pub mod vm_integration {
     }
 
     fn register_userdata<'gc, T: UserData>(reg: &mut UserDataRegistry<'gc>, mc: &Mutation<'gc>) {
-        // Register the type if it hasn't been registered yet
-        let type_name = T::type_name();
-        if !reg.maps.contains_key(type_name) {
-            // println!(" register userdata");
-            reg.register::<T>(mc);
-        }
+        // `register` is a no-op for an already-registered type
+        reg.register::<T>(mc);
     }
 
     /// Create a new UserData value
@@ -1457,11 +1545,10 @@ pub mod vm_integration {
         meta_method: MetaMethod,
         args: &[Value<'gc>],
     ) -> Result<Value<'gc>, SiltError> {
-        let type_name = ud_gc.borrow().type_name();
         let key = meta_method.as_ind();
         let closure = vm
             .userdata_registry
-            .get_map(type_name)
+            .get_map_for(&ud_gc.borrow())
             .and_then(|m| m.get_meta_method(key));
         match closure {
             Some(f) => f(vm, mc, args),
@@ -1477,14 +1564,10 @@ pub mod vm_integration {
         userdata: &mut UserDataWrapper,
         field_name: &str,
     ) -> Result<Value<'gc>, SiltError> {
-        let type_name = userdata.type_name();
-
-        // Look up the field getter in the registry
-        if let Some(map) = reg.get_map(type_name) {
-            return map.get_field(vm, mc, userdata, field_name);
+        match reg.get_map_for(userdata) {
+            Some(map) => map.get_field(vm, mc, userdata, field_name),
+            None => Err(SiltError::UDNoMap),
         }
-
-        Err(SiltError::UDNoMap)
     }
 
     /// Set a field on a UserData value
@@ -1496,13 +1579,9 @@ pub mod vm_integration {
         field_name: &str,
         value: Value<'gc>,
     ) -> Result<Value<'gc>, SiltError> {
-        let type_name = userdata.type_name();
-
-        // Look up the field setter in the registry
-        if let Some(map) = reg.get_map(type_name) {
-            return map.set_field(vm, mc, userdata, field_name, value);
+        match reg.get_map_for(userdata) {
+            Some(map) => map.set_field(vm, mc, userdata, field_name, value),
+            None => Err(SiltError::UDNoMap),
         }
-
-        Err(SiltError::UDNoMap)
     }
 }
