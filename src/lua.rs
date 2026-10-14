@@ -1329,8 +1329,36 @@ impl<'gc> VM<'gc> {
                 for a in args {
                     self.push(a.clone());
                 }
-                let mut frame = CallFrame::new(c, snapshot, args.len() as u8, 1);
-                frame.base = snapshot;
+                // Mirror the CALL handler's parameter adjust: pad parameters the caller
+                // left out with nil (the body would otherwise read stale slots), and for
+                // a variadic callee copy `[f, fixed params]` above the overflow so the
+                // frame base sits past the varargs (see CallFrame::get_varargs).
+                let fixed = if c.is_variadic() {
+                    c.get_variadic()
+                } else {
+                    c.get_arity()
+                };
+                let mut ar = args.len() as u8;
+                while ar < fixed {
+                    self.push(Value::Nil);
+                    ar += 1;
+                }
+                let mut frame = if c.is_variadic() {
+                    let numfixed = c.get_variadic() as usize;
+                    let frame_top = self.stack_count;
+                    self.ensure_stack();
+                    for i in 0..=numfixed {
+                        let v = self.stack[snapshot + i].clone();
+                        self.push(v);
+                    }
+                    let mut frame = CallFrame::new(c, snapshot, ar, 1);
+                    frame.base = frame_top;
+                    frame
+                } else {
+                    let mut frame = CallFrame::new(c, snapshot, ar, 1);
+                    frame.base = snapshot;
+                    frame
+                };
                 // Every function body begins with a placeholder POP that the main loop
                 // skips via its trailing `iterate()` right after a CALL (it never runs).
                 // A freshly-entered nested loop would otherwise execute it and eat the
@@ -1403,12 +1431,17 @@ impl<'gc> VM<'gc> {
                     let count = *c;
                     frame_count -= 1;
                     if frame_count <= 0 {
-                        let out = self.pop().into();
-                        // if self.stack_count <= 1 {
-                        //     return Ok(ExVal::Nil);
-                        // }
-                        // let out: ExVal = self.safe_pop().into();
-                        return Ok(out);
+                        // A multi-value `return a, b` at the root (a script, or a function
+                        // run via call_protected) yields its FIRST value, as Lua does when
+                        // a single value is wanted — not whatever happens to be on top.
+                        let out = match count {
+                            // RETURN(0) keeps the long-standing "value left on top"
+                            // behaviour (a script ending in a bare call yields that
+                            // call's result); callers rely on it.
+                            0 | 1 => self.pop(),
+                            n => self.pop_offset(n as usize),
+                        };
+                        return Ok(out.into());
                     }
 
                     devout!(
