@@ -25,6 +25,8 @@ pub enum SiltError {
     TooManyLocals,
     TooManyConstants,
     StackOverflow,
+    /// Static type error (`typing` feature); the message is Luau-styled.
+    TypeError(String),
     TooManyOperations,
     TooManyParameters,
     InvalidVarArgParam,
@@ -197,6 +199,7 @@ impl std::fmt::Display for SiltError {
             ),
             Self::TooManyLocals => write!(f, "Too many local variables, limited to 255"),
             Self::StackOverflow => write!(f, "stack overflow (too deep a call chain)"),
+            Self::TypeError(m) => write!(f, "TypeError: {}", m),
             Self::TooManyConstants => write!(
                 f,
                 "Too many constants in one chunk, limited to 65536; split the file or move data into functions"

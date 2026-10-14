@@ -351,36 +351,47 @@ impl<'c> Lexer<'c> {
     }
 
     fn get_flag(&mut self) -> TokenOption {
-        // let mut words = vec![];
+        // `--!word`: a per-file directive (`--!strict`, `--!local`). `eat_out`
+        // consumes the char it returns, so word characters need no further eat.
         self.mode = Mode::Flag;
         self.set_start();
+        let flag_of = |word: &str| match word.to_lowercase().as_str() {
+            "strict" => Some(Flag::Strict),
+            "local" => Some(Flag::Local),
+            _ => None,
+        };
         while self.current < self.end {
             match self.eat_out() {
                 Some(c) => match c {
-                    'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => self.eat(),
+                    'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => {}
                     '\n' => {
+                        let word = &self.source[self.start_token..self.current - 1];
+                        let flag = flag_of(word);
                         self.new_line();
                         self.mode = Mode::Normal;
+                        if let Some(f) = flag {
+                            return self.send(Token::Flag(f));
+                        }
                         break;
                     }
                     _ => {
-                        let cc = &self.source[self.start_token..self.current];
-                        match cc.to_lowercase().as_str() {
-                            "strict" => return self.send(Token::Flag(Flag::Strict)),
-                            "local" => return self.send(Token::Flag(Flag::Local)),
-                            _ => {}
+                        let word = &self.source[self.start_token..self.current - c.len_utf8()];
+                        if let Some(f) = flag_of(word) {
+                            return self.send(Token::Flag(f));
                         }
-                        // words.push(cc.to_string());
                         self.set_start();
                     }
                 },
                 None => break,
             }
         }
-        None
+        // the directive may end the file
+        let word = &self.source[self.start_token..self.current.min(self.end)];
+        let flag = flag_of(word);
+        self.mode = Mode::Normal;
+        flag.map(|f| self._send(Token::Flag(f)))
     }
 
-    /** Follow up a colon to determine if an identifer is listed, this may be either a typing or a method determined by context */
     fn colon_blow(&mut self) -> TokenOption {
         while let Some(' ' | '\r' | '\t') = self.peek() {
             self.eat();
@@ -691,6 +702,10 @@ impl<'c> Lexer<'c> {
                 '|' => {
                     self.eat();
                     self.send(Token::Op(Operator::BitOr))
+                }
+                '?' => {
+                    self.eat();
+                    self.send(Token::Question)
                 }
                 '[' => {
                     self.eat();
