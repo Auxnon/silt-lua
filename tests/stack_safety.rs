@@ -35,20 +35,26 @@ fn several_captured_locals_close_independently() {
 #[test]
 fn captured_locals_keep_writes_after_close() {
     // Two closures over the same local share one upvalue; a write through one
-    // is visible through the other, both before and after the block closes it.
-    // Declaration form on purpose: `set = function(v) x = v end` as an
-    // *assignment* to a pre-declared local is a separate, pre-existing
-    // compiler bug (the local ends up nil) tracked for the bug sweep.
+    // is visible through the other after the local's frame has returned (the
+    // upvalue was closed by RETURN) and after its block ended (closed by
+    // CLOSE_UPVALUES). Closures are only ever *declared* here: assigning a
+    // closure that writes an upvalue to an existing local is a separate,
+    // pre-existing compiler bug tracked for the bug sweep.
     let src = "
-        local x = 1
-        local get = function() return x end
-        local set = function(v) x = v end
-        do
-            local y = 10
-            set = function(v) x = v + y end
+        local function make()
+            local x = 1
+            return { function() return x end, function(v) x = v end }
         end
-        set(31)
-        return get() + 1";
+        local t = make()
+        t[2](40)
+        local block = {}
+        do
+            local y = 1
+            block[1] = function() return y end
+            block[2] = function(v) y = v end
+        end
+        block[2](2)
+        return t[1]() + block[1]()";
     assert_eq!(run(src), Ok(ExVal::Integer(42)));
 }
 
