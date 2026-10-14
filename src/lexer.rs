@@ -123,6 +123,7 @@ impl<'c> Lexer<'c> {
             // Report the per-line column (matching `_send`), not `start_token`
             // (an absolute byte offset — which read like "everything on one line").
             location: (self.line_number, self.column_start + 1),
+            end: Some((self.line_number, self.column.max(self.column_start + 1))),
         })
     }
 
@@ -142,6 +143,9 @@ impl<'c> Lexer<'c> {
                 self.column_start + 1,
                 self.start_token,
                 self.current - self.start_token,
+                // `column` sits just past the token's last character (0-indexed),
+                // which is that character's 1-indexed column.
+                (self.line_number, self.column.max(self.column_start + 1)),
             ),
         ))
     }
@@ -164,6 +168,9 @@ impl<'c> Lexer<'c> {
     //     }
     // }
 
+    /// Call after consuming the `\n`: columns on the new line count from 0, so
+    /// the first character is column 1. (Resetting before eating the `\n` made
+    /// it count as column 1, shifting every column after line 1 right by one.)
     fn new_line(&mut self) {
         self.line_number += 1;
         self.column = 0;
@@ -308,8 +315,8 @@ impl<'c> Lexer<'c> {
             match char {
                 Some(c) => match c {
                     '\n' => {
-                        self.new_line();
                         self.eat();
+                        self.new_line();
                     }
                     ']' => {
                         self.eat();
@@ -539,8 +546,8 @@ impl<'c> Lexer<'c> {
                                     loop {
                                         match self.peek() {
                                             Some('\n') => {
-                                                self.new_line();
                                                 self.eat();
+                                                self.new_line();
                                             }
                                             Some(']') => {
                                                 self.eat();
@@ -716,8 +723,8 @@ impl<'c> Lexer<'c> {
                     None
                 }
                 '\n' => {
-                    self.new_line();
                     self.eat();
+                    self.new_line();
                     None
                 }
                 '#' => {
