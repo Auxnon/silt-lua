@@ -84,7 +84,8 @@ hot-swap = []
 lsp = []
 # JSON-RPC-over-stdio language server (for Neovim etc.) built on `lsp`. Adds serde_json
 # only for the wire transport; `silt lsp` launches it. Off by default.
-lsp-server = ["lsp", "dep:serde_json"]
+# Implies `typing` so an editor accepts (and type-checks) annotated code.
+lsp-server = ["lsp", "typing", "dep:serde_json"]
 # First-class 2D/3D/4D vector value type backed by glam (f32), immutable. Adds
 # `vec2`/`vec3`/`vec4` constructors, `.x/.y/.z/.w` fields, operators, and a `vec`
 # method library. Off by default — opt-in for game/math embedders.

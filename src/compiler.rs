@@ -350,7 +350,8 @@ struct UpLocal {
     // scoped_ident: u8,
     neighboring: bool,
     universal_ident: u8,
-    /// Static type of the captured local (compile-time only).
+    /// Static type of the captured local (compile-time only; read by the `typing` checker).
+    #[allow(dead_code)]
     ty: crate::types::Type,
 }
 
