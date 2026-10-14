@@ -1,6 +1,10 @@
 use std::vec;
 
-use crate::{code::OpCode, error::TokenCell, value::Value};
+use crate::{
+    code::{ConstIndex, OpCode},
+    error::TokenCell,
+    value::Value,
+};
 use gc_arena::Collect;
 
 // TODO benchmark/compare to using a manually resized array
@@ -59,8 +63,9 @@ impl<'chnk> Chunk<'chnk> {
 
     pub fn write_constant(&mut self, value: Value<'chnk>) -> usize {
         // println!("add constant (size is {})", self.constants.len());
+        // The caller narrows this to ConstIndex and must check it fits first
+        // (Compiler::const_index) — past ConstIndex::MAX it would wrap.
         self.constants.push(value);
-        // TODO limit to u8
         self.constants.len() - 1
     }
 
@@ -81,14 +86,19 @@ impl<'chnk> Chunk<'chnk> {
 
     pub fn write_value(&mut self, value: Value<'chnk>, location: TokenCell) {
         let u = self.write_constant(value);
-        self.write_code(OpCode::CONSTANT { constant: u as u8 }, location);
+        self.write_code(
+            OpCode::CONSTANT {
+                constant: u as ConstIndex,
+            },
+            location,
+        );
     }
 
-    pub fn get_constant(&self, index: u8) -> &Value<'chnk> {
+    pub fn get_constant(&self, index: ConstIndex) -> &Value<'chnk> {
         &self.constants[index as usize]
     }
 
-    pub fn copy_constant(&self, index: u8) -> Value<'chnk> {
+    pub fn copy_constant(&self, index: ConstIndex) -> Value<'chnk> {
         self.constants[index as usize].clone()
     }
 

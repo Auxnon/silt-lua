@@ -7,27 +7,33 @@ use std::fmt::{self, Display, Formatter};
 /// count (the compiler caps argument/assignment counts well below 255).
 pub const MULTIRET: u8 = u8::MAX;
 
+/// Index into a chunk's constant table. u16, not u8: a chunk with more than 256
+/// constants (a data-heavy script's top level) used to wrap silently and read the
+/// wrong constant. OpCode is 4 bytes either way — the u16 jump operands already
+/// set its size — so the wider index costs nothing per instruction.
+pub type ConstIndex = u16;
+
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Clone, Collect)]
 #[collect(no_drop)]
 pub enum OpCode {
     CONSTANT {
-        constant: u8,
+        constant: ConstIndex,
     },
     CLOSURE {
-        constant: u8,
+        constant: ConstIndex,
     },
     DEFINE_GLOBAL {
-        constant: u8,
+        constant: ConstIndex,
     },
     GET_GLOBAL {
-        constant: u8,
+        constant: ConstIndex,
     },
     SET_GLOBAL {
-        constant: u8,
+        constant: ConstIndex,
     },
     DEFINE_LOCAL {
-        constant: u8,
+        constant: ConstIndex,
     },
     GET_LOCAL {
         index: u8,
@@ -111,7 +117,7 @@ pub enum OpCode {
         depth: u8,
     },
     TABLE_GET_BY_CONSTANT {
-        constant: u8,
+        constant: ConstIndex,
     },
     TABLE_GET_FROM {
         index: u8,
@@ -125,7 +131,7 @@ pub enum OpCode {
      * `[method, receiver]` so the receiver becomes the implicit `self` arg.
      * Mirrors PUC-Lua's OP_SELF and works for any receiver expression. */
     METHOD_GET {
-        constant: u8,
+        constant: ConstIndex,
     },
     // TABLE_SET_BY_CONSTANT {
     //     constant: u8,

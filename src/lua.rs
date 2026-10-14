@@ -1011,7 +1011,7 @@ impl<'gc> VM<'gc> {
         //    because we compiled the full source (same function order = same constant order).
         for k in unchanged_indices {
             if k < old_constants_len {
-                let orig = self.root.chunk.copy_constant(k as u8);
+                let orig = self.root.chunk.copy_constant(k as crate::code::ConstIndex);
                 new_root.chunk.patch_constant(k, orig);
             }
         }
