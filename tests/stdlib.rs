@@ -53,7 +53,30 @@ fn base_pcall() {
 }
 
 #[test]
-#[ignore = "PLAN.md §3 — `select` is a todo!()"]
+fn pcall_variadic_and_short_callees() {
+    // a variadic callee used to panic (frame base below its varargs → integer underflow)
+    valeq!(
+        "local ok, n = pcall(function(...) return select('#', ...) end, 1, 2, 3) return n",
+        ExVal::Integer(3)
+    );
+    valeq!(
+        "local ok, s = pcall(function(a, ...) local x, y = ... return a .. x .. y end, 7, 8, 9) return s",
+        ExVal::String("789".to_string())
+    );
+    // parameters the caller leaves out are nil, not stale stack values
+    valeq!(
+        "local ok, v = pcall(function(a, b) return b == nil end, 1) return v",
+        ExVal::Bool(true)
+    );
+    // a multi-value return yields its first value (not the last one on the stack)
+    valeq!(
+        "local ok, v = pcall(function(a, ...) return a, select('#', ...) end, 7, 8, 9) return v",
+        ExVal::Integer(7)
+    );
+    valeq!("return 1, 2", ExVal::Integer(1));
+}
+
+#[test]
 fn base_select() {
     valeq!("return select('#', 1, 2, 3)", ExVal::Integer(3));
     valeq!("return select(2, 'a', 'b', 'c')", ExVal::String("b".to_string()));
