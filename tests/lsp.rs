@@ -80,3 +80,28 @@ fn format_preserves_blank_lines() {
     let input = "local a = 1\n\nlocal b = 2";
     assert_eq!(format(input), "local a = 1\n\nlocal b = 2");
 }
+
+/// Host declarations reach the checker through `diagnostics_with` (and, in the server,
+/// `initializationOptions.declare` / `declareInSnippet`): a function literal handed to a
+/// native declared to take a `snippet` is checked against the snippet rules at edit time.
+#[cfg(feature = "typing")]
+#[test]
+fn diagnostics_with_host_declarations_check_snippets() {
+    use silt_lua::lsp::diagnostics_with;
+    let declare = |c: &mut silt_lua::Compiler| {
+        c.declare("instr", "(number, snippet(number, number) -> number) -> nil")
+            .unwrap();
+        c.declare_in_snippet("emit", "(number) -> nil").unwrap();
+    };
+    let src = "local helper: (number) -> number = function(x) return x end\n\
+               instr(1, function(p, f) return helper(p) end)";
+    // without declarations `instr` is unknown and nothing is flagged
+    assert!(diagnostics(src).is_empty());
+    let diags = diagnostics_with(src, declare);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].message.contains("captures 'helper'"), "{}", diags[0].message);
+    assert_eq!(diags[0].range.start.line, 1);
+    // a snippet-safe body, using a native the host provides to snippet VMs, is clean
+    let good = "local gain = 0.5\ninstr(1, function(p, f) emit(p) return math.sin(p) * gain end)";
+    assert!(diagnostics_with(good, declare).is_empty());
+}

@@ -343,7 +343,7 @@ struct LoopCtx {
 #[cfg(feature = "typing")]
 mod typecheck;
 
-struct UpLocal {
+pub(crate) struct UpLocal {
     /** location on the overall stack */
     ident: u8,
     /** location on the immediately scoped stack, 1 if it's the first declared value in scope (after closure) */
@@ -353,9 +353,12 @@ struct UpLocal {
     /// Static type of the captured local (compile-time only; read by the `typing` checker).
     #[allow(dead_code)]
     ty: crate::types::Type,
+    /// The captured local's name (compile-time only; names it in snippet diagnostics).
+    #[allow(dead_code)]
+    name: String,
 }
 
-struct FunctionalState {
+pub(crate) struct FunctionalState {
     pub up_values: Vec<UpLocal>,
     pub vararg: u8,
     /// we're making a function call or multi assignment and a vararg is at the end
@@ -369,6 +372,10 @@ struct FunctionalState {
     /// Declared return types (`function f(): T`), checked at each RETURN.
     #[cfg(feature = "typing")]
     pub ret_types: Option<Vec<crate::types::Type>>,
+    /// Globals read or written in this body or any nested function (for the
+    /// snippet verdict; merged into the parent when the body ends).
+    #[cfg(feature = "typing")]
+    pub referenced_globals: Vec<String>,
 }
 impl FunctionalState {
     pub fn new() -> Self {
@@ -381,6 +388,8 @@ impl FunctionalState {
             should_override_pop: false,
             #[cfg(feature = "typing")]
             ret_types: None,
+            #[cfg(feature = "typing")]
+            referenced_globals: vec![],
         }
     }
 }
@@ -1242,9 +1251,16 @@ fn set_trailing_vararg(&mut self,bool: bool){
         // over made the second chunk's locals address the first chunk's slots.
         let flags = self.language_flags;
         let source_counter = self.source_counter;
+        // Host type declarations describe the embedding, not a chunk: keep them.
+        #[cfg(feature = "typing")]
+        let declared = std::mem::take(&mut self.tc.declared);
         *self = Compiler::new();
         self.language_flags = flags;
         self.source_counter = source_counter;
+        #[cfg(feature = "typing")]
+        {
+            self.tc.declared = declared;
+        }
 
         // Hand this compile a fresh source index and record it as the "current"
         // one so every nested FunctionObject::new below stamps the same value.
@@ -1854,6 +1870,7 @@ fn resolve_local(
                 return if is_upvalue {
                     (*l).is_captured = true;
                     let captured_ty = l.ty.clone();
+                    let captured_name = local_ident.clone();
                     let offset_ident = if l.functional_depth > 0 {
                         let offset = this.local_functional_offset[l.functional_depth - 1];
                         i - offset
@@ -1869,6 +1886,7 @@ fn resolve_local(
                             this.functional_depth,
                             l.functional_depth,
                             captured_ty,
+                            &captured_name,
                         ),
                         is_upvalue,
                     ))
@@ -1895,6 +1913,7 @@ fn resolve_upvalue(
     level: usize,
     target: usize,
     ty: crate::types::Type,
+    name: &str,
 ) -> u8 {
     // `level` is a functional depth (1-based); the matching state lives at `level - 1`.
     let state = &mut functional_states[level - 1];
@@ -1911,11 +1930,20 @@ fn resolve_upvalue(
             universal_ident: ident,
             neighboring: true,
             ty,
+            name: name.to_string(),
         });
         (m.len() - 1) as u8
     } else {
         // drop(m);
-        let higher = resolve_upvalue(functional_states, ident, scoped_ident, level - 1, target, ty.clone());
+        let higher = resolve_upvalue(
+            functional_states,
+            ident,
+            scoped_ident,
+            level - 1,
+            target,
+            ty.clone(),
+            name,
+        );
         let state = &mut functional_states[level - 1];
         let m = &mut state.up_values;
         m.push(UpLocal {
@@ -1923,6 +1951,7 @@ fn resolve_upvalue(
             universal_ident: ident,
             neighboring: false,
             ty,
+            name: name.to_string(),
         });
         (m.len() - 1) as u8
         // resolve_upvalue(up_values, ident, level - 1, target)
@@ -2220,7 +2249,7 @@ fn build_function<'c>(
     // params this is the function's signature, recorded for its CLOSURE and
     // checked at every `return` in the body.
     #[cfg(feature = "typing")]
-    let fn_sig = {
+    let mut fn_sig = {
         let returns = if matches!(this.peek(it)?, Token::Colon) {
             this.eat(it);
             Some(this.parse_return_types(it)?)
@@ -2242,6 +2271,7 @@ fn build_function<'c>(
             params,
             variadic,
             returns,
+            ..Default::default()
         }
     };
 
@@ -2321,6 +2351,17 @@ fn build_function<'c>(
         let constant = this.write_constant(f, func_value);
         #[cfg(feature = "typing")]
         {
+            // Could this literal leave the VM as a snippet? Decided now, from what it
+            // captured and referenced, and carried on its signature. Its global
+            // references also count against the enclosing function's own verdict.
+            fn_sig.snippet = this.tc_snippet_verdict(&state);
+            if let Some(parent) = this.functional_states.last_mut() {
+                for g in &state.referenced_globals {
+                    if !parent.referenced_globals.contains(g) {
+                        parent.referenced_globals.push(g.clone());
+                    }
+                }
+            }
             this.tc.pending_sig = Some(fn_sig);
         }
         this.emit_at(f, OpCode::CLOSURE { constant });

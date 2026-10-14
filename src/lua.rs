@@ -464,6 +464,39 @@ fn plan_swaps<'gc>(
 #[derive(Collect)]
 #[collect(require_static)]
 pub struct UDVec(pub Vec<WeakWrapper>);
+/// Every global [`VM::load_standard_library`] installs (library tables included,
+/// their members not). The `typing` checker uses it to know what a snippet VM —
+/// a fresh `Lua::new_with_standard()` — can resolve. Keep in sync with the
+/// registrations in `load_standard_library`; `std_globals_match_the_runtime` checks.
+pub const STANDARD_GLOBALS: &[&str] = &[
+    "clock",
+    "print",
+    "setmetatable",
+    "getmetatable",
+    "test_ent",
+    "type",
+    "tostring",
+    "tonumber",
+    "assert",
+    "error",
+    "pcall",
+    "select",
+    "next",
+    "pairs",
+    "ipairs",
+    "table",
+    "math",
+    "string",
+    #[cfg(feature = "vector")]
+    "vec",
+    #[cfg(feature = "vector")]
+    "vec2",
+    #[cfg(feature = "vector")]
+    "vec3",
+    #[cfg(feature = "vector")]
+    "vec4",
+];
+
 pub struct Lua {
     arena: Arena<Rootable![VM<'_>]>,
 }
@@ -566,7 +599,7 @@ impl<'gc> Lua {
         // consumed here and never outlives the run (plain `run` clears it).
         let out = self.arena.mutate_root(|mc, root| {
             let f = compiler.try_compile(mc, name, code).map_err(join)?;
-            let mut vm = root.borrow_mut();
+            let vm = root.borrow_mut();
             vm.run(mc, Gc::new(mc, f)).map_err(join)?;
             // The root frame has returned; its locals are gone from the live stack, so make
             // sure every upvalue a returned closure captured is closed (holds its own copy)
@@ -3565,6 +3598,10 @@ impl<'gc> VM<'gc> {
 
     /** Load standard library functions */
     pub fn load_standard_library<'a>(&'a mut self, mc: &Mutation<'gc>) {
+        debug_assert!(
+            STANDARD_GLOBALS.contains(&"print"),
+            "keep STANDARD_GLOBALS in sync with the registrations below"
+        );
         // macro_rules! register_native_fn {
         //     ($name:expr, $func:expr) => {
         //         self.register_native_function::<Vec<Value>, _, _>(mc, $name, $func)

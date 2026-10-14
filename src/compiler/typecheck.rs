@@ -27,7 +27,7 @@
 //! string, indexing or calling a primitive, argument counts) and infers
 //! unannotated locals from their initializers. Type errors are compile errors.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::iter::Peekable;
 
 use crate::{
@@ -36,15 +36,28 @@ use crate::{
     function::FunctionObject,
     lexer::Lexer,
     token::{Operator, Token},
-    types::{assignable, FnSig, TableShape, Type},
+    types::{assignable, FnSig, Snippetness, TableShape, Type},
     value::Value,
 };
 
-use super::Compiler;
+use super::{Compiler, FunctionalState};
+
+/// Host declarations. The only checker state that survives from one compile to
+/// the next (`Compiler::declare*`), since it describes the embedding, not a chunk.
+#[derive(Default, Clone)]
+pub(crate) struct Declarations {
+    /// Static types of host-provided globals (`instr`, `emit`, …).
+    pub globals: HashMap<String, Type>,
+    /// Globals the host also provides inside snippet VMs, so a snippet may
+    /// reference them (the standard library always qualifies).
+    pub in_snippet: HashSet<String>,
+}
 
 /// Per-compile type environment and checker state.
 #[derive(Default)]
 pub(crate) struct TypeCheck {
+    /// Host declarations (carried across compiles).
+    pub declared: Declarations,
     /// `type Name = T`
     pub aliases: HashMap<String, Type>,
     /// Named function signatures (pre-scanned `function f(...)` /
@@ -97,8 +110,23 @@ fn arith_name(op: &OpCode) -> &'static str {
 fn never_number(t: &Type) -> bool {
     matches!(
         t,
-        Type::String | Type::Boolean | Type::Nil | Type::Function(_)
+        Type::String | Type::Boolean | Type::Nil | Type::Function(_) | Type::Snippet(_)
     )
+}
+
+/// A type whose every value is a reference (a function, or a table known to
+/// hold one): a snippet cannot capture it by value.
+fn is_reference(t: &Type) -> bool {
+    match t {
+        Type::Function(_) | Type::Snippet(_) => true,
+        Type::Table(Some(shape)) => {
+            shape.fields.iter().any(|(_, t)| is_reference(t))
+                || shape.array.as_ref().map_or(false, is_reference)
+                || shape.index.as_ref().map_or(false, |(_, v)| is_reference(v))
+        }
+        Type::Union(parts) => !parts.is_empty() && parts.iter().all(is_reference),
+        _ => false,
+    }
 }
 
 impl Compiler {
@@ -183,6 +211,9 @@ impl Compiler {
             Type::Function(Some(sig)) => {
                 Type::Function(Some(Box::new(self.resolve_sig(sig, depth + 1))))
             }
+            Type::Snippet(Some(sig)) => {
+                Type::Snippet(Some(Box::new(self.resolve_sig(sig, depth + 1))))
+            }
             other => other.clone(),
         }
     }
@@ -199,7 +230,22 @@ impl Compiler {
                 .returns
                 .as_ref()
                 .map(|r| r.iter().map(|t| self.resolve_depth(t, depth)).collect()),
+            snippet: sig.snippet.clone(),
         }
+    }
+
+    /// "Type 'v' could not be converted into 't'", plus the reason when a
+    /// function literal was rejected as a snippet.
+    fn conversion_error(&self, target: &Type, value: &Type) -> String {
+        let (target, value) = (self.resolve_ty(target), self.resolve_ty(value));
+        let mut msg = format!("Type '{}' could not be converted into '{}'", value, target);
+        if let (Type::Snippet(_), Type::Function(Some(sig))) = (&target, &value) {
+            if let Snippetness::No(why) = &sig.snippet {
+                msg.push_str(": ");
+                msg.push_str(why);
+            }
+        }
+        msg
     }
 
     fn fits(&self, target: &Type, value: &Type) -> bool {
@@ -238,10 +284,23 @@ impl Compiler {
     }
 
     fn global_ty(&self, name: &str) -> Type {
+        if let Some(t) = self.tc.declared.globals.get(name) {
+            return t.clone();
+        }
         if let Some(sig) = self.tc.fn_sigs.get(name) {
             return Type::Function(Some(Box::new(sig.clone())));
         }
         builtin_global(name).unwrap_or(Type::Any)
+    }
+
+    /// A global was read or written inside a function body: remember it for
+    /// that function's snippet verdict.
+    fn note_global(&mut self, name: &str) {
+        if let Some(st) = self.functional_states.last_mut() {
+            if !st.referenced_globals.iter().any(|g| g == name) {
+                st.referenced_globals.push(name.to_string());
+            }
+        }
     }
 
     fn const_ty(&mut self, f: &FunctionObject, constant: u16) -> Type {
@@ -287,7 +346,10 @@ impl Compiler {
             }
             GET_GLOBAL { constant } => {
                 let t = match Self::const_name(f, *constant) {
-                    Some(n) => self.global_ty(&n),
+                    Some(n) => {
+                        self.note_global(&n);
+                        self.global_ty(&n)
+                    }
                     None => Type::Any,
                 };
                 self.tpush(t);
@@ -295,18 +357,14 @@ impl Compiler {
             DEFINE_GLOBAL { constant } | SET_GLOBAL { constant } => {
                 let v = self.tpop();
                 if let Some(name) = Self::const_name(f, *constant) {
+                    self.note_global(&name);
                     if let (Some(sig), Type::Function(Some(vs))) = (self.tc.fn_sigs.get(&name), &v)
                     {
                         let target = Type::Function(Some(Box::new(sig.clone())));
                         let value = Type::Function(Some(vs.clone()));
                         if !self.fits(&target, &value) {
-                            self.type_error(
-                                format!(
-                                    "Type '{}' could not be converted into '{}'",
-                                    value, target
-                                ),
-                                loc,
-                            );
+                            let msg = self.conversion_error(&target, &value);
+                            self.type_error(msg, loc);
                         }
                     }
                 }
@@ -414,7 +472,11 @@ impl Compiler {
                 let r = self.tpop_resolved();
                 let l = self.tpop_resolved();
                 for t in [&l, &r] {
-                    if self.tc.strict && matches!(t, Type::Boolean | Type::Nil | Type::Function(_))
+                    if self.tc.strict
+                        && matches!(
+                            t,
+                            Type::Boolean | Type::Nil | Type::Function(_) | Type::Snippet(_)
+                        )
                     {
                         self.type_error(
                             format!(
@@ -463,7 +525,11 @@ impl Compiler {
                 if self.tc.strict
                     && matches!(
                         v,
-                        Type::Number | Type::Boolean | Type::Nil | Type::Function(_)
+                        Type::Number
+                            | Type::Boolean
+                            | Type::Nil
+                            | Type::Function(_)
+                            | Type::Snippet(_)
                     )
                 {
                     self.type_error(format!("Cannot take the length of '{}'", v), loc);
@@ -537,7 +603,11 @@ impl Compiler {
                 if self.tc.strict
                     && matches!(
                         recv,
-                        Type::Number | Type::Boolean | Type::Nil | Type::Function(_)
+                        Type::Number
+                            | Type::Boolean
+                            | Type::Nil
+                            | Type::Function(_)
+                            | Type::Snippet(_)
                     )
                 {
                     self.type_error(format!("Cannot index {}", recv), loc);
@@ -577,14 +647,8 @@ impl Compiler {
 
     fn check_assign(&mut self, target: &Type, value: &Type, loc: TokenCell) {
         if !self.fits(target, value) {
-            self.type_error(
-                format!(
-                    "Type '{}' could not be converted into '{}'",
-                    self.resolve_ty(value),
-                    self.resolve_ty(target)
-                ),
-                loc,
-            );
+            let msg = self.conversion_error(target, value);
+            self.type_error(msg, loc);
         }
     }
 
@@ -611,15 +675,12 @@ impl Compiler {
         for (i, want) in declared.iter().enumerate() {
             let got = vals.get(i).cloned().unwrap_or(Type::Nil);
             if !self.fits(want, &got) {
-                self.type_error(
-                    format!(
-                        "Type '{}' could not be converted into '{}' (return value {})",
-                        self.resolve_ty(&got),
-                        self.resolve_ty(want),
-                        i + 1
-                    ),
-                    loc,
+                let msg = format!(
+                    "{} (return value {})",
+                    self.conversion_error(want, &got),
+                    i + 1
                 );
+                self.type_error(msg, loc);
             }
         }
     }
@@ -631,7 +692,7 @@ impl Compiler {
         let callee = self.tpop_resolved();
         let mut results: Option<Vec<Type>> = None;
         match &callee {
-            Type::Function(Some(sig)) => {
+            Type::Function(Some(sig)) | Type::Snippet(Some(sig)) => {
                 // a spread `...` / multiret argument makes the count run-time
                 if !variadic {
                     if self.tc.strict && args.len() > sig.params.len() && !sig.variadic {
@@ -650,15 +711,9 @@ impl Compiler {
                         // a missing trailing argument is nil
                         let a = args.get(i).cloned().unwrap_or(Type::Nil);
                         if !self.fits(p, &a) {
-                            self.type_error(
-                                format!(
-                                    "Type '{}' could not be converted into '{}' (argument {})",
-                                    self.resolve_ty(&a),
-                                    self.resolve_ty(p),
-                                    i + 1
-                                ),
-                                loc,
-                            );
+                            let msg =
+                                format!("{} (argument {})", self.conversion_error(p, &a), i + 1);
+                            self.type_error(msg, loc);
                         }
                     }
                 }
@@ -688,7 +743,7 @@ impl Compiler {
         loc: TokenCell,
     ) -> Type {
         match self.resolve_ty(recv) {
-            Type::Number | Type::Boolean | Type::Nil | Type::Function(_) => {
+            Type::Number | Type::Boolean | Type::Nil | Type::Function(_) | Type::Snippet(_) => {
                 if self.tc.strict {
                     self.type_error(format!("Cannot index {}", self.resolve_ty(recv)), loc);
                 }
@@ -906,6 +961,12 @@ impl Compiler {
         // `error_at` inside a failed type parse flips `valid`; the pre-scan
         // must not decide the compile's fate — and its token walk must not leave
         // position state behind for the main pass's spans.
+        self.reset_scan_state(valid);
+    }
+
+    /// Undo what a side token walk (pre-scan, `declare`) did to the compiler's
+    /// error and position state.
+    fn reset_scan_state(&mut self, valid: bool) {
         self.valid = valid;
         self.errors.clear();
         self.current = Ok(Token::Nil);
@@ -914,6 +975,87 @@ impl Compiler {
         self.last_end = (0, 0);
         self.current_index = 0;
         self.span_starts.clear();
+    }
+
+    // -------------------------------------------------------------- snippets
+
+    /// Decide whether the function whose scope just ended could be extracted
+    /// as a snippet: every captured local must be a value, and every global it
+    /// (or a nested function) touches must exist in a snippet VM — the standard
+    /// library, a host declaration marked `declare_in_snippet`, or something we
+    /// know nothing about (gradual). A user function or an undeclared host
+    /// native would be `nil` there, so it is a provable `No`.
+    pub(crate) fn tc_snippet_verdict(&self, state: &FunctionalState) -> Snippetness {
+        for up in &state.up_values {
+            let ty = self.resolve_ty(&up.ty);
+            if is_reference(&ty) {
+                return Snippetness::No(format!(
+                    "it captures '{}' ({}); a snippet can only capture values",
+                    up.name, ty
+                ));
+            }
+        }
+        for name in &state.referenced_globals {
+            if self.tc.declared.in_snippet.contains(name) || is_standard_global(name) {
+                continue;
+            }
+            let ty = self.resolve_ty(&self.global_ty(name));
+            if is_reference(&ty) {
+                let what = if self.tc.declared.globals.contains_key(name) {
+                    "a host function not provided to snippets"
+                } else {
+                    "a function of this script"
+                };
+                return Snippetness::No(format!(
+                    "it references global '{}', {}; it would be nil in the snippet VM",
+                    name, what
+                ));
+            }
+        }
+        Snippetness::Yes
+    }
+
+    // ---------------------------------------------------------- declarations
+
+    /// Declare the static type of a host-provided global, in annotation syntax:
+    ///
+    /// ```ignore
+    /// compiler.declare("instr", "(number, snippet(number, number) -> number) -> nil")?;
+    /// ```
+    ///
+    /// Declarations persist across compiles with this `Compiler`. A function
+    /// literal passed where a `snippet` is expected is then checked against the
+    /// snippet rules at compile time.
+    pub fn declare(&mut self, name: &str, ty: &str) -> Result<(), String> {
+        let ty = self.parse_type_str(ty)?;
+        self.tc.declared.globals.insert(name.to_string(), ty);
+        Ok(())
+    }
+
+    /// Like [`declare`](Self::declare), and additionally promise that the host
+    /// registers this global inside every snippet VM too, so a snippet may call
+    /// it (`emit`, `out`, …).
+    pub fn declare_in_snippet(&mut self, name: &str, ty: &str) -> Result<(), String> {
+        self.declare(name, ty)?;
+        self.tc.declared.in_snippet.insert(name.to_string());
+        Ok(())
+    }
+
+    /// Parse one type in annotation syntax.
+    fn parse_type_str(&mut self, src: &str) -> Result<Type, String> {
+        let valid = self.valid;
+        let errors = std::mem::take(&mut self.errors);
+        let lexer = Lexer::new(src);
+        let mut it = lexer.peekable();
+        let parsed = self.parse_type(&mut it);
+        let trailing = !matches!(self.peek(&mut it), Ok(Token::EOF)) && it.peek().is_some();
+        self.reset_scan_state(valid);
+        self.errors = errors;
+        match parsed {
+            Ok(_) if trailing => Err(format!("unexpected trailing tokens in type '{}'", src)),
+            Ok(t) => Ok(t),
+            Err(e) => Err(format!("invalid type '{}': {}", src, e.code)),
+        }
     }
 
     /// After `function name(`: the parameter list (names with optional
@@ -1001,6 +1143,19 @@ impl Compiler {
     ) -> Result<Type, crate::error::ErrorTuple> {
         let (res, _) = self.pop(it);
         Ok(match res? {
+            // `snippet(T, U) -> R`: a function type with the snippet rules attached
+            Token::Identifier(name)
+                if name == "snippet" && matches!(self.peek(it)?, Token::OpenParen) =>
+            {
+                self.eat(it);
+                match self.parse_paren_type(it)? {
+                    Type::Function(Some(mut sig)) => {
+                        sig.snippet = Snippetness::Yes;
+                        Type::Snippet(Some(sig))
+                    }
+                    _ => return Err(self.error_at(SiltError::ExpectedToken(Token::ArrowFunction))),
+                }
+            }
             Token::Identifier(name) => Type::from_name(&name),
             Token::Nil => Type::Nil,
             Token::Function => Type::Function(None),
@@ -1111,6 +1266,7 @@ impl Compiler {
                 params,
                 variadic,
                 returns: Some(returns),
+                ..Default::default()
             }))));
         }
         if params.len() == 1 && !variadic {
@@ -1142,6 +1298,7 @@ impl Compiler {
                     params: out,
                     variadic: false,
                     returns: Some(returns),
+                    ..Default::default()
                 })))]);
             }
             return Ok(out);
@@ -1163,6 +1320,11 @@ impl Compiler {
     }
 }
 
+/// Is `name` a global the standard library installs (so a snippet VM has it)?
+pub(crate) fn is_standard_global(name: &str) -> bool {
+    crate::lua::STANDARD_GLOBALS.contains(&name)
+}
+
 /// Signatures of the standard-library globals worth knowing about.
 fn builtin_global(name: &str) -> Option<Type> {
     let sig = |params: Vec<Type>, variadic: bool, returns: Vec<Type>| {
@@ -1170,6 +1332,7 @@ fn builtin_global(name: &str) -> Option<Type> {
             params,
             variadic,
             returns: Some(returns),
+            ..Default::default()
         })))
     };
     Some(match name {
