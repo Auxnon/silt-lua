@@ -528,6 +528,11 @@ impl<'gc> Lua {
                 Err(er) => Err(er),
             }
         });
+        // `last_return` exists only for `extract_snippet`, which reads it inside its own
+        // mutation; don't let a plain run keep the returned value alive until the next one.
+        #[cfg(feature = "snippets")]
+        self.arena
+            .mutate_root(|_, root| root.borrow_mut().last_return = None);
         // End-of-cycle incremental collection (see `collect`).
         self.arena.collect_debt();
         out
@@ -550,21 +555,28 @@ impl<'gc> Lua {
         code: &str,
         compiler: &mut Compiler,
     ) -> Result<crate::snippet::Snippet, String> {
-        self.run(name, code, compiler).map_err(|e| {
+        let join = |e: ErrorOut| {
             e.errors
                 .iter()
                 .map(|t| format!("{}", t.code))
                 .collect::<Vec<_>>()
                 .join("; ")
-        })?;
-        self.enter(|vm, mc| {
+        };
+        // Compile, run and read the returned value inside one mutation so `last_return` is
+        // consumed here and never outlives the run (plain `run` clears it).
+        let out = self.arena.mutate_root(|mc, root| {
+            let f = compiler.try_compile(mc, name, code).map_err(join)?;
+            let mut vm = root.borrow_mut();
+            vm.run(mc, Gc::new(mc, f)).map_err(join)?;
             // The root frame has returned; its locals are gone from the live stack, so make
             // sure every upvalue a returned closure captured is closed (holds its own copy)
             // before we read it.
             vm.close_all_upvalues(mc);
             let value = vm.last_return.take().unwrap_or(Value::Nil);
-            crate::snippet::Snippet::extract(vm, &value).map_err(|e| e.to_string())
-        })
+            crate::snippet::Snippet::extract(&vm, &value).map_err(|e| e.to_string())
+        });
+        self.arena.collect_debt();
+        out
     }
 
     /// Build a snippet into a **fresh, isolated VM** (its own arena and standard library, the
