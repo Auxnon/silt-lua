@@ -443,7 +443,7 @@ test binary.
 - **Base ✅:** `type`, `tostring` (scalars via `coerce_string`; reference types now get a
   Lua-style `table: 0xADDR` / `function: 0xADDR` identity so distinct tables/functions no longer
   compare equal — 2026-07), `tonumber` (incl. base arg + `0x`), `assert`, `error`,
-  `next`, `pairs`, `ipairs` (multi-return — see §2.7). Still TODO: `pcall`/`xpcall`, `select`,
+  `next`, `pairs`, `ipairs` (multi-return — see §2.7). Still TODO: `xpcall`,
   `rawget`/`rawset`/`rawequal`/`rawlen`, `unpack` — all now unblocked by the native multi-return
   ABI.
 - **`math` ✅:** `floor`, `ceil`, `abs`, `sqrt`, `sin`/`cos`/`tan`, `min`, `max`, `random`,
@@ -593,7 +593,10 @@ handles `t.a.b`). Grouped/call results are rvalues, so `(t).x = 5` correctly err
 
 ---
 
-## 5. Tail-call optimization (TCO)
+## 5. Tail-call optimization (TCO) ✅ DONE
+
+> Landed as the `TAILCALL` opcode (`perf/tailcall`): `return f(...)` in a non-root function replaces the
+> frame and forwards all results. Native callees in tail position still take the plain CALL path.
 
 Lua **guarantees** proper tail calls: `return f(args)` must reuse the current call frame so
 that tail-recursive loops run in O(1) stack. Today every call pushes a new `CallFrame`
@@ -681,7 +684,7 @@ a real win. Do not start the rewrite until both exist.
   smaller, rarer gain. **Benchmark-gated:** adopt when multi-return native calls show up hot in a
   real workload. Doing it behind an abstracted `push`/`take_arg` accessor also yields the
   `safe`-feature (bounds-checked, no-`unsafe`) VM backend as a drop-in.
-- **Fixed-size, overflow-checked stack** instead of an unbounded `Vec` push/pop (SPEC asks for
+- ✅ DONE (`feature/safe-vm`: growable `Vec` stack, `MAX_STACK` → `StackOverflow`, no raw pointers) — **Fixed-size, overflow-checked stack** instead of an unbounded `Vec` push/pop (SPEC asks for
   this) — predictable latency, no realloc spikes mid-frame.
 - **Stop pushing `Nil` on pop** (`src/lua.rs` has many "pushing nil is stupid" TODOs around
   830-848) — eliminates redundant writes; track a real top pointer.
@@ -689,7 +692,7 @@ a real win. Do not start the rewrite until both exist.
   is exactly this idea — generalize it).
 - **Intern strings end-to-end** (the `string-interner` dep is present) so table-key and global
   lookups compare/hashed by id, not by content (`src/lua.rs:463` TODO).
-- **Split table storage into array-part + hash-part** (README/`src/value.rs:71` TODO) — fixes
+- ✅ DONE (`SPEC-dual-array-table.md`, `perf/tailcall`) — **Split table storage into array-part + hash-part** (README/`src/value.rs:71` TODO) — fixes
   `#` semantics (§4) and speeds sequence access, the common game case.
 - **Order the opcode `match` by frequency** and consider `#[inline]` on hot handlers
   (`src/lua.rs:1051` TODO).

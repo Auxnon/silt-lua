@@ -216,6 +216,37 @@ pub fn table_concat<'lua>(
 
 /// `table.unpack(list [, i [, j]])` — return the sequence elements `list[i..j]` as
 /// multiple values (defaults: i = 1, j = #list).
+/// `select(n, ...)`: the arguments from the n-th on (negative n counts from the
+/// end); `select('#', ...)`: how many arguments there are.
+pub fn lua_select<'lua>(
+    _: &mut VM<'lua>,
+    _: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let rest = &args[args.len().min(1)..];
+    let n = match args.first() {
+        Some(Value::String(s)) if s == "#" => return Ok(vec![Value::Integer(rest.len() as i64)]),
+        Some(Value::Integer(i)) => *i,
+        Some(Value::Number(f)) if f.fract() == 0.0 => *f as i64,
+        _ => {
+            return Err(SiltError::Custom(
+                "bad argument #1 to 'select' (number expected)".into(),
+            ))
+        }
+    };
+    let len = rest.len() as i64;
+    let start = if n > 0 {
+        n - 1
+    } else if n < 0 && -n <= len {
+        len + n
+    } else {
+        return Err(SiltError::Custom(
+            "bad argument #1 to 'select' (index out of range)".into(),
+        ));
+    };
+    Ok(rest[(start.min(len)) as usize..].to_vec())
+}
+
 pub fn table_unpack<'lua>(
     _: &mut VM<'lua>,
     _: &Mutation<'lua>,

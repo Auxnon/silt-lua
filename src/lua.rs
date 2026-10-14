@@ -2495,8 +2495,15 @@ impl<'gc> VM<'gc> {
                         break Err(e);
                     }
                 }
-                OpCode::TABLE_BUILD(n) => {
-                    if let Err(e) = self.build_table(ep, *n) {
+                OpCode::TABLE_BUILD { count, variadic } => {
+                    // Same resolution as a variadic CALL: the trailing `...`
+                    // expanded to this frame's overflow at run time.
+                    let n = if *variadic {
+                        (*count - 1) + (frame.call_arity - frame.proto.varidic_index)
+                    } else {
+                        *count
+                    };
+                    if let Err(e) = self.build_table(ep, n) {
                         break Err(e);
                     }
                 }
@@ -3355,6 +3362,7 @@ impl<'gc> VM<'gc> {
         self.register_native_function(mc, "assert", crate::standard::assert);
         self.register_native_function(mc, "error", crate::standard::error);
         self.register_native_multi_function(mc, "pcall", crate::standard::lua_pcall);
+        self.register_native_multi_function(mc, "select", crate::standard::lua_select);
         self.register_native_multi_function(mc, "next", crate::standard::lua_next);
         self.register_native_multi_function(mc, "pairs", crate::standard::lua_pairs);
         self.register_native_multi_function(mc, "ipairs", crate::standard::lua_ipairs);

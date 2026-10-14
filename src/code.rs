@@ -118,7 +118,14 @@ pub enum OpCode {
     TABLE_INSERT {
         offset: u8,
     },
-    TABLE_BUILD(u8),
+    /// Move the top `count` values into the table below them (constructor array
+    /// part). `variadic`: the last element was a spread `...`, so the real count is
+    /// `count - 1 + <this frame's vararg overflow>`, resolved at run time like a
+    /// variadic CALL.
+    TABLE_BUILD {
+        count: u8,
+        variadic: bool,
+    },
     TABLE_GET {
         depth: u8,
     },
@@ -275,7 +282,9 @@ impl Display for OpCode {
             Self::LENGTH => write!(f, "OP_LENGTH"),
             Self::NEW_TABLE => write!(f, "OP_NEW_TABLE"),
             Self::TABLE_INSERT { offset } => write!(f, "OP_TABLE_INSERT @{}", offset),
-            Self::TABLE_BUILD(u) => write!(f, "OP_TABLE_BUILD [;{}]", u),
+            Self::TABLE_BUILD { count, variadic } => {
+                write!(f, "OP_TABLE_BUILD [;{}{}]", count, if *variadic { "+..." } else { "" })
+            }
             Self::TABLE_GET { depth } => write!(f, "OP_TABLE_GET {}[]", depth),
             Self::TABLE_GET_BY_CONSTANT { constant } => {
                 write!(f, "OP_TABLE_GET_BY_CONSTANT {}", constant)
