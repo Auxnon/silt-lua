@@ -109,7 +109,7 @@ fn benches(c: &mut Criterion) {
 
 #[cfg(feature = "snippets")]
 fn snippet_benches(c: &mut Criterion) {
-    use silt_lua::Lua;
+    use silt_lua::value::ExVal;
     // A synth voice: one call per sample through the f64 fast path (no ExVal marshalling),
     // vs the general ExVal path. 2e5 calls ≈ 4 s of mono audio at 48 kHz.
     let s = {
