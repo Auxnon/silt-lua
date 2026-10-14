@@ -107,7 +107,49 @@ fn benches(c: &mut Criterion) {
     c.bench_function("native_multi_1e6", |b| b.iter(|| run(NATIVE_MULTI)));
 }
 
-criterion_group!(g, benches, ud_benches);
+#[cfg(feature = "snippets")]
+fn snippet_benches(c: &mut Criterion) {
+    use silt_lua::Lua;
+    // A synth voice: one call per sample through the f64 fast path (no ExVal marshalling),
+    // vs the general ExVal path. 2e5 calls ≈ 4 s of mono audio at 48 kHz.
+    let s = {
+        let mut lua = Lua::new_with_standard();
+        let mut c = Compiler::new();
+        lua.extract_snippet(
+            None,
+            "local gain = 0.5 return function(p) return math.sin(p) * gain end",
+            &mut c,
+        )
+        .unwrap()
+    };
+    c.bench_function("snippet_call_f64_2e5", |b| {
+        let mut vm = Lua::build_snippet(&s).unwrap();
+        b.iter(|| {
+            let mut acc = 0.0;
+            for i in 0..200_000 {
+                acc += vm.call_f64(&[i as f64 * 0.001]).unwrap();
+            }
+            black_box(acc)
+        })
+    });
+    c.bench_function("snippet_call_exval_2e5", |b| {
+        let mut vm = Lua::build_snippet(&s).unwrap();
+        b.iter(|| {
+            let mut acc = 0.0;
+            for i in 0..200_000 {
+                if let Ok(ExVal::Number(x)) = vm.call(&[ExVal::Number(i as f64 * 0.001)]) {
+                    acc += x;
+                }
+            }
+            black_box(acc)
+        })
+    });
+    c.bench_function("snippet_build", |b| b.iter(|| black_box(Lua::build_snippet(&s).unwrap())));
+}
+#[cfg(not(feature = "snippets"))]
+fn snippet_benches(_c: &mut Criterion) {}
+
+criterion_group!(g, benches, ud_benches, snippet_benches);
 criterion_main!(g);
 
 // ---------------------------------------------------------------------------

@@ -1,58 +1,79 @@
 //! Snippets — see `SPEC-snippets.md`.
 //!
 //! A [`Snippet`] is a portable, arena-independent capture of a script-defined function: its
-//! bytecode subtree plus `ExVal` snapshots of the value-typed state it needs. It holds no `Gc`
-//! from the source arena, so it can be handed to and run in an independent VM.
+//! bytecode subtree plus `ExVal` snapshots of the value-typed state it needs (captured locals
+//! and value globals). It holds no `Gc` from the source arena, so it is `Send + Sync` and can be
+//! handed to another thread, which builds it into its own isolated VM ([`SnippetVm`]) and calls
+//! it as often as it likes — a Lua function that has *escaped* the VM that defined it.
 //!
-//! Stage 1 (this file): pure functions — no captured upvalues. The prototype tree is copied out
-//! of the compiled function, globals are classified (value → snapshot, reference → resolve from
-//! the target), and the result is re-materialized into a fresh arena and run. Upvalue capture
-//! (which needs runtime values and careful closed-upvalue handling) is the next increment.
+//! The intended shape (a synth voice):
+//!
+//! ```lua
+//! local gain = 0.3
+//! instr(1, function(phase) return math.sin(phase) * gain end)   -- host native extracts a Snippet
+//! ```
+//!
+//! The host native receives the closure `Value`, calls [`Snippet::extract`], and ships the
+//! `Snippet` over a channel to the audio thread, which does `Lua::build_snippet(&s)` once and
+//! then `vm.call_f64(&[phase])` per sample.
 
 use crate::{
     chunk::Chunk,
-    code::OpCode,
+    code::{ConstIndex, OpCode},
     error::SiltError,
-    function::{Closure, FunctionObject},
+    function::{Closure, FunctionObject, UpValue},
+    lua::Lua,
     prelude::VM,
     value::{ExVal, Value},
 };
-use gc_arena::{Gc, Mutation};
+use gc_arena::{lock::RefLock, Gc, Mutation};
 
 /// Why a function could not be turned into a snippet. All are creation-time and explicit.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SnippetError {
     /// The value handed in was not a function/closure.
     NotAFunction,
-    /// A captured upvalue that escapes the snippet is a reference type (table, closure, …) and
-    /// cannot be cloned by value. Carries the upvalue slot index.
+    /// A captured upvalue that escapes the snippet is a reference type (table with functions,
+    /// closure, userdata, …) and cannot be cloned by value. Carries the upvalue slot index.
     EscapingReference(usize),
-    /// A constant baked into the bytecode is a non-function reference (e.g. an embedded native
-    /// function) that cannot be serialized.
+    /// A constant baked into the bytecode is a non-function reference that cannot be
+    /// serialized.
     NonConstantConstant,
-    /// Stage-1 limitation: the function captures upvalues (not yet supported).
-    UpvaluesNotYetSupported,
+    /// A bare function *prototype* that captures upvalues was passed (not a live closure), so
+    /// the captured values do not exist yet. Extract from the closure value instead.
+    PrototypeOnly,
 }
 
 impl std::fmt::Display for SnippetError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             SnippetError::NotAFunction => write!(f, "value is not a function"),
-            SnippetError::EscapingReference(i) => {
-                write!(f, "captured upvalue #{} is a reference and cannot be cloned into a snippet", i)
-            }
+            SnippetError::EscapingReference(i) => write!(
+                f,
+                "captured upvalue #{} is a reference (function, userdata, or a table holding one) and cannot be cloned into a snippet",
+                i
+            ),
             SnippetError::NonConstantConstant => {
                 write!(f, "a bytecode constant is a non-serializable reference")
             }
-            SnippetError::UpvaluesNotYetSupported => {
-                write!(f, "snippet captures upvalues (not supported yet)")
-            }
+            SnippetError::PrototypeOnly => write!(
+                f,
+                "function prototype captures upvalues but is not a live closure; extract from the closure value"
+            ),
         }
     }
 }
 
+impl std::error::Error for SnippetError {}
+
+impl From<SnippetError> for SiltError {
+    fn from(e: SnippetError) -> Self {
+        SiltError::Custom(format!("snippet: {}", e))
+    }
+}
+
 /// Arena-independent function prototype (bytecode + constants, no `Gc`).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SnippetProto {
     pub code: Vec<OpCode>,
     pub constants: Vec<SnippetConst>,
@@ -64,7 +85,7 @@ pub struct SnippetProto {
 }
 
 /// A bytecode constant, in arena-independent form.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum SnippetConst {
     /// A primitive/value constant (number, string, …).
     Value(ExVal),
@@ -72,16 +93,18 @@ pub enum SnippetConst {
     Proto(SnippetProto),
 }
 
-/// A portable, arena-independent capture of a closure. Plain data: `Clone`, no lifetimes.
-#[derive(Clone)]
+/// A portable, arena-independent capture of a closure. Plain data: `Clone + Send + Sync`, no
+/// lifetimes. Build it into a VM with [`Lua::build_snippet`] / [`SnippetVm::build`].
+#[derive(Clone, Debug)]
 pub struct Snippet {
     pub proto: SnippetProto,
-    /// Escaping upvalues, value-copied (empty in stage 1).
+    /// Escaping upvalues (locals of the defining scope the function closed over), value-copied
+    /// in slot order.
     pub upvalues: Vec<ExVal>,
     /// Referenced globals that were value-typed → snapshotted.
     pub value_globals: Vec<(String, ExVal)>,
     /// Referenced globals that were reference-typed (stdlib or user) → resolve from the target VM
-    /// at run time, `nil` if absent. Drives std-extent and the dropped-reference error hints.
+    /// at run time, `nil` if absent. Drives the dropped-reference error hints.
     pub ref_globals: Vec<String>,
 }
 
@@ -125,7 +148,7 @@ pub fn extract_proto(func: &FunctionObject) -> Result<SnippetProto, SnippetError
     let n = func.chunk.constants_len();
     let mut constants = Vec::with_capacity(n);
     for i in 0..n {
-        let c = func.chunk.get_constant(i as u8);
+        let c = func.chunk.get_constant(i as ConstIndex);
         constants.push(match c {
             Value::Function(nested) => SnippetConst::Proto(extract_proto(nested)?),
             other => match value_snapshot(other) {
@@ -168,22 +191,33 @@ fn collect_global_names(proto: &SnippetProto, out: &mut Vec<String>) {
 }
 
 impl Snippet {
-    /// Extract a snippet from a live function value in VM `vm`. Stage 1 requires no captured
-    /// upvalues; globals are classified against `vm`'s global table.
-    pub fn extract(vm: &VM, value: &Value) -> Result<Snippet, SnippetError> {
+    /// Extract a snippet from a live function value in VM `vm`. Upvalues the closure captured
+    /// are read **now** (open or closed) and copied by value; a reference-typed capture is an
+    /// [`SnippetError::EscapingReference`]. Globals are classified against `vm`'s global table.
+    ///
+    /// This is the call a host native makes on a function argument it was handed.
+    pub fn extract<'gc>(vm: &VM<'gc>, value: &Value<'gc>) -> Result<Snippet, SnippetError> {
+        let mut upvalues = Vec::new();
         let func: &FunctionObject = match value {
             Value::Closure(c) => {
-                if !c.upvalues.is_empty() {
-                    return Err(SnippetError::UpvaluesNotYetSupported);
+                let stack = vm.stack_slice();
+                for (i, up) in c.upvalues.iter().enumerate() {
+                    let v = up.borrow().copy_value(stack);
+                    match value_snapshot(&v) {
+                        Some(ex) => upvalues.push(ex),
+                        None => return Err(SnippetError::EscapingReference(i)),
+                    }
                 }
                 &c.function
             }
-            Value::Function(f) => f,
+            Value::Function(f) => {
+                if f.upvalue_count > 0 {
+                    return Err(SnippetError::PrototypeOnly);
+                }
+                f
+            }
             _ => return Err(SnippetError::NotAFunction),
         };
-        if func.upvalue_count > 0 {
-            return Err(SnippetError::UpvaluesNotYetSupported);
-        }
         let proto = extract_proto(func)?;
 
         // Classify referenced globals.
@@ -204,10 +238,20 @@ impl Snippet {
 
         Ok(Snippet {
             proto,
-            upvalues: Vec::new(),
+            upvalues,
             value_globals,
             ref_globals,
         })
+    }
+
+    /// Declared parameter count of the captured function.
+    pub fn arity(&self) -> u8 {
+        self.proto.arity
+    }
+
+    /// Whether the captured function takes `...`.
+    pub fn is_variadic(&self) -> bool {
+        self.proto.is_variadic
     }
 }
 
@@ -238,23 +282,122 @@ fn materialize_proto<'g>(
 }
 
 /// Instantiate a snippet into `vm`'s arena, returning a callable `Value::Closure`. Injects the
-/// snippet's `value_globals` into `vm`'s global table (overlaying its stdlib).
+/// snippet's `value_globals` into `vm`'s global table (overlaying its stdlib) and rebuilds each
+/// captured upvalue as a *closed* cell holding the snapshot.
 pub fn instantiate<'g>(
     snippet: &Snippet,
     vm: &mut VM<'g>,
     mc: &Mutation<'g>,
 ) -> Result<Value<'g>, SiltError> {
-    if !snippet.upvalues.is_empty() {
-        return Err(SiltError::Custom(
-            "snippet upvalues not yet supported".to_string(),
-        ));
-    }
     // Inject value-typed globals the snippet snapshotted.
     for (name, ex) in &snippet.value_globals {
         let v = ex.into_value(vm, mc)?;
         vm.globals.borrow_mut(mc).set(name.clone(), v);
     }
     let func = materialize_proto(&snippet.proto, vm, mc)?;
-    let closure = Closure::new(func, Vec::new());
+    let mut upvalues = Vec::with_capacity(snippet.upvalues.len());
+    for (i, ex) in snippet.upvalues.iter().enumerate() {
+        let v = ex.into_value(vm, mc)?;
+        // Never an open pointer into a stack: a closed cell owning the copied value.
+        let mut up = UpValue::new(i as u8, 0);
+        up.close_around(v);
+        upvalues.push(Gc::new(mc, RefLock::new(up)));
+    }
+    let closure = Closure::new(func, upvalues);
     Ok(Value::Closure(Gc::new(mc, closure)))
+}
+
+/// A snippet built into its own isolated VM. Owns the arena; call it as often as you like.
+/// Not `Send` (the arena is single-threaded) — build it **on the thread that will run it**
+/// from the `Send` [`Snippet`].
+pub struct SnippetVm {
+    lua: Lua,
+    arity: u8,
+    ref_globals: Vec<String>,
+    /// Calls since the last GC debt collection on the `f64` hot path.
+    since_collect: u32,
+}
+
+/// How many `call_f64` calls go between GC debt collections.
+const COLLECT_EVERY: u32 = 256;
+
+impl SnippetVm {
+    /// Build `snippet` into a fresh VM with the standard library (a few microseconds).
+    pub fn build(snippet: &Snippet) -> Result<SnippetVm, String> {
+        let mut lua = Lua::new_with_standard();
+        lua.snippet_install(snippet)
+            .map_err(|e| format!("[snippet] {}", e))?;
+        Ok(SnippetVm {
+            lua,
+            arity: snippet.proto.arity,
+            ref_globals: snippet.ref_globals.clone(),
+            since_collect: 0,
+        })
+    }
+
+    /// Call with `ExVal` arguments; the single result comes back as an `ExVal`.
+    pub fn call(&mut self, args: &[ExVal]) -> Result<ExVal, String> {
+        let r = self.lua.snippet_call(args);
+        r.map_err(|e| self.describe(e))
+    }
+
+    /// Hot path: call with `f64` arguments and read one number back. No marshalling, no heap
+    /// allocation beyond the VM stack. Integers are widened; a non-numeric result is an error.
+    #[inline]
+    pub fn call_f64(&mut self, args: &[f64]) -> Result<f64, String> {
+        self.since_collect += 1;
+        if self.since_collect >= COLLECT_EVERY {
+            self.since_collect = 0;
+            self.lua.collect();
+        }
+        match self.lua.snippet_call_f64(args) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(self.describe(e)),
+        }
+    }
+
+    /// Fill `out` by calling the snippet once per sample with `(index, sample_rate)` mapped
+    /// through `args_for` — the audio-buffer shape: `vm.render(&mut buf, |i| [phase(i)])`.
+    pub fn render<const N: usize>(
+        &mut self,
+        out: &mut [f32],
+        mut args_for: impl FnMut(usize) -> [f64; N],
+    ) -> Result<(), String> {
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = self.call_f64(&args_for(i))? as f32;
+        }
+        Ok(())
+    }
+
+    /// Declared parameter count of the snippet function.
+    pub fn arity(&self) -> u8 {
+        self.arity
+    }
+
+    /// The underlying VM, e.g. to register host natives the snippet may call
+    /// (`vm.lua().enter(|vm, mc| vm.register_native_function(mc, "out", …))`).
+    pub fn lua(&mut self) -> &mut Lua {
+        &mut self.lua
+    }
+
+    /// Every error out of a snippet is tagged `[snippet]` so it is never mistaken for an error
+    /// in the calling script. If the failure smells like a dropped reference (a nil where the
+    /// defining script had a live function/table), name the globals that could be responsible.
+    fn describe(&self, e: SiltError) -> String {
+        let msg = format!("{}", e);
+        if !self.ref_globals.is_empty() && msg.contains("nil") {
+            format!(
+                "[snippet] {} — note: {} {} a reference in the defining script and not copied into the snippet; it resolves from the snippet VM (nil if absent). Provide it there or pass it by value.",
+                msg,
+                self.ref_globals
+                    .iter()
+                    .map(|g| format!("'{}'", g))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if self.ref_globals.len() == 1 { "was" } else { "were each" }
+            )
+        } else {
+            format!("[snippet] {}", msg)
+        }
+    }
 }
