@@ -97,5 +97,82 @@ fn benches(c: &mut Criterion) {
     c.bench_function("native_multi_1e6", |b| b.iter(|| run(NATIVE_MULTI)));
 }
 
-criterion_group!(g, benches);
+criterion_group!(g, benches, ud_benches);
 criterion_main!(g);
+
+// ---------------------------------------------------------------------------
+// Userdata: field get/set and method call through the registry.
+// ---------------------------------------------------------------------------
+
+mod ud {
+    use silt_lua::gc_arena::Mutation;
+    use silt_lua::userdata::{UserData, UserDataFields, UserDataMethods};
+    use silt_lua::{Compiler, Lua, LuaError, Value, VM};
+
+    pub struct Ent {
+        pub x: f64,
+        pub hits: i64,
+    }
+    impl UserData for Ent {
+        fn type_name() -> &'static str {
+            "BenchEnt"
+        }
+        fn get_id(&self) -> usize {
+            1
+        }
+        fn add_methods<'v, M: UserDataMethods<'v, Self>>(m: &mut M) {
+            m.add_method_mut("bump", |_, _, this: Option<&mut Self>, n: i64| {
+                if let Some(t) = this {
+                    t.hits += n;
+                }
+                Ok(Value::Nil)
+            });
+            m.add_method("hits", |_, _, this: Option<&mut Self>, _: ()| {
+                Ok(Value::Integer(this.map(|t| t.hits).unwrap_or(0)))
+            });
+        }
+        fn add_fields<'v, F: UserDataFields<'v, Self>>(f: &mut F) {
+            f.add_field_method_get("x", |_, _, t| Ok(Value::Number(t.x)));
+            f.add_field_method_set("x", |_, _, t: &mut Self, v: f64| {
+                t.x = v;
+                Ok(Value::Nil)
+            });
+        }
+    }
+    fn make_ent<'l>(
+        vm: &mut VM<'l>,
+        mc: &Mutation<'l>,
+        _: Vec<Value<'l>>,
+    ) -> Result<Value<'l>, LuaError> {
+        Ok(vm.create_userdata(mc, Ent { x: 0.0, hits: 0 }))
+    }
+    pub fn run(source: &str) {
+        let mut compiler = Compiler::new();
+        let mut lua = Lua::new_with_standard();
+        lua.enter(|vm, mc| {
+            vm.register_native_function(mc, "make_ent", make_ent);
+        });
+        let _ = lua.run(None, criterion::black_box(source), &mut compiler);
+    }
+}
+
+const UD_FIELD_RW: &str = r#"
+    local e = make_ent()
+    for i = 1, 200000 do
+        e.x = e.x + 1
+    end
+    return e.x
+"#;
+
+const UD_METHOD: &str = r#"
+    local e = make_ent()
+    for i = 1, 200000 do
+        e:bump(1)
+    end
+    return e:hits()
+"#;
+
+fn ud_benches(c: &mut Criterion) {
+    c.bench_function("userdata_field_rw_2e5", |b| b.iter(|| ud::run(UD_FIELD_RW)));
+    c.bench_function("userdata_method_2e5", |b| b.iter(|| ud::run(UD_METHOD)));
+}
