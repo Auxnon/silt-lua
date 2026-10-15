@@ -3729,7 +3729,15 @@ fn named_variable<'c>(
             match this.peek(it)? {
                 Token::Assign => {
                     this.eat(it);
+                    // The value is an expression, not more assignment targets: without
+                    // this, a local followed by a comma inside it (`t.f = { k, 1, k }`,
+                    // `t[#t + 1] = { v, 2 }`) starts a multivar comma-walk and the
+                    // constructor is mis-compiled (SILT-BUGS #5, #15). The plain-variable
+                    // assignment path does the same.
+                    let prev_multivar = this.can_multivar_set;
+                    this.set_can_multivar_set(false);
                     expression(this, mc, f, it, false)?;
+                    this.set_can_multivar_set(prev_multivar);
                     this.emit_at(f, OpCode::TABLE_SET { depth: count });
                     // override statement end pop because instruction takes care of it
                     this.override_pop();
