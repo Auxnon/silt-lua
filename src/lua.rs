@@ -804,6 +804,19 @@ impl<'gc> Lua {
         // Ok(ExVal::Nil)
     }
 
+    /// Call the global function `name` with parameters; `None` when it's nil. See
+    /// [`VM::call_global`].
+    pub fn call_global<T>(&mut self, name: &str, params: T) -> Option<LuaResult>
+    where
+        T: for<'e> ToLuaMulti<'e>,
+    {
+        let out = self
+            .arena
+            .mutate_root(|mc, vm| vm.call_global(mc, name, params));
+        self.arena.collect_debt();
+        out
+    }
+
     //     pub fn register<N>(&mut self, name: &str, function: N)
     //         where
     //             N: for<'a> Fn(&mut VM<'a>, &Mutation<'a>, Vec<Value<'a>>)-> Value<'a>,
@@ -1525,6 +1538,81 @@ impl<'gc> VM<'gc> {
     /// Results round-trip through `ExVal`, so a returned *table* is copied (reference
     /// identity is not preserved); adequate for pcall's error-handling and scalar
     /// return cases, which is the overwhelming majority of usage.
+    /// Run closure `c` with `args` on a nested interpreter loop that begins at the
+    /// current stack top, leaving the caller's stack and frames intact. Shared by
+    /// [`call_protected`](Self::call_protected) and [`call_global`](Self::call_global);
+    /// returns the full `ErrorOut` so callers that report errors keep the location.
+    fn run_closure(
+        &mut self,
+        mc: &Mutation<'gc>,
+        c: Gc<'gc, Closure<'gc>>,
+        args: &[Value<'gc>],
+    ) -> Result<ExVal, ErrorOut> {
+        // The nested run starts exactly where the outer `ep` points (the
+        // ep.ip == stack[stack_count] invariant), so it cannot disturb the
+        // caller's live values below this point.
+        let snapshot = self.stack_count;
+        self.ensure_stack();
+        let mut ep = Ephemeral::new(mc);
+        // Lay down [closure, args...] exactly as a normal CALL leaves the stack
+        // (function value at the frame base, args above).
+        self.push(Value::Closure(c));
+        for a in args {
+            self.push(a.clone());
+        }
+        // Mirror the CALL handler's parameter adjust: pad parameters the caller
+        // left out with nil (the body would otherwise read stale slots), and for
+        // a variadic callee copy `[f, fixed params]` above the overflow so the
+        // frame base sits past the varargs (see CallFrame::get_varargs).
+        let fixed = if c.is_variadic() {
+            c.get_variadic()
+        } else {
+            c.get_arity()
+        };
+        let mut ar = args.len() as u8;
+        while ar < fixed {
+            self.push(Value::Nil);
+            ar += 1;
+        }
+        // Drop extra args for a fixed-arity callee, as CALL does.
+        if !c.is_variadic() && ar > fixed {
+            self.stack_count -= (ar - fixed) as usize;
+            ar = fixed;
+        }
+        let mut frame = if c.is_variadic() {
+            let numfixed = c.get_variadic() as usize;
+            let frame_top = self.stack_count;
+            self.ensure_stack();
+            for i in 0..=numfixed {
+                let v = self.stack[snapshot + i].clone();
+                self.push(v);
+            }
+            let mut frame = CallFrame::new(c, snapshot, ar, 1);
+            frame.base = frame_top;
+            frame
+        } else {
+            let mut frame = CallFrame::new(c, snapshot, ar, 1);
+            frame.base = snapshot;
+            frame
+        };
+        // Every function body begins with a placeholder POP that the main loop
+        // skips via its trailing `iterate()` right after a CALL (it never runs).
+        // A freshly-entered nested loop would otherwise execute it and eat the
+        // top argument, so advance past it here exactly as a normal call does.
+        frame.iterate();
+        // DEFINE_GLOBAL/SET_GLOBAL read constants from `self.body`; point it at
+        // the running function for the duration, then restore.
+        let saved_body = self.body;
+        self.body = c.function;
+        let result = self.process(&mut ep, vec![frame]);
+        self.body = saved_body;
+        // Reclaim everything the protected run left above the entry point and
+        // close any upvalues it opened, on both success and failure.
+        self.close_upvalues_by_return(mc, snapshot);
+        self.stack_count = snapshot;
+        result
+    }
+
     pub(crate) fn call_protected(
         &mut self,
         mc: &Mutation<'gc>,
@@ -1532,73 +1620,14 @@ impl<'gc> VM<'gc> {
         args: &[Value<'gc>],
     ) -> Result<Value<'gc>, SiltError> {
         match func {
-            Value::Closure(c) => {
-                // The nested run starts exactly where the outer `ep` points (the
-                // ep.ip == stack[stack_count] invariant), so it cannot disturb the
-                // caller's live values below this point.
-                let snapshot = self.stack_count;
-                self.ensure_stack();
-                let mut ep = Ephemeral::new(mc);
-                // Lay down [closure, args...] exactly as a normal CALL leaves the stack
-                // (function value at the frame base, args above).
-                self.push(Value::Closure(c));
-                for a in args {
-                    self.push(a.clone());
-                }
-                // Mirror the CALL handler's parameter adjust: pad parameters the caller
-                // left out with nil (the body would otherwise read stale slots), and for
-                // a variadic callee copy `[f, fixed params]` above the overflow so the
-                // frame base sits past the varargs (see CallFrame::get_varargs).
-                let fixed = if c.is_variadic() {
-                    c.get_variadic()
-                } else {
-                    c.get_arity()
-                };
-                let mut ar = args.len() as u8;
-                while ar < fixed {
-                    self.push(Value::Nil);
-                    ar += 1;
-                }
-                let mut frame = if c.is_variadic() {
-                    let numfixed = c.get_variadic() as usize;
-                    let frame_top = self.stack_count;
-                    self.ensure_stack();
-                    for i in 0..=numfixed {
-                        let v = self.stack[snapshot + i].clone();
-                        self.push(v);
-                    }
-                    let mut frame = CallFrame::new(c, snapshot, ar, 1);
-                    frame.base = frame_top;
-                    frame
-                } else {
-                    let mut frame = CallFrame::new(c, snapshot, ar, 1);
-                    frame.base = snapshot;
-                    frame
-                };
-                // Every function body begins with a placeholder POP that the main loop
-                // skips via its trailing `iterate()` right after a CALL (it never runs).
-                // A freshly-entered nested loop would otherwise execute it and eat the
-                // top argument, so advance past it here exactly as a normal call does.
-                frame.iterate();
-                // DEFINE_GLOBAL/SET_GLOBAL read constants from `self.body`; point it at
-                // the running function for the duration, then restore.
-                let saved_body = self.body;
-                self.body = c.function;
-                let result = self.process(&mut ep, vec![frame]);
-                self.body = saved_body;
-                // Reclaim everything the protected run left above the entry point and
-                // close any upvalues it opened, on both success and failure.
-                self.close_upvalues_by_return(mc, snapshot);
-                self.stack_count = snapshot;
-                match result {
-                    Ok(ex) => ex.into_value(self, mc),
-                    Err(mut eo) => Err(eo
-                        .errors
-                        .pop()
-                        .map(|t| t.code)
-                        .unwrap_or(SiltError::VmRuntimeError)),
-                }
-            }
+            Value::Closure(c) => match self.run_closure(mc, c, args) {
+                Ok(ex) => ex.into_value(self, mc),
+                Err(mut eo) => Err(eo
+                    .errors
+                    .pop()
+                    .map(|t| t.code)
+                    .unwrap_or(SiltError::VmRuntimeError)),
+            },
             // A native callee can be invoked directly; it still reports errors, which
             // pcall turns into `(false, msg)`.
             Value::NativeFunction(nf) => match nf.f.call(self, mc, args)? {
@@ -1609,6 +1638,52 @@ impl<'gc> VM<'gc> {
             },
             other => Err(SiltError::NotCallable(format!("{}", other))),
         }
+    }
+
+    /// Call the global function `name` with `params`, from the host. Returns `None`
+    /// when the global is nil (so a host can treat optional callbacks like `loop` or
+    /// `draw` as `Option`s), otherwise the call's result. The global is looked up on
+    /// every call, so scripts that redefine or clear it are always respected. A
+    /// non-callable value is an error rather than `None`.
+    pub fn call_global<T>(
+        &mut self,
+        mc: &Mutation<'gc>,
+        name: &str,
+        params: T,
+    ) -> Option<LuaResult>
+    where
+        T: for<'e> ToLuaMulti<'e>,
+    {
+        let func = match self.globals.borrow().get(name) {
+            None | Some(Value::Nil) => return None,
+            Some(v) => v.clone(),
+        };
+        let err = |code: SiltError| ErrorOut {
+            errors: vec![ErrorTuple {
+                code,
+                location: (0, 0),
+                end: None,
+            }],
+            source: Some(name.to_string()),
+            source_index: crate::error::SOURCE_INDEX_UNKNOWN,
+        };
+        let args = match params.to_lua_multi(self, mc) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(err(e))),
+        };
+        // Top-level entry, like `call_fn`: start from an empty stack and leave it
+        // empty afterwards whatever the outcome.
+        self.stack_count = 0;
+        let out = match func {
+            Value::Closure(c) => self.run_closure(mc, c, &args),
+            Value::NativeFunction(nf) => match nf.f.call(self, mc, &args) {
+                Ok(_) => Ok(ExVal::Nil),
+                Err(e) => Err(err(e)),
+            },
+            other => Err(err(SiltError::NotCallable(format!("{}", other)))),
+        };
+        self.stack_count = 0;
+        Some(out)
     }
 
     fn process(
@@ -2611,6 +2686,13 @@ impl<'gc> VM<'gc> {
                             while ar < fixed {
                                 self.push(Value::Nil);
                                 ar += 1;
+                            }
+                            // A fixed-arity callee drops extra args, as in Lua. Left on
+                            // the stack they sat where the body's first locals belong,
+                            // so `local a` read the first extra arg instead.
+                            if !cc.is_variadic() && ar > fixed {
+                                self.stack_count -= (ar - fixed) as usize;
+                                ar = fixed;
                             }
                             if cc.is_variadic() {
                                 // Lua-style variadic adjust: the overflow args stay
