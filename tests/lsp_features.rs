@@ -5,8 +5,9 @@
 #![cfg(feature = "lsp")]
 
 use silt_lua::lsp::{
-    completion, definition, diagnostics, document_symbols, hover, references, semantic_tokens,
-    signature_help, CompletionKind, Position, SymbolKind,
+    completion, completion_in, definition, definition_in, diagnostics, document_symbols, hover,
+    hover_in, references, semantic_tokens, signature_help, signature_help_in, CompletionKind,
+    Library, Position, SymbolKind,
 };
 
 fn pos(line: u32, character: u32) -> Position {
@@ -208,4 +209,154 @@ fn semantic_tokens_classify_tokens() {
             "keyword"
         ],
     );
+}
+
+// A `---@meta` stub in the lua-language-server style (like Petrichor64's generated
+// `ignore.lua`), loaded as a library for another document.
+const STUB: &str = "\
+---@meta
+
+-- Sine value
+---@param f number
+---@return number
+function sin(f)
+end
+
+--- @type number ~3.1457
+pi = nil
+
+-- Spawn an entity
+---@param asset string model asset
+---@param x number
+function make(asset, x)
+end
+";
+
+fn stub_library() -> Library {
+    let mut lib = Library::default();
+    lib.add("file:///proj/scripts/ignore.lua", STUB);
+    lib
+}
+
+#[test]
+fn library_hover_folds_annotations_into_signature() {
+    let lib = stub_library();
+    let src = "local y = sin(1)\nprint(pi)\nmake(\"a\", 1)";
+    let h = hover_in(src, "file:///proj/scripts/main.lua", pos(0, 11), &lib).unwrap();
+    assert!(h.contains("function sin(f: number): number"), "{h}");
+    assert!(h.contains("Sine value"), "{h}");
+    assert!(!h.contains("@param"), "{h}");
+    assert!(h.contains("ignore.lua"), "{h}");
+    let h = hover_in(src, "file:///proj/scripts/main.lua", pos(1, 7), &lib).unwrap();
+    assert!(h.contains("pi") && h.contains("~3.1457"), "{h}");
+    let h = hover_in(src, "file:///proj/scripts/main.lua", pos(2, 1), &lib).unwrap();
+    assert!(h.contains("function make(asset: string, x: number)"), "{h}");
+    assert!(h.contains("`asset` — model asset"), "{h}");
+}
+
+#[test]
+fn library_definition_completion_and_signature() {
+    let lib = stub_library();
+    let uri = "file:///proj/scripts/main.lua";
+    let (def_uri, r) = definition_in("sin(1)", uri, pos(0, 1), &lib).unwrap();
+    assert_eq!(def_uri, "file:///proj/scripts/ignore.lua");
+    assert_eq!(r.start.line, 5);
+    // a document's own definition wins over the library's
+    let (def_uri, _) = definition_in("function sin(a) end\nsin(1)", uri, pos(1, 1), &lib).unwrap();
+    assert_eq!(def_uri, uri);
+    let items = completion_in("ma", uri, pos(0, 2), &lib);
+    assert!(items.iter().any(|c| c.label == "make"));
+    let sh = signature_help_in("make(\"a\", ", uri, pos(0, 10), &lib).unwrap();
+    assert_eq!(sh.label, "make(asset: string, x: number)");
+    assert_eq!(sh.active_parameter, 1);
+    // the library file itself isn't its own library
+    assert!(hover_in("sin(1)", "file:///proj/scripts/ignore.lua", pos(0, 1), &lib).is_none());
+}
+
+#[test]
+fn library_uris_and_paths_name_the_same_file() {
+    let mut lib = Library::default();
+    lib.add("/proj/my scripts/a.lua", "function helper() end");
+    assert!(lib.contains("file:///proj/my%20scripts/a.lua"));
+    let (def_uri, _) = definition_in("helper()", "file:///proj/b.lua", pos(0, 1), &lib).unwrap();
+    assert_eq!(def_uri, "file:///proj/my%20scripts/a.lua");
+}
+
+#[cfg(feature = "vector")]
+#[test]
+fn vector_methods_and_constructors_are_documented() {
+    let src = "local a = vec3(1, 0, 0)\nlocal b = a:dot(a)\nlocal c = a:cross(a)\n";
+    let h = hover(src, pos(1, 13)).unwrap();
+    assert!(h.contains("function vec:dot(other: vec): number"), "{h}");
+    let h = hover(src, pos(0, 12)).unwrap();
+    assert!(h.contains("function vec3(x: number, y: number, z: number): vec3"), "{h}");
+    let sh = signature_help("local a = vec3(1, 0, 0)\na:cross(", pos(1, 8)).unwrap();
+    assert_eq!(sh.label, "cross(other: vec3)");
+    let items = completion("local a = vec3(1, 0, 0)\na:", pos(1, 2));
+    assert!(items.iter().any(|c| c.label == "normalize"));
+}
+
+#[test]
+fn library_annotations_keep_multi_word_types_whole() {
+    let mut lib = Library::default();
+    lib.add(
+        "/proj/ignore.lua",
+        "\
+-- Set a voice
+---@param cfg { breath?: number, hz?: number } breath 0..1, rate Hz
+---@param kind string | nil filter kind
+---@return boolean|{v:number[]}|nil
+function vox(cfg, kind) end
+",
+    );
+    let h = hover_in("vox()", "/proj/main.lua", pos(0, 1), &lib).unwrap();
+    assert!(
+        h.contains("function vox(cfg: { breath?: number, hz?: number }, kind: string | nil): boolean|{v:number[]}|nil"),
+        "{h}"
+    );
+    assert!(h.contains("`cfg` — breath 0..1, rate Hz"), "{h}");
+}
+
+#[test]
+fn hover_infers_unannotated_types() {
+    let lib = stub_library();
+    let uri = "file:///proj/scripts/main.lua";
+    let src = "\
+local ca = cos2(1)
+local s = sin(0.5) * 2
+local n = 3
+local name = \"a\" .. n
+local ok = n > 1
+local t = {1, 2}
+local copy = s
+local f = x -> x + 1
+LATER = nil
+function setup() LATER = sin(1) end
+local unknown = mystery()
+function cos2(a: number): number return a end
+";
+    let ty = |line: u32, ch: u32| hover_in(src, uri, pos(line, ch), &lib).unwrap();
+    assert!(ty(0, 7).contains("local ca: number"), "{}", ty(0, 7));
+    assert!(ty(1, 7).contains("local s: number"), "{}", ty(1, 7));
+    assert!(ty(2, 7).contains("local n: number"));
+    assert!(ty(3, 7).contains("local name: string"));
+    assert!(ty(4, 7).contains("local ok: boolean"));
+    assert!(ty(5, 7).contains("local t: table"));
+    assert!(ty(6, 7).contains("local copy: number"), "{}", ty(6, 7));
+    assert!(ty(7, 7).contains("local f: function"), "{}", ty(7, 7));
+    // a global first set to nil takes its type from a later assignment
+    assert!(ty(8, 1).contains("(global) LATER: number"), "{}", ty(8, 1));
+    // nothing known: no type rather than a wrong one
+    assert!(ty(10, 7).contains("local unknown\n"), "{}", ty(10, 7));
+}
+
+#[cfg(feature = "vector")]
+#[test]
+fn hover_infers_vector_types_through_methods() {
+    let src = "local a = vec3(1, 0, 0)\nlocal n = a:normalize()\nlocal d = a:dot(n)\nlocal c = a:cross(n):normalize()\n";
+    let h = |line: u32| hover(src, pos(line, 7)).unwrap();
+    assert!(h(0).contains("local a: vec3"), "{}", h(0));
+    assert!(h(1).contains("local n: vec3"), "{}", h(1));
+    assert!(h(2).contains("local d: number"), "{}", h(2));
+    assert!(h(3).contains("local c: vec3"), "{}", h(3));
 }

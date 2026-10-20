@@ -11,7 +11,9 @@
 //! counts (accurate for ASCII/BMP text; astral-plane characters may drift from the
 //! UTF-16 units LSP technically wants — a documented limitation).
 
-use crate::token::Token;
+use std::collections::BTreeMap;
+
+use crate::token::{Operator, Token};
 use crate::{Compiler, Lua};
 
 mod analysis;
@@ -220,27 +222,542 @@ pub fn format_with(source: &str, indent_unit: &str) -> String {
 /// Hover text for the symbol at `pos` (markdown): its kind, signature and
 /// declared type, plus the doc comment above its definition.
 pub fn hover(source: &str, pos: Position) -> Option<String> {
+    hover_in(source, "", pos, &Library::default())
+}
+
+/// [`hover`] for document `uri`, falling back to `lib`'s definitions (and the
+/// runtime's documented natives) for names the document doesn't define.
+pub fn hover_in(source: &str, uri: &str, pos: Position, lib: &Library) -> Option<String> {
     let an = analyze(source);
-    let sym = an.symbol_at(pos).map(|i| &an.symbols[i]);
-    match sym {
-        Some(sym) => Some(describe(sym)),
-        None => {
-            // an undeclared name: maybe a standard-library global
-            let i = an.token_at(pos)?;
-            let name = match &an.tokens[i].token {
-                Token::Identifier(n) => n.clone(),
-                _ => return None,
-            };
-            if stdlib_names().iter().any(|n| n == &name) {
-                Some(format!("```lua\n(global) {}\n```\nstandard library", name))
-            } else {
-                None
+    let i = match an.symbol_at(pos) {
+        Some(s) => return Some(describe(&with_inferred_type(&an, s, uri, lib))),
+        None => an.token_at(pos)?,
+    };
+    match lookup(&an, i, uri, lib)? {
+        Found::Local(sym) => Some(describe(sym)),
+        Found::Lib(file, sym) => {
+            let name = file.rsplit('/').next().unwrap_or(file);
+            Some(format!("{}\n\n*{}*", describe(sym), name))
+        }
+        Found::Builtin(b) => Some(b.describe()),
+        Found::Stdlib(name) => Some(format!("```lua\n(global) {}\n```\nstandard library", name)),
+    }
+}
+
+/// Symbol `s` with a best-effort type when it has no annotation (see [`infer_symbol`]).
+fn with_inferred_type(an: &Analysis, s: usize, uri: &str, lib: &Library) -> Symbol {
+    let mut sym = an.symbols[s].clone();
+    if sym.ty.is_none() {
+        sym.ty = infer_symbol(an, s, uri, lib, 0);
+    }
+    sym
+}
+
+/// Best-effort type of an unannotated local/global, from the first assignment to it
+/// that says something (`local x` / `X = nil` then `X = vec3(…)` finds `vec3`).
+fn infer_symbol(an: &Analysis, s: usize, uri: &str, lib: &Library, depth: u8) -> Option<String> {
+    let sym = &an.symbols[s];
+    if depth > 4 || !matches!(sym.kind, SymbolKind::Local | SymbolKind::Global) {
+        return sym.ty.clone();
+    }
+    if sym.ty.is_some() {
+        return sym.ty.clone();
+    }
+    for r in an.occurrences(s) {
+        let Some(i) = an.tokens.iter().position(|t| t.range == r) else { continue };
+        let assigned = matches!(
+            an.tokens.get(i + 1).map(|t| &t.token),
+            Some(Token::Assign | Token::Op(Operator::ColonEquals))
+        );
+        let member = i > 0 && matches!(an.tokens[i - 1].token, Token::Dot | Token::Colon);
+        if assigned && !member {
+            if let Some(ty) = expr_type(an, i + 2, uri, lib, depth + 1) {
+                return Some(ty);
             }
+        }
+    }
+    None
+}
+
+/// Type of the expression starting at token `i`: a literal, a call's return type,
+/// a typed variable, or arithmetic / concatenation / comparison on those.
+fn expr_type(an: &Analysis, i: usize, uri: &str, lib: &Library, depth: u8) -> Option<String> {
+    let (ty, next) = primary_type(an, i, uri, lib, depth)?;
+    match an.tokens.get(next).map(|t| &t.token) {
+        Some(Token::ArrowFunction) => Some("function".into()),
+        Some(Token::Op(op)) => match op {
+            Operator::Concat => Some("string".into()),
+            Operator::Equal
+            | Operator::NotEqual
+            | Operator::Less
+            | Operator::LessEqual
+            | Operator::Greater
+            | Operator::GreaterEqual => Some("boolean".into()),
+            Operator::Add
+            | Operator::Sub
+            | Operator::Multiply
+            | Operator::Divide
+            | Operator::FloorDivide
+            | Operator::Modulus
+            | Operator::Exponent => ty.or_else(|| {
+                primary_type(an, next + 1, uri, lib, depth).and_then(|(t, _)| t)
+            }),
+            _ => ty,
+        },
+        _ => ty,
+    }
+}
+
+/// Index just past the bracket group opening at `i` (`(`, `[` or `{`).
+fn skip_group(an: &Analysis, i: usize) -> usize {
+    let mut depth = 0i32;
+    for (j, t) in an.tokens.iter().enumerate().skip(i) {
+        match t.token {
+            Token::OpenParen | Token::OpenBracket | Token::OpenBrace => depth += 1,
+            Token::CloseParen | Token::CloseBracket | Token::CloseBrace => {
+                depth -= 1;
+                if depth == 0 {
+                    return j + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    an.tokens.len()
+}
+
+/// Type of the primary expression (literal, or name/parens followed by `.f`, `:m(…)`,
+/// `(…)`, `[…]`) at token `i`, and the index after it. The type is `None` when unknown.
+fn primary_type(
+    an: &Analysis,
+    i: usize,
+    uri: &str,
+    lib: &Library,
+    depth: u8,
+) -> Option<(Option<String>, usize)> {
+    let tok = an.tokens.get(i)?;
+    let lit = |t: &str| Some((Some(t.to_string()), i + 1));
+    let mut ty: Option<String>;
+    let mut j;
+    match &tok.token {
+        Token::Number(_) | Token::Integer(_) => return lit("number"),
+        Token::StringLiteral(_) => return lit("string"),
+        Token::True | Token::False => return lit("boolean"),
+        Token::Nil => return Some((None, i + 1)),
+        Token::Function => return lit("function"),
+        Token::OpenBrace => return Some((Some("table".into()), skip_group(an, i))),
+        Token::Op(Operator::Sub) => return primary_type(an, i + 1, uri, lib, depth),
+        Token::Op(Operator::Length) => {
+            let (_, next) = primary_type(an, i + 1, uri, lib, depth)?;
+            return Some((Some("number".into()), next));
+        }
+        Token::Op(Operator::Not) => {
+            let (_, next) = primary_type(an, i + 1, uri, lib, depth)?;
+            return Some((Some("boolean".into()), next));
+        }
+        Token::OpenParen => {
+            ty = expr_type(an, i + 1, uri, lib, depth);
+            j = skip_group(an, i);
+        }
+        Token::Identifier(_) => {
+            ty = match lookup(an, i, uri, lib) {
+                Some(Found::Local(sym)) => match an.symbols.iter().position(|s| std::ptr::eq(s, sym)) {
+                    Some(s) => infer_symbol(an, s, uri, lib, depth),
+                    None => sym.ty.clone(),
+                },
+                Some(Found::Lib(_, sym)) => annotated(sym).ty,
+                _ => None,
+            };
+            j = i + 1;
+        }
+        _ => return None,
+    }
+    // the callee of a following call: the name at `callee`
+    let mut callee = matches!(tok.token, Token::Identifier(_)).then_some(i);
+    loop {
+        match an.tokens.get(j).map(|t| &t.token) {
+            Some(Token::Dot | Token::Colon)
+                if matches!(an.tokens.get(j + 1).map(|t| &t.token), Some(Token::Identifier(_))) =>
+            {
+                callee = Some(j + 1);
+                // a method keeps the receiver's type to resolve a generic `vec` return
+                if !matches!(an.tokens[j].token, Token::Colon) {
+                    ty = None;
+                }
+                j += 2;
+            }
+            Some(Token::OpenParen | Token::StringLiteral(_) | Token::OpenBrace) => {
+                let receiver = ty.take();
+                ty = callee.and_then(|c| match lookup(an, c, uri, lib)? {
+                    Found::Local(sym) | Found::Lib(_, sym) => annotated(sym).returns,
+                    Found::Builtin(b) if b.returns == "vec" => receiver.or(Some("vec".into())),
+                    Found::Builtin(b) => Some(b.returns.to_string()),
+                    Found::Stdlib(_) => None,
+                });
+                callee = None;
+                j = match an.tokens[j].token {
+                    Token::StringLiteral(_) => j + 1,
+                    _ => skip_group(an, j),
+                };
+            }
+            Some(Token::OpenBracket) => {
+                ty = None;
+                callee = None;
+                j = skip_group(an, j);
+            }
+            _ => break,
+        }
+    }
+    Some((ty, j))
+}
+
+// ─────────────────────────────── libraries ────────────────────────────────
+
+/// Definitions other files contribute to every document: a `---@meta` stub (e.g.
+/// Petrichor64's generated `ignore.lua`) or a sibling script sharing the same
+/// globals. Hover, completion, signature help and go-to-definition consult it
+/// for names a document doesn't define itself. Files are keyed by path, so a
+/// `file://` URI and its plain path name the same file.
+#[derive(Debug, Default, Clone)]
+pub struct Library {
+    files: BTreeMap<String, Vec<Symbol>>,
+}
+
+impl Library {
+    /// (Re)load `source` as library file `uri`, replacing what it held before.
+    pub fn add(&mut self, uri: &str, source: &str) {
+        let symbols = analyze(source)
+            .symbols
+            .into_iter()
+            .filter(|s| match s.kind {
+                SymbolKind::Function
+                | SymbolKind::Global
+                | SymbolKind::Field
+                | SymbolKind::Method => true,
+                SymbolKind::TypeAlias => s.scope == 0,
+                _ => false,
+            })
+            .collect();
+        self.files.insert(uri_to_path(uri), symbols);
+    }
+
+    pub fn remove(&mut self, uri: &str) {
+        self.files.remove(&uri_to_path(uri));
+    }
+
+    pub fn contains(&self, uri: &str) -> bool {
+        self.files.contains_key(&uri_to_path(uri))
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Every library symbol outside document `uri` (whose own analysis is fresher).
+    fn others<'a>(&'a self, uri: &str) -> impl Iterator<Item = (&'a str, &'a Symbol)> {
+        let own = uri_to_path(uri);
+        self.files
+            .iter()
+            .filter(move |(path, _)| **path != own)
+            .flat_map(|(path, syms)| syms.iter().map(move |s| (path.as_str(), s)))
+    }
+
+    /// Non-member definitions visible to `uri`, one per name (a documented one wins).
+    fn globals<'a>(&'a self, uri: &str) -> Vec<(&'a str, &'a Symbol)> {
+        let mut out: BTreeMap<&str, (&str, &Symbol)> = BTreeMap::new();
+        for (path, sym) in self.others(uri) {
+            if matches!(sym.kind, SymbolKind::Field | SymbolKind::Method) {
+                continue;
+            }
+            match out.get(sym.name.as_str()) {
+                Some((_, prev)) if prev.doc.is_some() || sym.doc.is_none() => {}
+                _ => {
+                    out.insert(&sym.name, (path, sym));
+                }
+            }
+        }
+        out.into_values().collect()
+    }
+
+    fn global<'a>(&'a self, uri: &str, name: &str) -> Option<(&'a str, &'a Symbol)> {
+        self.globals(uri).into_iter().find(|(_, s)| s.name == name)
+    }
+
+    /// `function recv.name` / `recv:name` definitions on receiver `recv`.
+    fn members<'a>(&'a self, uri: &str, recv: &str) -> Vec<(&'a str, &'a Symbol)> {
+        self.others(uri)
+            .filter(|(_, s)| {
+                matches!(s.kind, SymbolKind::Field | SymbolKind::Method)
+                    && s.receiver.as_deref() == Some(recv)
+            })
+            .collect()
+    }
+}
+
+/// `file:///a%20b/c.lua` → `/a b/c.lua`; anything else is returned unchanged.
+pub fn uri_to_path(uri: &str) -> String {
+    let Some(rest) = uri.strip_prefix("file://") else {
+        return uri.to_string();
+    };
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `/a b/c.lua` → `file:///a%20b/c.lua` (RFC 3986, as editors encode them); a
+/// non-path id is returned unchanged.
+pub fn path_to_uri(path: &str) -> String {
+    if !path.starts_with('/') {
+        return path.to_string();
+    }
+    let mut out = String::from("file://");
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+/// A native the runtime registers, with the signature and docs the stdlib's
+/// name listing can't provide.
+pub struct Builtin {
+    /// `vec3`, or `vec.dot` for a method of the `vec` library.
+    pub name: &'static str,
+    /// Called with `:` (the receiver is the implicit first argument).
+    pub method: bool,
+    pub params: &'static str,
+    pub returns: &'static str,
+    pub doc: &'static str,
+}
+
+impl Builtin {
+    fn describe(&self) -> String {
+        let head = match self.name.split_once('.') {
+            Some((lib, m)) if self.method => format!("{}:{}", lib, m),
+            _ => self.name.to_string(),
+        };
+        format!(
+            "```lua\nfunction {}({}): {}\n```\n\n{}",
+            head, self.params, self.returns, self.doc
+        )
+    }
+}
+
+#[cfg(feature = "vector")]
+pub const BUILTINS: &[Builtin] = &[
+    Builtin { name: "vec2", method: false, params: "x: number, y: number", returns: "vec2", doc: "Immutable 2D vector (f32). Fields `.x .y`; supports `+ - * /` and unary `-`." },
+    Builtin { name: "vec3", method: false, params: "x: number, y: number, z: number", returns: "vec3", doc: "Immutable 3D vector (f32). Fields `.x .y .z`; supports `+ - * /` and unary `-`." },
+    Builtin { name: "vec4", method: false, params: "x: number, y: number, z: number, w: number", returns: "vec4", doc: "Immutable 4D vector (f32). Fields `.x .y .z .w`; supports `+ - * /` and unary `-`." },
+    Builtin { name: "vec.length", method: true, params: "", returns: "number", doc: "Euclidean length, any dimension." },
+    Builtin { name: "vec.length_squared", method: true, params: "", returns: "number", doc: "Length squared; cheaper than `length` (no sqrt)." },
+    Builtin { name: "vec.normalize", method: true, params: "", returns: "vec", doc: "Unit vector in the same direction, as a new vector." },
+    Builtin { name: "vec.dot", method: true, params: "other: vec", returns: "number", doc: "Dot product; both operands must be the same dimension." },
+    Builtin { name: "vec.distance", method: true, params: "other: vec", returns: "number", doc: "Euclidean distance; both operands must be the same dimension." },
+    Builtin { name: "vec.cross", method: true, params: "other: vec3", returns: "vec3", doc: "Cross product; 3D only." },
+];
+#[cfg(not(feature = "vector"))]
+pub const BUILTINS: &[Builtin] = &[];
+
+fn builtin(name: &str) -> Option<&'static Builtin> {
+    BUILTINS.iter().find(|b| b.name == name)
+}
+
+/// What an undeclared name at a token resolves to, outside the document's own symbols.
+enum Found<'a> {
+    Local(&'a Symbol),
+    /// A library file's path and its definition.
+    Lib(&'a str, &'a Symbol),
+    Builtin(&'static Builtin),
+    /// A standard-library name with no further docs.
+    Stdlib(String),
+}
+
+/// The `recv.` / `recv:` before token `i`, if it is a member access: (`.` or `:`, receiver).
+fn member_access(an: &Analysis, i: usize) -> Option<(char, Option<String>)> {
+    let op = match an.tokens.get(i.checked_sub(1)?)?.token {
+        Token::Dot => '.',
+        Token::Colon => ':',
+        _ => return None,
+    };
+    let recv = i
+        .checked_sub(2)
+        .and_then(|j| match &an.tokens[j].token {
+            Token::Identifier(n) => Some(n.to_string()),
+            _ => None,
+        });
+    Some((op, recv))
+}
+
+/// Resolve the identifier at token `i`: the document's own symbol, else a library
+/// definition, a documented native or a stdlib name — as a member when it follows
+/// `recv.` / `recv:` (an unknown receiver's `:` method may be a vector or string one).
+fn lookup<'a>(an: &'a Analysis, i: usize, uri: &str, lib: &'a Library) -> Option<Found<'a>> {
+    let tok = an.tokens.get(i)?;
+    if let Some(s) = an.symbol_at(tok.range.start) {
+        return Some(Found::Local(&an.symbols[s]));
+    }
+    let name = match &tok.token {
+        Token::Identifier(n) => n.to_string(),
+        _ => return None,
+    };
+    match member_access(an, i) {
+        None => {
+            // a global defined later in the file (a use only resolves to earlier ones)
+            if let Some(sym) = an.symbols.iter().find(|s| {
+                s.name == name && matches!(s.kind, SymbolKind::Function | SymbolKind::Global)
+            }) {
+                return Some(Found::Local(sym));
+            }
+            if let Some((path, sym)) = lib.global(uri, &name) {
+                return Some(Found::Lib(path, sym));
+            }
+            if let Some(b) = builtin(&name) {
+                return Some(Found::Builtin(b));
+            }
+            stdlib_names()
+                .contains(&name)
+                .then(|| Found::Stdlib(name))
+        }
+        Some((op, recv)) => {
+            if let Some(recv) = &recv {
+                if let Some((path, sym)) = lib.members(uri, recv).into_iter().find(|(_, s)| s.name == name) {
+                    return Some(Found::Lib(path, sym));
+                }
+                let qualified = format!("{}.{}", recv, name);
+                if let Some(b) = builtin(&qualified) {
+                    return Some(Found::Builtin(b));
+                }
+                if stdlib_names().contains(&qualified) {
+                    return Some(Found::Stdlib(qualified));
+                }
+            }
+            if op != ':' {
+                return None;
+            }
+            if let Some(b) = builtin(&format!("vec.{}", name)).filter(|b| b.method) {
+                return Some(Found::Builtin(b));
+            }
+            let s = format!("string.{}", name);
+            stdlib_names().contains(&s).then(|| Found::Stdlib(s))
         }
     }
 }
 
+/// `sym` with its doc comment's `---@param` / `---@return` / `---@type` tags (the
+/// lua-language-server annotation style) folded into its signature; other tags
+/// (`@meta`, `@class`, `@diagnostic`, …) don't describe the symbol and are dropped.
+fn annotated(sym: &Symbol) -> Symbol {
+    let mut s = sym.clone();
+    let Some(doc) = &sym.doc else { return s };
+    let mut text: Vec<String> = vec![];
+    let mut param_types: Vec<(String, String)> = vec![];
+    let mut param_docs: Vec<String> = vec![];
+    let mut returns: Vec<String> = vec![];
+    for line in doc.lines() {
+        let Some(tag) = line.trim().strip_prefix('@') else {
+            text.push(line.to_string());
+            continue;
+        };
+        let (kw, rest) = tag.split_once(char::is_whitespace).unwrap_or((tag, ""));
+        let (lead_ty, lead_desc) = split_annotation_type(rest);
+        match kw {
+            "param" => {
+                let (raw, after) = rest.trim().split_once(char::is_whitespace).unwrap_or((rest.trim(), ""));
+                let (ty, desc) = split_annotation_type(after);
+                let ty = ty.to_string();
+                let name = raw.trim_end_matches('?');
+                let ty = if raw.ends_with('?') { format!("{}?", ty) } else { ty };
+                if !desc.is_empty() {
+                    param_docs.push(format!("- `{}` — {}", name, desc));
+                }
+                param_types.push((name.to_string(), ty));
+            }
+            "return" => {
+                if !lead_ty.is_empty() {
+                    returns.push(lead_ty.to_string());
+                }
+            }
+            "type" if s.ty.is_none() => {
+                s.ty = (!lead_ty.is_empty()).then(|| lead_ty.to_string());
+                if !lead_desc.is_empty() {
+                    text.push(lead_desc.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(params) = &s.params {
+        let typed: Vec<String> = split_params(params)
+            .into_iter()
+            .map(|p| match param_types.iter().find(|(n, t)| *n == p && !t.is_empty()) {
+                Some((_, t)) if !p.contains(':') => format!("{}: {}", p, t),
+                _ => p,
+            })
+            .collect();
+        s.params = Some(typed.join(", "));
+    }
+    if s.returns.is_none() && !returns.is_empty() {
+        s.returns = Some(returns.join(", "));
+    }
+    let mut body = text.join("\n").trim().to_string();
+    if !param_docs.is_empty() {
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str(&param_docs.join("\n"));
+    }
+    s.doc = (!body.is_empty()).then_some(body);
+    s
+}
+
+/// Split an annotation's leading type from its description: `{ a: number } desc` →
+/// (`{ a: number }`, `desc`). Brackets keep their contents whole, and a `|` joins the
+/// words around it (`string | nil`).
+fn split_annotation_type(text: &str) -> (&str, &str) {
+    let text = text.trim();
+    let mut depth = 0i32;
+    let mut end = text.len();
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '{' | '(' | '[' | '<' => depth += 1,
+            '}' | ')' | ']' | '>' => depth -= 1,
+            c if c.is_whitespace() && depth <= 0 => {
+                let next = text[i..].trim_start();
+                let joined = next.starts_with('|') || text[..i].ends_with('|');
+                if !joined {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    (&text[..end], text[end..].trim())
+}
+
 fn describe(sym: &Symbol) -> String {
+    let sym = &annotated(sym);
     let ret = sym
         .returns
         .as_ref()
@@ -276,7 +793,7 @@ fn describe(sym: &Symbol) -> String {
         SymbolKind::Local => format!("local {}{}", sym.name, annot(sym)),
         SymbolKind::Parameter => format!("(parameter) {}{}", sym.name, annot(sym)),
         SymbolKind::LoopVariable => format!("(loop variable) {}", sym.name),
-        SymbolKind::Global => format!("(global) {}", sym.name),
+        SymbolKind::Global => format!("(global) {}{}", sym.name, annot(sym)),
         SymbolKind::TypeAlias => format!(
             "type {} = {}",
             sym.name,
@@ -302,6 +819,20 @@ fn annot(sym: &Symbol) -> String {
 pub fn definition(source: &str, pos: Position) -> Option<Range> {
     let an = analyze(source);
     an.symbol_at(pos).map(|i| an.symbols[i].range)
+}
+
+/// [`definition`] for document `uri`, reaching into `lib`: the defining file's
+/// URI (`uri` itself for a local definition) and range.
+pub fn definition_in(source: &str, uri: &str, pos: Position, lib: &Library) -> Option<(String, Range)> {
+    let an = analyze(source);
+    if let Some(i) = an.symbol_at(pos) {
+        return Some((uri.to_string(), an.symbols[i].range));
+    }
+    match lookup(&an, an.token_at(pos)?, uri, lib)? {
+        Found::Local(sym) => Some((uri.to_string(), sym.range)),
+        Found::Lib(path, sym) => Some((path_to_uri(path), sym.range)),
+        _ => None,
+    }
 }
 
 /// Every occurrence (definition + uses) of the symbol at `pos`.
@@ -374,6 +905,12 @@ pub fn stdlib_names() -> Vec<String> {
 /// that receiver (and the library's if it is a stdlib table); otherwise the
 /// symbols in scope, globals, stdlib names, type names (after `:`) and keywords.
 pub fn completion(source: &str, pos: Position) -> Vec<Completion> {
+    completion_in(source, "", pos, &Library::default())
+}
+
+/// [`completion`] for document `uri`, also offering `lib`'s globals and members
+/// and (after `:`) the documented vector methods.
+pub fn completion_in(source: &str, uri: &str, pos: Position, lib: &Library) -> Vec<Completion> {
     let an = analyze(source);
     let offset = Analysis::offset_of(source, pos);
     let before = &source[..offset.min(source.len())];
@@ -430,10 +967,19 @@ pub fn completion(source: &str, pos: Position) -> Vec<Completion> {
                 );
             }
         }
+        for (_, sym) in lib.members(uri, recv) {
+            push(&mut out, &sym.name, CompletionKind::Function, Some(describe_short(sym)));
+        }
         let lib_prefix = format!("{}.", recv);
         for n in stdlib_names() {
             if let Some(member) = n.strip_prefix(&lib_prefix) {
                 push(&mut out, member, CompletionKind::Function, Some(n.clone()));
+            }
+        }
+        if lead.ends_with(':') {
+            for b in BUILTINS.iter().filter(|b| b.method) {
+                let m = b.name.rsplit('.').next().unwrap_or(b.name);
+                push(&mut out, m, CompletionKind::Function, Some(format!("vec:{}({}): {}", m, b.params, b.returns)));
             }
         }
         // a receiver typed with a table shape (directly or via an alias): its fields
@@ -478,6 +1024,14 @@ pub fn completion(source: &str, pos: Position) -> Vec<Completion> {
         }
         push(&mut out, &sym.name, kind, Some(describe_short(sym)));
     }
+    for (_, sym) in lib.globals(uri) {
+        let kind = match sym.kind {
+            SymbolKind::Function => CompletionKind::Function,
+            SymbolKind::TypeAlias => CompletionKind::Type,
+            _ => CompletionKind::Variable,
+        };
+        push(&mut out, &sym.name, kind, Some(describe_short(sym)));
+    }
     for n in stdlib_names() {
         if !n.contains('.') {
             let kind = if an.fields.contains_key(&n)
@@ -499,6 +1053,7 @@ pub fn completion(source: &str, pos: Position) -> Vec<Completion> {
 }
 
 fn describe_short(sym: &Symbol) -> String {
+    let sym = &annotated(sym);
     match sym.kind {
         SymbolKind::Function | SymbolKind::LocalFunction => {
             format!("function({})", sym.params.clone().unwrap_or_default())
@@ -617,6 +1172,17 @@ pub struct SignatureHelp {
 }
 
 pub fn signature_help(source: &str, pos: Position) -> Option<SignatureHelp> {
+    signature_help_in(source, "", pos, &Library::default())
+}
+
+/// [`signature_help`] for document `uri`, for callees defined in `lib` or
+/// documented natives too.
+pub fn signature_help_in(
+    source: &str,
+    uri: &str,
+    pos: Position,
+    lib: &Library,
+) -> Option<SignatureHelp> {
     let an = analyze(source);
     let offset = Analysis::offset_of(source, pos);
     // walk back over tokens to the unmatched `(`, counting commas at depth 0
@@ -655,12 +1221,11 @@ pub fn signature_help(source: &str, pos: Position) -> Option<SignatureHelp> {
         Token::Identifier(n) => n.clone(),
         _ => return None,
     };
-    let sym = an.symbol_at(callee.range.start).map(|i| &an.symbols[i]);
-    let sym = match sym {
-        Some(s) if s.params.is_some() => s,
-        _ => return None,
+    let params_text = match lookup(&an, open - 1, uri, lib)? {
+        Found::Local(sym) | Found::Lib(_, sym) => annotated(sym).params?,
+        Found::Builtin(b) => b.params.to_string(),
+        Found::Stdlib(_) => return None,
     };
-    let params_text = sym.params.clone().unwrap_or_default();
     let params: Vec<String> = split_params(&params_text);
     let is_method = open >= 2 && matches!(an.tokens[open - 2].token, Token::Colon);
     let shown: Vec<String> = if is_method && params.first().map(|p| p == "self").unwrap_or(false) {
@@ -823,9 +1388,10 @@ pub fn semantic_tokens(source: &str) -> Vec<(u32, u32, u32, u32)> {
 #[cfg(feature = "lsp-server")]
 mod server {
     use super::{
-        completion, definition, diagnostics_with, document_symbols, format_with, hover, references,
-        rename, semantic_tokens, signature_help, CompletionKind, Diagnostic, Position, Range,
-        Severity, SymbolKind, SEMANTIC_TOKEN_TYPES,
+        completion_in, definition_in, diagnostics_with, document_symbols, format_with, hover_in,
+        references, rename, semantic_tokens, signature_help_in, uri_to_path,
+        CompletionKind, Diagnostic, Library, Position, Range, Severity, SymbolKind,
+        SEMANTIC_TOKEN_TYPES,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -981,6 +1547,51 @@ mod server {
         })
     }
 
+    /// `.lua` / `.silt` source files.
+    fn is_script(path: &std::path::Path) -> bool {
+        matches!(path.extension().and_then(|e| e.to_str()), Some("lua" | "silt"))
+    }
+
+    /// Scripts under `dir`, recursively, skipping hidden and build directories; capped
+    /// so a library pointed at a huge tree (or `$HOME`) can't stall startup.
+    fn collect_scripts(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        const MAX_FILES: usize = 500;
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            if out.len() >= MAX_FILES {
+                return;
+            }
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if !name.starts_with('.') && name != "target" && name != "node_modules" {
+                    collect_scripts(&path, out);
+                }
+            } else if is_script(&path) {
+                out.push(path);
+            }
+        }
+    }
+
+    fn load_library_file(library: &mut Library, path: &std::path::Path) {
+        const MAX_BYTES: u64 = 1 << 20;
+        if std::fs::metadata(path).map(|m| m.len() > MAX_BYTES).unwrap_or(true) {
+            return;
+        }
+        if let Ok(text) = std::fs::read_to_string(path) {
+            library.add(&path.to_string_lossy(), &text);
+        }
+    }
+
+    /// Whether document `uri` belongs to the library: already loaded, or a script
+    /// inside a library directory (e.g. a newly created file).
+    fn in_library(library: &Library, dirs: &[String], uri: &str) -> bool {
+        let path = uri_to_path(uri);
+        library.contains(uri)
+            || (is_script(std::path::Path::new(&path)) && dirs.iter().any(|d| path.starts_with(d)))
+    }
+
     /// Run the stdio JSON-RPC language server until the client disconnects.
     /// All logging goes to stderr; stdout carries only framed JSON-RPC.
     pub fn run() {
@@ -996,6 +1607,11 @@ mod server {
         //     "declareInSnippet": { "emit": "(number) -> nil" } }
         // (name, type, also available inside snippet VMs)
         let mut declarations: Vec<(String, String, bool)> = Vec::new();
+        // Library files from `initializationOptions.library` (files or directories):
+        //   { "library": ["/path/to/project"] }
+        // Their globals and doc comments feed hover/completion/definition in every doc.
+        let mut library = Library::default();
+        let mut library_dirs: Vec<String> = Vec::new();
         let diagnose = |text: &str, declarations: &[(String, String, bool)]| {
             diagnostics_with(text, |compiler| {
                 for (name, ty, in_snippet) in declarations {
@@ -1026,6 +1642,23 @@ mod server {
                                 }
                             }
                         }
+                    }
+                    for entry in opts["library"].as_array().into_iter().flatten() {
+                        let Some(path) = entry.as_str().map(uri_to_path) else { continue };
+                        let p = std::path::Path::new(&path);
+                        if p.is_dir() {
+                            library_dirs.push(format!("{}/", path.trim_end_matches('/')));
+                            let mut files = vec![];
+                            collect_scripts(p, &mut files);
+                            for f in files {
+                                load_library_file(&mut library, &f);
+                            }
+                        } else {
+                            load_library_file(&mut library, p);
+                        }
+                    }
+                    if !library.is_empty() {
+                        eprintln!("silt lsp: loaded {} library file(s)", library.len());
                     }
                     let result = json!({
                         "capabilities": {
@@ -1058,6 +1691,9 @@ mod server {
                     if let (Some(uri), Some(text)) = (td["uri"].as_str(), td["text"].as_str()) {
                         let uri = uri.to_string();
                         let diags = diagnose(text, &declarations);
+                        if in_library(&library, &library_dirs, &uri) {
+                            library.add(&uri, text);
+                        }
                         docs.insert(uri.clone(), text.to_string());
                         publish(&mut writer, &uri, &diags);
                     }
@@ -1074,6 +1710,9 @@ mod server {
                         .and_then(|c| c["text"].as_str())
                     {
                         let diags = diagnose(text, &declarations);
+                        if in_library(&library, &library_dirs, &uri) {
+                            library.add(&uri, text);
+                        }
                         docs.insert(uri.clone(), text.to_string());
                         publish(&mut writer, &uri, &diags);
                     }
@@ -1084,6 +1723,11 @@ mod server {
                         .unwrap_or("")
                         .to_string();
                     docs.remove(&uri);
+                    if library.contains(&uri) {
+                        // unsaved edits are gone; the file on disk is the library again
+                        library.remove(&uri);
+                        load_library_file(&mut library, std::path::Path::new(&uri_to_path(&uri)));
+                    }
                     publish(&mut writer, &uri, &[]); // clear stale diagnostics
                 }
                 "textDocument/formatting" => {
@@ -1109,7 +1753,7 @@ mod server {
                     let (uri, pos) = doc_position(&msg);
                     let result = docs
                         .get(&uri)
-                        .and_then(|text| hover(text, pos))
+                        .and_then(|text| hover_in(text, &uri, pos, &library))
                         .map(|md| json!({ "contents": { "kind": "markdown", "value": md } }))
                         .unwrap_or(Value::Null);
                     send_response(&mut writer, id.unwrap_or(Value::Null), result);
@@ -1118,8 +1762,8 @@ mod server {
                     let (uri, pos) = doc_position(&msg);
                     let result = docs
                         .get(&uri)
-                        .and_then(|text| definition(text, pos))
-                        .map(|r| json!({ "uri": uri, "range": range_json(&r) }))
+                        .and_then(|text| definition_in(text, &uri, pos, &library))
+                        .map(|(uri, r)| json!({ "uri": uri, "range": range_json(&r) }))
                         .unwrap_or(Value::Null);
                     send_response(&mut writer, id.unwrap_or(Value::Null), result);
                 }
@@ -1177,7 +1821,7 @@ mod server {
                     let (uri, pos) = doc_position(&msg);
                     let items: Vec<Value> = docs
                         .get(&uri)
-                        .map(|text| completion(text, pos))
+                        .map(|text| completion_in(text, &uri, pos, &library))
                         .unwrap_or_default()
                         .iter()
                         .map(|c| {
@@ -1198,7 +1842,7 @@ mod server {
                     let (uri, pos) = doc_position(&msg);
                     let result = docs
                         .get(&uri)
-                        .and_then(|text| signature_help(text, pos))
+                        .and_then(|text| signature_help_in(text, &uri, pos, &library))
                         .map(|sh| {
                             json!({
                                 "signatures": [{

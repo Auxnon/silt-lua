@@ -91,9 +91,14 @@ vim.lsp.start({
   init_options = {
     declare = { instr = "(number, snippet(number, number) -> number) -> nil" },
     declareInSnippet = { emit = "(number) -> nil" },
+    -- files or directories whose globals every document can see: sibling scripts
+    -- and `---@meta` stubs (`---@param`/`---@return`/`---@type` fold into hovers)
+    library = { vim.fn.getcwd() },
   },
 })
 ```
+
+With `library`, hover, completion, signature help and go-to-definition reach definitions in those files (a document's own definitions win). Directories are scanned recursively for `.lua`/`.silt` (skipping hidden dirs, `target`, `node_modules`; at most 500 files), and open buffers update the library live. Built with `vector`, the `vec2/3/4` constructors and `:dot`/`:cross`/… methods are documented too.
 
 Diagnostics then appear automatically via `vim.diagnostic`; format the buffer with `vim.lsp.buf.format()`.
 
