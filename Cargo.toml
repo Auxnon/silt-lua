@@ -50,7 +50,7 @@ harness = false       # use Criterion's harness, not libtest
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["silt"  ]
+default = ["silt","typing"  ]
 silt = [
     "bang",
     "under-number",

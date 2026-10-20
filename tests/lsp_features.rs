@@ -398,7 +398,7 @@ function sum(...) end
         assert_eq!(decl(&lib, "pi").as_deref(), Some("number"));
         assert_eq!(
             decl(&lib, "busy").as_deref(),
-            Some("({number}, (number, string?) -> boolean, {breath: number?, hz: number}?, string | string) -> (number, string)")
+            Some(r#"({number}, (number, string?) -> boolean, {breath: number?, hz: number}?, "low" | "high") -> (number, string)"#)
         );
         assert_eq!(decl(&lib, "loose"), None);
         assert_eq!(decl(&lib, "sum").as_deref(), Some("(...number) -> any"));
@@ -451,6 +451,13 @@ function sum(...) end
         assert!(e.iter().any(|m| m.contains("'number' could not be converted into 'string'")), "{e:?}");
         let e = check(&lib, "local p: string = pi");
         assert!(!e.is_empty(), "{e:?}");
+
+        // lua_ls literal unions (`'low'|'high'`) are checked as singletons
+        let mut lib = stub_library();
+        lib.add("file:///proj/typed.lua", TYPED_STUB);
+        assert!(check(&lib, "busy({1}, function() return true end, nil, 'low')").is_empty(), "{:?}", check(&lib, "busy({1}, function() return true end, nil, 'low')"));
+        let e = check(&lib, "busy({1}, nil, nil, 'mid')");
+        assert!(e.iter().any(|m| m.contains("'\"mid\"' could not be converted")), "{e:?}");
     }
 }
 

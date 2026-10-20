@@ -664,6 +664,12 @@ fn silt_atom(t: &str) -> String {
     }
     match t {
         "integer" => "number".into(),
+        // `'a'` / `"a"`: a singleton string type
+        _ if t.len() >= 2
+            && (t.starts_with('\'') && t.ends_with('\'') || t.starts_with('"') && t.ends_with('"')) =>
+        {
+            format!("{:?}", &t[1..t.len() - 1])
+        }
         _ if t.starts_with('\'') || t.starts_with('"') => "string".into(),
         _ => t.to_string(),
     }
