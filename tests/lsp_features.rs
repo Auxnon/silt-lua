@@ -478,3 +478,18 @@ fn comments_are_tokens_on_their_own_lines() {
     let x = semantic_tokens(src).into_iter().find(|t| t.0 == 3 && t.1 == 6).unwrap();
     assert_eq!(legend[x.3 as usize], "variable");
 }
+
+#[cfg(feature = "typing")]
+#[test]
+fn typed_globals_are_checked_and_hovered() {
+    let src = "global speed: number = 0\nfunction go() speed = \"fast\" end\nlocal s: string = speed\n";
+    let d = diagnostics(src);
+    assert!(
+        d.iter().any(|e| e.message.contains("'string' could not be converted into 'number'")),
+        "{d:?}"
+    );
+    let ok = "global speed: number = 0\nspeed = speed + 1\nglobal a: number, b: string = 1, \"x\"\n";
+    assert!(diagnostics(ok).is_empty(), "{:?}", diagnostics(ok));
+    let h = hover(ok, pos(1, 1)).expect("hover on `speed`");
+    assert!(h.contains("number"), "{h}");
+}

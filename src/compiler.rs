@@ -440,6 +440,8 @@ pub struct Compiler {
     local_count: usize,
     /// This statement is a local declaration
     local_declare_mode: bool,
+    /// This statement is a `global` declaration (its names may take `: T` annotations)
+    global_declare_mode: bool,
     labels: HashMap<String, usize>,
     // location: (usize, usize),
     // previous: TokenTuple,
@@ -512,6 +514,7 @@ impl Compiler {
             local_offset: vec![],
             local_count: 1,
             local_declare_mode: false,
+            global_declare_mode: false,
             labels: HashMap::new(),
             pending_gotos: vec![],
             loops: vec![],
@@ -1731,6 +1734,7 @@ fn declaration_keyword<'a, 'c: 'a>(
                 // this.eat(it);
                 typing(this, mc, f, it, None)?;
             } else {
+                this.global_declare_mode = !local;
                 let ident = this.identifer_constant(f, ident.to_string());
                 typing(
                     this,
@@ -1739,6 +1743,7 @@ fn declaration_keyword<'a, 'c: 'a>(
                     it,
                     Some((ident, (location.line, location.col))),
                 )?;
+                this.global_declare_mode = false;
                 // typing(this, f, it, Some((ident, (location.line,location.col))))?;
             }
         }
@@ -3414,6 +3419,19 @@ fn parse_type_annotation(
     this.parse_type(it)
 }
 
+/// Record a declaration's `: T` annotation: on the newest local, or for a
+/// `global` declaration in the script's global types.
+#[cfg(feature = "typing")]
+fn annotate(this: &mut Compiler, name: String, ty: crate::types::Type) {
+    if this.local_declare_mode {
+        if let Some(local) = this.locals.last_mut() {
+            local.ty = ty;
+        }
+    } else {
+        this.tc.script_globals.insert(name, ty);
+    }
+}
+
 /// Map a compound-assignment token to the binary opcode it applies.
 /// `x += e` desugars to `x = x <op> e`.
 #[cfg(feature = "compound-assignment")]
@@ -3519,6 +3537,8 @@ fn named_variable<'c>(
         }
     }
 
+    #[cfg(feature = "typing")]
+    let name = if let Token::Identifier(ident) = &t { ident.clone() } else { String::new() };
     let ops = if let Token::Identifier(ident) = t {
         // devout!("assigning to identifier: {}", ident);
         if this.local_declare_mode {
@@ -3533,11 +3553,11 @@ fn named_variable<'c>(
     // Typed local declaration `local x: T = …` — intercept the annotation before
     // the colon reaches the method-call path. Compile-time only.
     #[cfg(feature = "typing")]
-    if this.local_declare_mode && matches!(this.peek(it)?, Token::Colon) {
+    if (this.local_declare_mode || this.global_declare_mode)
+        && matches!(this.peek(it)?, Token::Colon)
+    {
         let ty = parse_type_annotation(this, it)?;
-        if let Some(local) = this.locals.last_mut() {
-            local.ty = ty;
-        }
+        annotate(this, name, ty);
     }
 
     // println!("and then it's {} {}", ops.0, this.can_multivar_set);
@@ -3557,7 +3577,10 @@ fn named_variable<'c>(
                 let t = this.pop(it);
                 this.current_location = t.1;
 
-                let ops = if let Token::Identifier(ident) = t.0? {
+                let t = t.0?;
+                #[cfg(feature = "typing")]
+                let name = if let Token::Identifier(ident) = &t { ident.clone() } else { String::new() };
+                let ops = if let Token::Identifier(ident) = t {
                     if this.local_declare_mode {
                         add_local(this, ident.clone())?;
                         // this.eat(it);
@@ -3568,11 +3591,11 @@ fn named_variable<'c>(
                 };
                 // typed multi-var: `local a: T, b: U = …`
                 #[cfg(feature = "typing")]
-                if this.local_declare_mode && matches!(this.peek(it)?, Token::Colon) {
+                if (this.local_declare_mode || this.global_declare_mode)
+                    && matches!(this.peek(it)?, Token::Colon)
+                {
                     let ty = parse_type_annotation(this, it)?;
-                    if let Some(local) = this.locals.last_mut() {
-                        local.ty = ty;
-                    }
+                    annotate(this, name, ty);
                 }
                 this.var_stack.push(if !this.local_declare_mode {
                     Some(ops)
@@ -3640,6 +3663,7 @@ fn named_variable<'c>(
             let declaring = this.local_declare_mode;
             // TODO is this the best fix for local passing?
             this.local_declare_mode=false;
+            this.global_declare_mode = false;
                 this.eat(it);
                 let assign_need = this.var_stack.len() as isize;
                 this.expected_multi = assign_need as u8;

@@ -63,6 +63,8 @@ pub(crate) struct TypeCheck {
     /// Named function signatures (pre-scanned `function f(...)` /
     /// `local function f(...)` plus those seen in the main pass).
     pub fn_sigs: HashMap<String, FnSig>,
+    /// `global x: T` annotations in the script being compiled.
+    pub script_globals: HashMap<String, Type>,
     /// Static types of the temporaries currently above the locals.
     pub stack: Vec<Type>,
     /// Parallel to `stack`: where each value's expression starts in the source, so
@@ -319,6 +321,9 @@ impl Compiler {
     }
 
     fn global_ty(&self, name: &str) -> Type {
+        if let Some(t) = self.tc.script_globals.get(name) {
+            return t.clone();
+        }
         if let Some(t) = self.tc.declared.globals.get(name) {
             return t.clone();
         }
@@ -395,7 +400,14 @@ impl Compiler {
                 let v = self.tpop();
                 if let Some(name) = Self::const_name(f, *constant) {
                     self.note_global(&name);
-                    if let (Some(sig), Type::Function(Some(vs))) = (self.tc.fn_sigs.get(&name), &v)
+                    if let Some(declared) = self.tc.script_globals.get(&name) {
+                        let target = self.resolve_ty(declared);
+                        if !target.is_unknown() && !self.fits(&target, &v) {
+                            let msg = self.conversion_error(&target, &v);
+                            self.type_error(msg, loc);
+                        }
+                    } else if let (Some(sig), Type::Function(Some(vs))) =
+                        (self.tc.fn_sigs.get(&name), &v)
                     {
                         let target = Type::Function(Some(Box::new(sig.clone())));
                         let value = Type::Function(Some(vs.clone()));
