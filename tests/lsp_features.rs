@@ -453,3 +453,28 @@ function sum(...) end
         assert!(!e.is_empty(), "{e:?}");
     }
 }
+
+#[test]
+fn comments_are_tokens_on_their_own_lines() {
+    let src = "-- first — note\n--\n-- third\nlocal x = 1 -- trailing\n--[[ a\nblock ]] local y = 2\n";
+    let legend = silt_lua::lsp::SEMANTIC_TOKEN_TYPES;
+    let comments: Vec<(u32, u32, u32)> = semantic_tokens(src)
+        .into_iter()
+        .filter(|t| legend[t.3 as usize] == "comment")
+        .map(|t| (t.0, t.1, t.2))
+        .collect();
+    assert_eq!(
+        comments,
+        vec![
+            (0, 0, 15), // whole line, length in characters (the em dash is 3 bytes)
+            (1, 0, 2),
+            (2, 0, 8),
+            (3, 12, 11),
+            (4, 0, 6), // a block comment: one token per line it covers
+            (5, 0, 8),
+        ]
+    );
+    // the code after each comment is still on its own line
+    let x = semantic_tokens(src).into_iter().find(|t| t.0 == 3 && t.1 == 6).unwrap();
+    assert_eq!(legend[x.3 as usize], "variable");
+}

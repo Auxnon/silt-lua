@@ -1458,6 +1458,7 @@ pub const SEMANTIC_TOKEN_TYPES: &[&str] = &[
 /// source order. Encode to the LSP delta format in the transport.
 pub fn semantic_tokens(source: &str) -> Vec<(u32, u32, u32, u32)> {
     let an = analyze(source);
+    let lines: Vec<&str> = source.split('\n').collect();
     let idx = |name: &str| {
         SEMANTIC_TOKEN_TYPES
             .iter()
@@ -1542,13 +1543,20 @@ pub fn semantic_tokens(source: &str) -> Vec<(u32, u32, u32, u32)> {
             _ => None,
         };
         if let Some(k) = kind {
-            if t.range.start.line == t.range.end.line {
-                out.push((
-                    t.range.start.line,
-                    t.range.start.character,
-                    t.len as u32,
-                    idx(k),
-                ));
+            // lengths in characters, like positions (a byte length overshoots non-ASCII
+            // text); a multi-line token (block comment, long string) becomes one entry
+            // per line, since an LSP semantic token can't span lines
+            let (start, end) = (t.range.start, t.range.end);
+            for line in start.line..=end.line {
+                let from = if line == start.line { start.character } else { 0 };
+                let to = if line == end.line {
+                    end.character
+                } else {
+                    lines.get(line as usize).map_or(0, |l| l.trim_end_matches('\r').chars().count() as u32)
+                };
+                if to > from {
+                    out.push((line, from, to - from, idx(k)));
+                }
             }
         }
     }
