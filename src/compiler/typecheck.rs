@@ -63,8 +63,22 @@ pub(crate) struct TypeCheck {
     /// Named function signatures (pre-scanned `function f(...)` /
     /// `local function f(...)` plus those seen in the main pass).
     pub fn_sigs: HashMap<String, FnSig>,
+    /// `global x: T` annotations in the script being compiled.
+    pub script_globals: HashMap<String, Type>,
     /// Static types of the temporaries currently above the locals.
     pub stack: Vec<Type>,
+    /// Parallel to `stack`: where each value's expression starts in the source, so
+    /// a type error can underline the whole offending expression.
+    pub starts: Vec<TokenCell>,
+    /// Location of the op `tc_effect` is applying.
+    pub op_loc: TokenCell,
+    /// Earliest start among the values the current op has popped.
+    pub popped_start: Option<TokenCell>,
+    /// Start of the value a check outside `tc_effect` is about (`tc_declare_locals`).
+    pub error_start: Option<TokenCell>,
+    /// Locals refined by an enclosing `if`, with their unrefined types (outermost
+    /// first): an assignment is checked against the unrefined type.
+    pub narrowed: Vec<(usize, Type)>,
     /// `--!strict`: infer unannotated locals from their initializers.
     pub strict: bool,
     /// Signature of the function body just compiled, consumed by its CLOSURE.
@@ -108,10 +122,15 @@ fn arith_name(op: &OpCode) -> &'static str {
 
 /// A type that can never be a number, even through coercion or a metamethod.
 fn never_number(t: &Type) -> bool {
-    matches!(
-        t,
-        Type::String | Type::Boolean | Type::Nil | Type::Function(_) | Type::Snippet(_)
-    )
+    match t {
+        // a union (or `T?`, which may be nil) fails if any member can't be a number
+        Type::Union(parts) => parts.iter().any(never_number),
+        Type::Optional(_) => true,
+        t => matches!(
+            t.widen(),
+            Type::String | Type::Boolean | Type::Nil | Type::Function(_) | Type::Snippet(_)
+        ),
+    }
 }
 
 /// A type whose every value is a reference (a function, or a table known to
@@ -132,24 +151,39 @@ fn is_reference(t: &Type) -> bool {
 impl Compiler {
     // ------------------------------------------------------------------ stack
 
+    /// Push a value's type; it starts at the earliest of the operands it consumed and
+    /// the op itself (a call at its callee, `a + b` at `a`, `#s` at the `#`).
     fn tpush(&mut self, t: Type) {
         self.tc.stack.push(t);
+        let start = self.tc.popped_start.map_or(self.tc.op_loc, |p| p.min(self.tc.op_loc));
+        self.tc.starts.push(start);
+    }
+
+    fn note_popped(&mut self, start: Option<TokenCell>) {
+        if let Some(s) = start {
+            self.tc.popped_start = Some(self.tc.popped_start.map_or(s, |p| p.min(s)));
+        }
     }
 
     /// Pop a type; an empty stack (bookkeeping drift) reads as `any`.
     fn tpop(&mut self) -> Type {
+        let start = self.tc.starts.pop();
+        self.note_popped(start);
         self.tc.stack.pop().unwrap_or(Type::Any)
     }
 
     /// Pop and resolve aliases.
+    /// Pop with aliases resolved and singletons widened (operand checks).
     fn tpop_resolved(&mut self) -> Type {
         let t = self.tpop();
-        self.resolve_ty(&t)
+        self.resolve_ty(&t).widen()
     }
 
     /// Pop `n` types, returned bottom-to-top.
     fn tpopn(&mut self, n: usize) -> Vec<Type> {
         let len = self.tc.stack.len();
+        let starts = self.tc.starts.split_off(self.tc.starts.len().saturating_sub(n));
+        self.note_popped(starts.iter().min().copied());
         if n >= len {
             let mut v = vec![Type::Any; n - len];
             v.extend(self.tc.stack.drain(..));
@@ -162,11 +196,23 @@ impl Compiler {
     /// Statement boundary: the operand stack holds only locals here.
     pub(crate) fn tc_reset_statement(&mut self) {
         self.tc.stack.clear();
+        self.tc.starts.clear();
         self.tc.last_const_str = None;
     }
 
+    /// A type error spanning the offending expression: from the start of the value(s)
+    /// involved (or `loc`, whichever is earlier) to the end of the last token consumed.
     fn type_error(&mut self, msg: String, loc: TokenCell) {
-        let e = self.error_syntax(SiltError::TypeError(msg), loc);
+        let start = self
+            .tc
+            .error_start
+            .take()
+            .or(self.tc.popped_start)
+            .map_or(loc, |s| s.min(loc));
+        let mut e = self.error_syntax(SiltError::TypeError(msg), start);
+        if self.last_end >= start {
+            e.end = Some(self.last_end);
+        }
         self.push_error(e);
     }
 
@@ -237,7 +283,11 @@ impl Compiler {
     /// "Type 'v' could not be converted into 't'", plus the reason when a
     /// function literal was rejected as a snippet.
     fn conversion_error(&self, target: &Type, value: &Type) -> String {
-        let (target, value) = (self.resolve_ty(target), self.resolve_ty(value));
+        let (target, mut value) = (self.resolve_ty(target), self.resolve_ty(value));
+        // name the literal only when the slot itself wants particular literals
+        if !target.has_literal() {
+            value = value.widen();
+        }
         let mut msg = format!("Type '{}' could not be converted into '{}'", value, target);
         if let (Type::Snippet(_), Type::Function(Some(sig))) = (&target, &value) {
             if let Snippetness::No(why) = &sig.snippet {
@@ -284,6 +334,9 @@ impl Compiler {
     }
 
     fn global_ty(&self, name: &str) -> Type {
+        if let Some(t) = self.tc.script_globals.get(name) {
+            return t.clone();
+        }
         if let Some(t) = self.tc.declared.globals.get(name) {
             return t.clone();
         }
@@ -308,9 +361,9 @@ impl Compiler {
             Value::Integer(_) | Value::Number(_) | Value::Infinity(_) => Type::Number,
             Value::String(s) => {
                 self.tc.last_const_str = Some(s.clone());
-                Type::String
+                Type::StringLit(s.to_string())
             }
-            Value::Bool(_) => Type::Boolean,
+            Value::Bool(b) => Type::BoolLit(*b),
             Value::Nil => Type::Nil,
             Value::Function(_) | Value::Closure(_) | Value::NativeFunction(_) => {
                 Type::Function(None)
@@ -335,6 +388,8 @@ impl Compiler {
         use OpCode::*;
         // Only a string CONSTANT leaves its value for the *next* instruction.
         let prev_const = self.tc.last_const_str.take();
+        self.tc.op_loc = loc;
+        self.tc.popped_start = None;
         match op {
             CONSTANT { constant } => {
                 let t = self.const_ty(f, *constant);
@@ -358,7 +413,14 @@ impl Compiler {
                 let v = self.tpop();
                 if let Some(name) = Self::const_name(f, *constant) {
                     self.note_global(&name);
-                    if let (Some(sig), Type::Function(Some(vs))) = (self.tc.fn_sigs.get(&name), &v)
+                    if let Some(declared) = self.tc.script_globals.get(&name) {
+                        let target = self.resolve_ty(declared);
+                        if !target.is_unknown() && !self.fits(&target, &v) {
+                            let msg = self.conversion_error(&target, &v);
+                            self.type_error(msg, loc);
+                        }
+                    } else if let (Some(sig), Type::Function(Some(vs))) =
+                        (self.tc.fn_sigs.get(&name), &v)
                     {
                         let target = Type::Function(Some(Box::new(sig.clone())));
                         let value = Type::Function(Some(vs.clone()));
@@ -375,8 +437,21 @@ impl Compiler {
             }
             SET_LOCAL { index } => {
                 let v = self.tpop();
-                let target = self.local_ty(*index);
-                self.check_assign(&target, &v, loc);
+                let idx = self.local_index(*index);
+                match self.tc.narrowed.iter().find(|(i, _)| *i == idx).map(|(_, t)| t.clone()) {
+                    // `if x == nil then x = "" end`: check against what `x` was
+                    // declared as, and drop the refinement the assignment voids
+                    Some(declared) => {
+                        self.check_assign(&declared, &v, loc);
+                        if let Some(l) = self.locals.get_mut(idx) {
+                            l.ty = declared;
+                        }
+                    }
+                    None => {
+                        let target = self.local_ty(*index);
+                        self.check_assign(&target, &v, loc);
+                    }
+                }
             }
             GET_UPVALUE { index } => {
                 let t = self.upvalue_ty(*index);
@@ -542,7 +617,8 @@ impl Compiler {
                     self.tpush(Type::Nil);
                 }
             }
-            TRUE | FALSE => self.tpush(Type::Boolean),
+            TRUE => self.tpush(Type::BoolLit(true)),
+            FALSE => self.tpush(Type::BoolLit(false)),
             NEW_TABLE => self.tpush(Type::Table(None)),
             TABLE_INSERT { .. } => {
                 self.tpop();
@@ -630,6 +706,9 @@ impl Compiler {
                 let from = len.saturating_sub(*n as usize);
                 let copies: Vec<Type> = self.tc.stack[from..].to_vec();
                 self.tc.stack.extend(copies);
+                let sfrom = self.tc.starts.len().saturating_sub(*n as usize);
+                let scopies: Vec<TokenCell> = self.tc.starts[sfrom..].to_vec();
+                self.tc.starts.extend(scopies);
             }
             CALL(arity, multi, variadic) => {
                 let want = if *multi == MULTIRET {
@@ -808,10 +887,13 @@ impl Compiler {
             let declared = self.resolve_ty(&self.locals[first_local + i].ty);
             if declared.is_unknown() {
                 if self.tc.strict && !vty.is_unknown() && !vty.is_nil() {
-                    self.locals[first_local + i].ty = vty;
+                    self.locals[first_local + i].ty = vty.widen();
                 }
             } else {
+                let len = self.tc.starts.len();
+                self.tc.error_start = (len >= n).then(|| self.tc.starts[len - n + i]);
                 self.check_assign(&declared, &vty, loc);
+                self.tc.error_start = None;
             }
         }
     }
@@ -849,6 +931,11 @@ impl Compiler {
             if Self::const_name(f, *g).as_deref() == Some("type") {
                 if let Some(name) = Self::const_name(f, *constant) {
                     if let Some(then_ty) = Type::from_type_name(&name) {
+                        // on a union, each branch keeps the members that can reach it
+                        let cur = self.resolve_ty(&self.local_ty(slot));
+                        if let Some((yes, no)) = cur.split_type_name(&name) {
+                            return self.make_narrow(slot, Some(yes), Some(no));
+                        }
                         return self.make_narrow(slot, Some(then_ty), None);
                     }
                 }
@@ -893,6 +980,7 @@ impl Compiler {
     }
 
     pub(crate) fn tc_narrow_then(&mut self, n: &Narrow) {
+        self.tc.narrowed.push((n.local, n.saved.clone()));
         if let (Some(t), Some(l)) = (&n.then_ty, self.locals.get_mut(n.local)) {
             l.ty = t.clone();
         }
@@ -905,6 +993,9 @@ impl Compiler {
     }
 
     pub(crate) fn tc_narrow_end(&mut self, n: &Narrow) {
+        if let Some(i) = self.tc.narrowed.iter().rposition(|(i, _)| *i == n.local) {
+            self.tc.narrowed.remove(i);
+        }
         if let Some(l) = self.locals.get_mut(n.local) {
             l.ty = n.saved.clone();
         }
@@ -1105,11 +1196,15 @@ impl Compiler {
 
     // -------------------------------------------------------- type parser
 
-    /// `type := postfix ('|' postfix)*`
+    /// `type := '|'? postfix ('|' postfix)*`
     pub(crate) fn parse_type(
         &mut self,
         it: &mut Peekable<Lexer>,
     ) -> Result<Type, crate::error::ErrorTuple> {
+        // Luau allows a leading `|` (`type T = | A | B`, handy across lines)
+        if matches!(self.peek(it)?, Token::Op(Operator::BitOr)) {
+            self.eat(it);
+        }
         let first = self.parse_type_postfix(it)?;
         if !matches!(self.peek(it)?, Token::Op(Operator::BitOr)) {
             return Ok(first);
@@ -1158,6 +1253,9 @@ impl Compiler {
             }
             Token::Identifier(name) => Type::from_name(&name),
             Token::Nil => Type::Nil,
+            Token::StringLiteral(s) => Type::StringLit(s.to_string()),
+            Token::True => Type::BoolLit(true),
+            Token::False => Type::BoolLit(false),
             Token::Function => Type::Function(None),
             Token::OpenBrace => self.parse_table_type(it)?,
             Token::OpenParen => self.parse_paren_type(it)?,
@@ -1206,6 +1304,15 @@ impl Compiler {
                         while matches!(self.peek(it)?, Token::Question) {
                             self.eat(it);
                             t = Type::Optional(Box::new(t));
+                        }
+                        // `{A | B}`
+                        if matches!(self.peek(it)?, Token::Op(Operator::BitOr)) {
+                            let mut parts = vec![t];
+                            while matches!(self.peek(it)?, Token::Op(Operator::BitOr)) {
+                                self.eat(it);
+                                parts.push(self.parse_type_postfix(it)?);
+                            }
+                            t = Type::union(parts);
                         }
                         shape.array = Some(t);
                     }

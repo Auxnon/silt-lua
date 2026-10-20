@@ -20,6 +20,11 @@ pub enum Type {
     /// Lua unifies integer and float under one `number` type (as does `type()`).
     Number,
     String,
+    /// A singleton string type: `"up"` (Luau). String constants have this type,
+    /// so `"up" | "down"` rejects `"left"`; it fits any `string` slot.
+    StringLit(String),
+    /// A singleton boolean type: `true` / `false`.
+    BoolLit(bool),
     /// A table; `Some(shape)` when its fields are known (`{x: number}`, `{T}`).
     Table(Option<Box<TableShape>>),
     /// A callable; `Some(sig)` when its parameters/returns are known.
@@ -126,6 +131,57 @@ impl Type {
         matches!(self, Type::Nil)
     }
 
+    /// Singleton types widened to their base type (`"up"` → `string`), for
+    /// operator checks and for inferring a variable's type from its initializer.
+    pub fn widen(&self) -> Type {
+        match self {
+            Type::StringLit(_) => Type::String,
+            Type::BoolLit(_) => Type::Boolean,
+            Type::Optional(t) => Type::Optional(Box::new(t.widen())),
+            Type::Union(parts) => Type::union(parts.iter().map(|t| t.widen()).collect()),
+            t => t.clone(),
+        }
+    }
+
+    /// Does this type name a singleton (`"up"`, `true`) at its top level?
+    pub fn has_literal(&self) -> bool {
+        match self {
+            Type::StringLit(_) | Type::BoolLit(_) => true,
+            Type::Optional(t) => t.has_literal(),
+            Type::Union(parts) => parts.iter().any(|t| t.has_literal()),
+            _ => false,
+        }
+    }
+
+    /// The name `type(v)` reports for every value of this type, if fixed.
+    pub fn type_name(&self) -> Option<&'static str> {
+        Some(match self {
+            Type::Nil => "nil",
+            Type::Boolean | Type::BoolLit(_) => "boolean",
+            Type::Number => "number",
+            Type::String | Type::StringLit(_) => "string",
+            Type::Table(_) => "table",
+            Type::Function(_) | Type::Snippet(_) => "function",
+            _ => return None,
+        })
+    }
+
+    /// Split a union for a `type(v) == name` test into the members that pass and
+    /// those that don't; `None` unless both sides are non-empty.
+    pub fn split_type_name(&self, name: &str) -> Option<(Type, Type)> {
+        let parts: Vec<Type> = match self {
+            Type::Union(p) => p.clone(),
+            Type::Optional(t) => vec![(**t).clone(), Type::Nil],
+            _ => return None,
+        };
+        let (yes, no): (Vec<Type>, Vec<Type>) =
+            parts.into_iter().partition(|p| p.type_name() == Some(name));
+        if yes.is_empty() || no.is_empty() {
+            return None;
+        }
+        Some((Type::union(yes), Type::union(no)))
+    }
+
     /// `A | B` with duplicates and nested unions folded; `T | nil` becomes `T?`.
     pub fn union(parts: Vec<Type>) -> Type {
         let mut flat: Vec<Type> = Vec::new();
@@ -224,6 +280,8 @@ pub fn assignable(target: &Type, value: &Type) -> bool {
             true
         }
         (Snippet(Some(a)), Function(Some(b)) | Snippet(Some(b))) => sig_assignable(a, b),
+        // a singleton fits its base type (not the reverse)
+        (String, StringLit(_)) | (Boolean, BoolLit(_)) => true,
         (a, b) => a == b,
     }
 }
@@ -282,6 +340,8 @@ impl fmt::Display for Type {
             Type::Boolean => write!(f, "boolean"),
             Type::Number => write!(f, "number"),
             Type::String => write!(f, "string"),
+            Type::StringLit(s) => write!(f, "{:?}", s),
+            Type::BoolLit(b) => write!(f, "{}", b),
             Type::Table(None) => write!(f, "table"),
             Type::Table(Some(s)) => write!(f, "{}", s),
             Type::Function(None) => write!(f, "function"),

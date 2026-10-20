@@ -25,6 +25,8 @@ pub struct Lexer<'c> {
     pub column: usize,
     /// tracks start character column position of a token, for error pos
     pub column_start: usize,
+    /// line the current token starts on (a multi-line token ends on `line_number`)
+    pub line_start: usize,
     mode: Mode,
     // ahead_buffer: Vec<TokenOption>,
 }
@@ -76,6 +78,7 @@ impl<'c> Lexer<'c> {
             start_token: 0,
             column: 0,
             column_start: 0,
+            line_start: 1,
             current: 0,
             end: len,
             line_number: 1,
@@ -88,6 +91,7 @@ impl<'c> Lexer<'c> {
     fn set_start(&mut self) {
         self.start_token = self.current;
         self.column_start = self.column;
+        self.line_start = self.line_number;
     }
 
     fn eat(&mut self) {
@@ -122,8 +126,8 @@ impl<'c> Lexer<'c> {
             code,
             // Report the per-line column (matching `_send`), not `start_token`
             // (an absolute byte offset — which read like "everything on one line").
-            location: (self.line_number, self.column_start + 1),
-            end: Some((self.line_number, self.column.max(self.column_start + 1))),
+            location: (self.line_start, self.column_start + 1),
+            end: Some(self.token_end()),
         })
     }
 
@@ -139,15 +143,24 @@ impl<'c> Lexer<'c> {
         Ok((
             token,
             TokenTriple::new(
-                self.line_number,
+                self.line_start,
                 self.column_start + 1,
                 self.start_token,
                 self.current - self.start_token,
-                // `column` sits just past the token's last character (0-indexed),
-                // which is that character's 1-indexed column.
-                (self.line_number, self.column.max(self.column_start + 1)),
+                self.token_end(),
             ),
         ))
+    }
+
+    /// Inclusive 1-indexed end of the token just lexed: `column` sits just past its
+    /// last character (0-indexed), which is that character's 1-indexed column. A
+    /// one-line token ends no earlier than it starts.
+    fn token_end(&self) -> TokenCell {
+        if self.line_number == self.line_start {
+            (self.line_number, self.column.max(self.column_start + 1))
+        } else {
+            (self.line_number, self.column.max(1))
+        }
     }
 
     fn send(&mut self, token: Token) -> TokenOption {
@@ -171,6 +184,17 @@ impl<'c> Lexer<'c> {
     /// Call after consuming the `\n`: columns on the new line count from 0, so
     /// the first character is column 1. (Resetting before eating the `\n` made
     /// it count as column 1, shifting every column after line 1 right by one.)
+    /// Consume to the end of the line, leaving the `\n` for the main loop so a line
+    /// comment's token stays on its own line.
+    fn eat_to_line_end(&mut self) {
+        while let Some(c) = self.peek() {
+            if *c == '\n' {
+                break;
+            }
+            self.eat();
+        }
+    }
+
     fn new_line(&mut self) {
         self.line_number += 1;
         self.column = 0;
@@ -184,6 +208,7 @@ impl<'c> Lexer<'c> {
         if prefix_dot {
             self.start_token = self.current - 1;
             self.column_start = self.column - 1;
+            self.line_start = self.line_number;
         } else {
             self.set_start();
         }
@@ -245,8 +270,9 @@ impl<'c> Lexer<'c> {
     }
 
     fn string(&mut self, apos: bool) -> TokenOption {
-        // start column at '"' not within string starter
-        self.column_start = self.column - 1;
+        // start column at the opening quote (not yet eaten: `column` is its index)
+        self.column_start = self.column;
+        self.line_start = self.line_number;
         self.eat();
         self.start_token = self.current;
         // Quoted strings decode escape sequences (long-bracket strings do not).
@@ -308,6 +334,7 @@ impl<'c> Lexer<'c> {
 
     fn multi_line_string(&mut self) -> TokenOption {
         self.column_start = self.column;
+        self.line_start = self.line_number;
         self.eat();
         self.start_token = self.current;
         while self.current < self.end {
@@ -574,21 +601,11 @@ impl<'c> Lexer<'c> {
                                     self.send(Token::Comment)
                                 } else {
                                     // `--[` not a block opener: an ordinary line comment.
-                                    while self.current < self.end {
-                                        if let Some('\n') = self.eat_out() {
-                                            self.new_line();
-                                            break;
-                                        }
-                                    }
+                                    self.eat_to_line_end();
                                     self.send(Token::Comment)
                                 }
                             } else {
-                                while self.current < self.end {
-                                    if let Some('\n') = self.eat_out() {
-                                        self.new_line();
-                                        break;
-                                    }
-                                }
+                                self.eat_to_line_end();
                                 self.send(Token::Comment)
                             }
                         }

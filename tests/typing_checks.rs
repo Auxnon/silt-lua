@@ -342,3 +342,69 @@ fn typed_code_runs_with_identical_semantics() {
         ExVal::Integer(46),
     );
 }
+
+// ------------------------------------------------------- unions & singletons
+
+#[test]
+fn union_annotations() {
+    ok("local x: number | string = 'a' x = 1 return x", ExVal::Integer(1));
+    type_error("local x: number | string = true", "Type 'boolean' could not be converted into 'number | string'");
+    ok("local t: {number | string} = {1, 'a'} return #t", ExVal::Integer(2));
+    ok("type T = | number | string\nlocal a: T = 1 return a", ExVal::Integer(1));
+    type_error(
+        "global g: number | boolean = true\ng = 's'",
+        "Type 'string' could not be converted into 'number | boolean'",
+    );
+}
+
+#[test]
+fn singleton_types() {
+    let dir = "type Dir = 'up' | 'down'\n";
+    ok(&format!("{dir}local d: Dir = 'up' return d"), ExVal::String("up".into()));
+    type_error(&format!("{dir}local d: Dir = 'left'"), "Type '\"left\"' could not be converted into '\"up\" | \"down\"'");
+    type_error(
+        &format!("{dir}local function go(d: Dir) end\ngo('sideways')"),
+        "(argument 1)",
+    );
+    // a general string may be any value, so it doesn't fit a set of literals
+    type_error(&format!("{dir}local s: string = 'x'\nlocal d: Dir = s"), "Type 'string'");
+    // but a literal always fits its base type
+    ok(&format!("{dir}local d: Dir = 'down'\nlocal s: string = d return s"), ExVal::String("down".into()));
+    type_error("local f: true = false", "Type 'false' could not be converted into 'true'");
+    ok("local b: boolean = true return b", ExVal::Bool(true));
+    // strict inference widens: `a` is a string, not the literal "hi"
+    ok("--!strict\nlocal a = 'hi'\na = 'there' return a", ExVal::String("there".into()));
+}
+
+#[test]
+fn union_narrowing_and_strict_operators() {
+    ok(
+        "local x: number | string = 1\nif type(x) == 'number' then local n: number = x else local s: string = x end return 1",
+        ExVal::Integer(1),
+    );
+    type_error(
+        "local x: number | string = 1\nif type(x) == 'number' then local s: string = x end",
+        "Type 'number' could not be converted into 'string'",
+    );
+    type_error(
+        "--!strict\nlocal x: number | string = 1\nlocal y = x + 1",
+        "(operator +)",
+    );
+}
+
+#[test]
+fn assignment_in_a_narrowed_branch_checks_the_declared_type() {
+    // `indent` is narrowed to nil in the branch, but it may still be assigned a string
+    ok(
+        "local indent = ('  x'):match('^ *')\nif indent == nil then indent = '' end return indent",
+        ExVal::String("  ".into()),
+    );
+    ok(
+        "local s: string? = nil\nif s == nil then s = 'x' end return s",
+        ExVal::String("x".into()),
+    );
+    type_error(
+        "local s: string? = nil\nif s == nil then s = 5 end",
+        "Type 'number' could not be converted into 'string?'",
+    );
+}
