@@ -360,3 +360,73 @@ fn hover_infers_vector_types_through_methods() {
     assert!(h(2).contains("local d: number"), "{}", h(2));
     assert!(h(3).contains("local c: vec3"), "{}", h(3));
 }
+
+#[cfg(feature = "typing")]
+mod library_type_checks {
+    use super::*;
+    use silt_lua::lsp::diagnostics_with;
+
+    const TYPED_STUB: &str = "\
+---@param xs integer[]
+---@param cb fun(x: number, y?: string): boolean
+---@param cfg { breath?: number, hz: number }?
+---@param kind 'low'|'high'
+---@return number
+---@return string
+function busy(xs, cb, cfg, kind) end
+
+-- no annotations: not declared, stays dynamic
+function loose(a) end
+
+---@param ... number
+function sum(...) end
+";
+
+    fn decl(lib: &Library, name: &str) -> Option<String> {
+        lib.declarations("file:///proj/main.lua")
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| t)
+    }
+
+    #[test]
+    fn lua_ls_annotations_translate_to_declarations() {
+        let mut lib = stub_library();
+        lib.add("file:///proj/typed.lua", TYPED_STUB);
+        assert_eq!(decl(&lib, "sin").as_deref(), Some("(number) -> number"));
+        assert_eq!(decl(&lib, "make").as_deref(), Some("(string, number) -> any"));
+        assert_eq!(decl(&lib, "pi").as_deref(), Some("number"));
+        assert_eq!(
+            decl(&lib, "busy").as_deref(),
+            Some("({number}, (number, string?) -> boolean, {breath: number?, hz: number}?, string | string) -> (number, string)")
+        );
+        assert_eq!(decl(&lib, "loose"), None);
+        assert_eq!(decl(&lib, "sum").as_deref(), Some("(...number) -> any"));
+        // a file's own globals aren't declared to it
+        assert!(lib.declarations("file:///proj/typed.lua").iter().all(|(n, _)| n != "busy"));
+    }
+
+    fn check(lib: &Library, src: &str) -> Vec<String> {
+        let decls = lib.declarations("file:///proj/main.lua");
+        diagnostics_with(src, |c| {
+            for (n, t) in &decls {
+                c.declare(n, t).unwrap();
+            }
+        })
+        .into_iter()
+        .map(|d| d.message)
+        .collect()
+    }
+
+    #[test]
+    fn library_declarations_flag_type_conflicts() {
+        let lib = stub_library();
+        assert!(check(&lib, "local y = sin(1)\nmake(\"a\", 2)").is_empty());
+        let e = check(&lib, "sin(\"x\")");
+        assert!(e.iter().any(|m| m.contains("'string' could not be converted into 'number'")), "{e:?}");
+        let e = check(&lib, "local s: string = sin(1)");
+        assert!(e.iter().any(|m| m.contains("'number' could not be converted into 'string'")), "{e:?}");
+        let e = check(&lib, "local p: string = pi");
+        assert!(!e.is_empty(), "{e:?}");
+    }
+}

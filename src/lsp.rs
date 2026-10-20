@@ -421,6 +421,8 @@ fn primary_type(
 #[derive(Debug, Default, Clone)]
 pub struct Library {
     files: BTreeMap<String, Vec<Symbol>>,
+    /// Per file: checker declarations from its annotated globals (see [`Library::declarations`]).
+    decls: BTreeMap<String, Vec<(String, String)>>,
 }
 
 impl Library {
@@ -437,12 +439,31 @@ impl Library {
                 SymbolKind::TypeAlias => s.scope == 0,
                 _ => false,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let decls = symbols.iter().filter_map(declaration_of).collect();
+        self.decls.insert(uri_to_path(uri), decls);
         self.files.insert(uri_to_path(uri), symbols);
     }
 
     pub fn remove(&mut self, uri: &str) {
         self.files.remove(&uri_to_path(uri));
+        self.decls.remove(&uri_to_path(uri));
+    }
+
+    /// Type declarations for the checker (`Compiler::declare`), from the annotated
+    /// globals of every file but `uri`: a function's `---@param`/`---@return` tags (or
+    /// silt annotations) as `(T, U) -> R`, a `---@type` global as its type. With these
+    /// a call like `sin("x")` or `local s: string = sin(1)` is a type error.
+    pub fn declarations(&self, uri: &str) -> Vec<(String, String)> {
+        let own = uri_to_path(uri);
+        let mut seen = std::collections::BTreeSet::new();
+        self.decls
+            .iter()
+            .filter(|(path, _)| **path != own)
+            .flat_map(|(_, d)| d.iter())
+            .filter(|(name, _)| seen.insert(name.clone()))
+            .cloned()
+            .collect()
     }
 
     pub fn contains(&self, uri: &str) -> bool {
@@ -495,6 +516,156 @@ impl Library {
                     && s.receiver.as_deref() == Some(recv)
             })
             .collect()
+    }
+}
+
+/// The checker declaration for a library global, if its annotations say anything: a
+/// function with at least one typed parameter or return, or a typed global. Pieces in
+/// lua-language-server spelling are translated; any the checker can't parse become `any`.
+fn declaration_of(sym: &Symbol) -> Option<(String, String)> {
+    let sym = annotated(sym);
+    match sym.kind {
+        SymbolKind::Function => {
+            let params = split_params(sym.params.as_deref().unwrap_or(""));
+            let returns = split_params(sym.returns.as_deref().unwrap_or(""));
+            let typed = params.iter().any(|p| p.contains(':')) || !returns.is_empty();
+            if !typed {
+                return None;
+            }
+            let params: Vec<String> = params
+                .iter()
+                .map(|p| {
+                    let ty = p.split_once(':').map(|(_, t)| checked_type(t));
+                    match (p.trim().starts_with("..."), ty) {
+                        (true, Some(t)) => format!("...{}", t),
+                        (true, None) => "...any".into(),
+                        (false, Some(t)) => t,
+                        (false, None) => "any".into(),
+                    }
+                })
+                .collect();
+            let returns: Vec<String> = returns.iter().map(|r| checked_type(r)).collect();
+            let ret = match returns.len() {
+                0 => "any".to_string(),
+                1 => returns[0].clone(),
+                _ => format!("({})", returns.join(", ")),
+            };
+            Some((sym.name.clone(), format!("({}) -> {}", params.join(", "), ret)))
+        }
+        SymbolKind::Global => sym.ty.as_deref().map(|t| (sym.name.clone(), checked_type(t))),
+        _ => None,
+    }
+}
+
+/// `ty` translated to silt annotation syntax, or `any` when the checker can't parse it.
+fn checked_type(ty: &str) -> String {
+    let t = silt_type(ty);
+    #[cfg(feature = "typing")]
+    {
+        let mut probe = Compiler::new_with_flags(true, true, false);
+        if probe.declare("probe", &t).is_err() {
+            return "any".into();
+        }
+    }
+    t
+}
+
+/// Split `text` on `sep` at bracket depth 0.
+fn split_top(text: &str, sep: char) -> Vec<&str> {
+    let mut out = vec![];
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        match c {
+            '{' | '(' | '[' => depth += 1,
+            '}' | ')' | ']' => depth -= 1,
+            c if c == sep && depth == 0 => {
+                out.push(&text[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&text[start..]);
+    out
+}
+
+/// A lua-language-server type in silt annotation syntax: `integer` → `number`,
+/// `T[]` → `{T}`, `fun(a: T): R` → `(T) -> R`, shape field `k?: T` → `k: T?`, a
+/// string-literal type → `string`. Anything else passes through.
+fn silt_type(ty: &str) -> String {
+    let parts: Vec<String> = split_top(ty.trim(), '|').into_iter().map(silt_atom).collect();
+    parts.join(" | ")
+}
+
+fn silt_atom(t: &str) -> String {
+    let t = t.trim();
+    // a whole-type `?` (`number?`, `{T}?`)
+    if let Some(inner) = t.strip_suffix('?') {
+        let inner = silt_type(inner);
+        return if inner.contains('|') { format!("({})?", inner) } else { format!("{}?", inner) };
+    }
+    // array suffix `T[]` / `T[3]`
+    if t.ends_with(']') {
+        if let Some(open) = t.rfind('[') {
+            let size = &t[open + 1..t.len() - 1];
+            if open > 0 && size.chars().all(|c| c.is_ascii_digit()) {
+                return format!("{{{}}}", silt_type(&t[..open]));
+            }
+        }
+    }
+    if let Some(rest) = t.strip_prefix("fun(") {
+        let mut depth = 1i32;
+        let close = rest.char_indices().find_map(|(i, c)| {
+            match c {
+                '(' | '{' | '[' => depth += 1,
+                ')' | '}' | ']' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(i)
+        });
+        if let Some(close) = close {
+            let params: Vec<String> = split_top(&rest[..close], ',')
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| match p.split_once(':') {
+                    Some((n, ty)) if n.trim().ends_with('?') => format!("{}?", silt_type(ty)),
+                    Some((_, ty)) => silt_type(ty),
+                    None if p.trim() == "..." => "...any".into(),
+                    None => "any".into(),
+                })
+                .collect();
+            let ret = rest[close + 1..].trim().trim_start_matches(':').trim();
+            let ret = if ret.is_empty() { "any".to_string() } else { silt_type(ret) };
+            return format!("({}) -> {}", params.join(", "), ret);
+        }
+    }
+    if let Some(inner) = t.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
+        let fields = split_top(inner, ',');
+        let shape = fields.iter().any(|f| split_top(f, ':').len() > 1);
+        if !shape {
+            return format!("{{{}}}", silt_type(inner));
+        }
+        let fields: Vec<String> = fields
+            .into_iter()
+            .filter(|f| !f.trim().is_empty())
+            .map(|f| match f.split_once(':') {
+                Some((k, ty)) => match k.trim().strip_suffix('?') {
+                    Some(k) => format!("{}: {}?", k, silt_type(ty)),
+                    None => format!("{}: {}", k.trim(), silt_type(ty)),
+                },
+                None => f.trim().to_string(),
+            })
+            .collect();
+        return format!("{{{}}}", fields.join(", "));
+    }
+    if let Some(inner) = t.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        return format!("({})", silt_type(inner));
+    }
+    match t {
+        "integer" => "number".into(),
+        _ if t.starts_with('\'') || t.starts_with('"') => "string".into(),
+        _ => t.to_string(),
     }
 }
 
@@ -731,8 +902,8 @@ fn annotated(sym: &Symbol) -> Symbol {
 }
 
 /// Split an annotation's leading type from its description: `{ a: number } desc` →
-/// (`{ a: number }`, `desc`). Brackets keep their contents whole, and a `|` joins the
-/// words around it (`string | nil`).
+/// (`{ a: number }`, `desc`). Brackets keep their contents whole, a `|` joins the
+/// words around it (`string | nil`) and a trailing `:` the next (`fun(): R`).
 fn split_annotation_type(text: &str) -> (&str, &str) {
     let text = text.trim();
     let mut depth = 0i32;
@@ -744,7 +915,8 @@ fn split_annotation_type(text: &str) -> (&str, &str) {
             '}' | ')' | ']' | '>' => depth -= 1,
             c if c.is_whitespace() && depth <= 0 => {
                 let next = text[i..].trim_start();
-                let joined = next.starts_with('|') || text[..i].ends_with('|');
+                // `A | B` and a function type's `fun(…): R` continue past the space
+                let joined = next.starts_with('|') || text[..i].ends_with(['|', ':']);
                 if !joined {
                     end = i;
                     break;
@@ -1612,8 +1784,14 @@ mod server {
         // Their globals and doc comments feed hover/completion/definition in every doc.
         let mut library = Library::default();
         let mut library_dirs: Vec<String> = Vec::new();
-        let diagnose = |text: &str, declarations: &[(String, String, bool)]| {
+        let diagnose = |text: &str, declarations: &[(String, String, bool)], library_decls: Vec<(String, String)>| {
             diagnostics_with(text, |compiler| {
+                // the library's annotated globals first, so explicit host declarations win
+                for (name, ty) in library_decls {
+                    if let Err(e) = compiler.declare(&name, &ty) {
+                        eprintln!("silt lsp: ignoring library declaration of `{}`: {}", name, e);
+                    }
+                }
                 for (name, ty, in_snippet) in declarations {
                     let r = if *in_snippet {
                         compiler.declare_in_snippet(name, ty)
@@ -1690,7 +1868,7 @@ mod server {
                     let td = &msg["params"]["textDocument"];
                     if let (Some(uri), Some(text)) = (td["uri"].as_str(), td["text"].as_str()) {
                         let uri = uri.to_string();
-                        let diags = diagnose(text, &declarations);
+                        let diags = diagnose(text, &declarations, library.declarations(&uri));
                         if in_library(&library, &library_dirs, &uri) {
                             library.add(&uri, text);
                         }
@@ -1709,7 +1887,7 @@ mod server {
                         .and_then(|c| c.last())
                         .and_then(|c| c["text"].as_str())
                     {
-                        let diags = diagnose(text, &declarations);
+                        let diags = diagnose(text, &declarations, library.declarations(&uri));
                         if in_library(&library, &library_dirs, &uri) {
                             library.add(&uri, text);
                         }
