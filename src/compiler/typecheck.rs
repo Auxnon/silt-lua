@@ -65,6 +65,15 @@ pub(crate) struct TypeCheck {
     pub fn_sigs: HashMap<String, FnSig>,
     /// Static types of the temporaries currently above the locals.
     pub stack: Vec<Type>,
+    /// Parallel to `stack`: where each value's expression starts in the source, so
+    /// a type error can underline the whole offending expression.
+    pub starts: Vec<TokenCell>,
+    /// Location of the op `tc_effect` is applying.
+    pub op_loc: TokenCell,
+    /// Earliest start among the values the current op has popped.
+    pub popped_start: Option<TokenCell>,
+    /// Start of the value a check outside `tc_effect` is about (`tc_declare_locals`).
+    pub error_start: Option<TokenCell>,
     /// `--!strict`: infer unannotated locals from their initializers.
     pub strict: bool,
     /// Signature of the function body just compiled, consumed by its CLOSURE.
@@ -132,12 +141,24 @@ fn is_reference(t: &Type) -> bool {
 impl Compiler {
     // ------------------------------------------------------------------ stack
 
+    /// Push a value's type; it starts at the earliest of the operands it consumed and
+    /// the op itself (a call at its callee, `a + b` at `a`, `#s` at the `#`).
     fn tpush(&mut self, t: Type) {
         self.tc.stack.push(t);
+        let start = self.tc.popped_start.map_or(self.tc.op_loc, |p| p.min(self.tc.op_loc));
+        self.tc.starts.push(start);
+    }
+
+    fn note_popped(&mut self, start: Option<TokenCell>) {
+        if let Some(s) = start {
+            self.tc.popped_start = Some(self.tc.popped_start.map_or(s, |p| p.min(s)));
+        }
     }
 
     /// Pop a type; an empty stack (bookkeeping drift) reads as `any`.
     fn tpop(&mut self) -> Type {
+        let start = self.tc.starts.pop();
+        self.note_popped(start);
         self.tc.stack.pop().unwrap_or(Type::Any)
     }
 
@@ -150,6 +171,8 @@ impl Compiler {
     /// Pop `n` types, returned bottom-to-top.
     fn tpopn(&mut self, n: usize) -> Vec<Type> {
         let len = self.tc.stack.len();
+        let starts = self.tc.starts.split_off(self.tc.starts.len().saturating_sub(n));
+        self.note_popped(starts.iter().min().copied());
         if n >= len {
             let mut v = vec![Type::Any; n - len];
             v.extend(self.tc.stack.drain(..));
@@ -162,11 +185,23 @@ impl Compiler {
     /// Statement boundary: the operand stack holds only locals here.
     pub(crate) fn tc_reset_statement(&mut self) {
         self.tc.stack.clear();
+        self.tc.starts.clear();
         self.tc.last_const_str = None;
     }
 
+    /// A type error spanning the offending expression: from the start of the value(s)
+    /// involved (or `loc`, whichever is earlier) to the end of the last token consumed.
     fn type_error(&mut self, msg: String, loc: TokenCell) {
-        let e = self.error_syntax(SiltError::TypeError(msg), loc);
+        let start = self
+            .tc
+            .error_start
+            .take()
+            .or(self.tc.popped_start)
+            .map_or(loc, |s| s.min(loc));
+        let mut e = self.error_syntax(SiltError::TypeError(msg), start);
+        if self.last_end >= start {
+            e.end = Some(self.last_end);
+        }
         self.push_error(e);
     }
 
@@ -335,6 +370,8 @@ impl Compiler {
         use OpCode::*;
         // Only a string CONSTANT leaves its value for the *next* instruction.
         let prev_const = self.tc.last_const_str.take();
+        self.tc.op_loc = loc;
+        self.tc.popped_start = None;
         match op {
             CONSTANT { constant } => {
                 let t = self.const_ty(f, *constant);
@@ -630,6 +667,9 @@ impl Compiler {
                 let from = len.saturating_sub(*n as usize);
                 let copies: Vec<Type> = self.tc.stack[from..].to_vec();
                 self.tc.stack.extend(copies);
+                let sfrom = self.tc.starts.len().saturating_sub(*n as usize);
+                let scopies: Vec<TokenCell> = self.tc.starts[sfrom..].to_vec();
+                self.tc.starts.extend(scopies);
             }
             CALL(arity, multi, variadic) => {
                 let want = if *multi == MULTIRET {
@@ -811,7 +851,10 @@ impl Compiler {
                     self.locals[first_local + i].ty = vty;
                 }
             } else {
+                let len = self.tc.starts.len();
+                self.tc.error_start = (len >= n).then(|| self.tc.starts[len - n + i]);
                 self.check_assign(&declared, &vty, loc);
+                self.tc.error_start = None;
             }
         }
     }

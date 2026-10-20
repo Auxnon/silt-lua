@@ -419,6 +419,29 @@ function sum(...) end
     }
 
     #[test]
+    fn type_errors_span_the_offending_expression() {
+        let lib = stub_library();
+        let decls = lib.declarations("file:///proj/main.lua");
+        let span = |src: &str| {
+            let d = diagnostics_with(src, |c| {
+                for (n, t) in &decls {
+                    c.declare(n, t).unwrap();
+                }
+            });
+            let r = d.first().expect("a type error").range;
+            (r.start.line, r.start.character, r.end.line, r.end.character)
+        };
+        // the initializer `sin(x)`, closing paren included
+        assert_eq!(span("    local ca: string = sin(cam_alt)"), (0, 23, 0, 35));
+        // a bad argument underlines the call
+        assert_eq!(span("local x = sin(\"hello\") + 1"), (0, 10, 0, 22));
+        // a string literal starts at its quote
+        assert_eq!(span("local x: number = \"hi\""), (0, 18, 0, 22));
+        // the whole binary expression, across lines
+        assert_eq!(span("local s: string = sin(1) +\n  sin(2)"), (0, 18, 1, 8));
+    }
+
+    #[test]
     fn library_declarations_flag_type_conflicts() {
         let lib = stub_library();
         assert!(check(&lib, "local y = sin(1)\nmake(\"a\", 2)").is_empty());

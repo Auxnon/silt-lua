@@ -403,6 +403,8 @@ struct AssignmentState {
     can_multivar_set: bool,
     #[cfg(feature = "typing")]
     type_stack: Vec<crate::types::Type>,
+    #[cfg(feature = "typing")]
+    type_starts: Vec<crate::error::TokenCell>,
 }
 
 type FnRef<'a, 'c> = &'a mut FunctionObject<'c>;
@@ -617,6 +619,8 @@ impl Compiler {
             can_multivar_set: self.can_multivar_set,
             #[cfg(feature = "typing")]
             type_stack: std::mem::take(&mut self.tc.stack),
+            #[cfg(feature = "typing")]
+            type_starts: std::mem::take(&mut self.tc.starts),
         }
     }
 
@@ -628,6 +632,7 @@ impl Compiler {
         #[cfg(feature = "typing")]
         {
             self.tc.stack = s.type_stack;
+            self.tc.starts = s.type_starts;
         }
     }
 

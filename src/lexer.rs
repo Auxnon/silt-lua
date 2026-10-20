@@ -245,8 +245,8 @@ impl<'c> Lexer<'c> {
     }
 
     fn string(&mut self, apos: bool) -> TokenOption {
-        // start column at '"' not within string starter
-        self.column_start = self.column - 1;
+        // start column at the opening quote (not yet eaten: `column` is its index)
+        self.column_start = self.column;
         self.eat();
         self.start_token = self.current;
         // Quoted strings decode escape sequences (long-bracket strings do not).
