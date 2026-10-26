@@ -149,7 +149,155 @@ fn snippet_benches(c: &mut Criterion) {
 #[cfg(not(feature = "snippets"))]
 fn snippet_benches(_c: &mut Criterion) {}
 
-criterion_group!(g, benches, ud_benches, snippet_benches);
+/// The same geometry written three ways where it applies: number locals, `{x,y,z}`
+/// tables (the pure-Lua way), and `vec3`. 2e5 iterations each.
+#[cfg(feature = "vector")]
+mod vector_bench {
+    pub const PAIRS: &[(&str, &str, &str)] = &[
+        (
+            "field_sum",
+            "table",
+            r#"
+            local a, b = {x = 1.5, y = 2.5, z = 3.5}, {x = 4, y = 5, z = 6}
+            local s = 0
+            for i = 1, 200000 do s = s + a.x + b.x + a.y + b.y + a.z + b.z end
+            return s
+            "#,
+        ),
+        (
+            "field_sum",
+            "vec3",
+            r#"
+            local a, b = vec3(1.5, 2.5, 3.5), vec3(4, 5, 6)
+            local s = 0
+            for i = 1, 200000 do s = s + a.x + b.x + a.y + b.y + a.z + b.z end
+            return s
+            "#,
+        ),
+        (
+            "add",
+            "table",
+            r#"
+            local a, b = {x = 1.5, y = 2.5, z = 3.5}, {x = 4, y = 5, z = 6}
+            local s = 0
+            for i = 1, 200000 do
+                local c = {x = a.x + b.x, y = a.y + b.y, z = a.z + b.z}
+                s = s + c.x
+            end
+            return s
+            "#,
+        ),
+        (
+            "add",
+            "vec3",
+            r#"
+            local a, b = vec3(1.5, 2.5, 3.5), vec3(4, 5, 6)
+            local s = 0
+            for i = 1, 200000 do
+                local c = a + b
+                s = s + c.x
+            end
+            return s
+            "#,
+        ),
+        (
+            "integrate",
+            "table",
+            r#"
+            local p, v, dt = {x = 0, y = 0, z = 0}, {x = 1, y = 2, z = 3}, 0.016
+            for i = 1, 200000 do
+                p = {x = p.x + v.x * dt, y = p.y + v.y * dt, z = p.z + v.z * dt}
+            end
+            return p.x
+            "#,
+        ),
+        (
+            "integrate",
+            "vec3",
+            r#"
+            local p, v, dt = vec3(0, 0, 0), vec3(1, 2, 3), 0.016
+            for i = 1, 200000 do
+                p = p + v * dt
+            end
+            return p.x
+            "#,
+        ),
+        (
+            "distance",
+            "locals",
+            r#"
+            local sqrt = math.sqrt
+            local ax, ay, az, bx, by, bz = 1.5, 2.5, 3.5, 4, 5, 6
+            local s = 0
+            for i = 1, 200000 do
+                local dx, dy, dz = ax - bx, ay - by, az - bz
+                s = s + sqrt(dx * dx + dy * dy + dz * dz)
+            end
+            return s
+            "#,
+        ),
+        (
+            "distance",
+            "table",
+            r#"
+            local sqrt = math.sqrt
+            local a, b = {x = 1.5, y = 2.5, z = 3.5}, {x = 4, y = 5, z = 6}
+            local s = 0
+            for i = 1, 200000 do
+                local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+                s = s + sqrt(dx * dx + dy * dy + dz * dz)
+            end
+            return s
+            "#,
+        ),
+        (
+            "distance",
+            "vec3",
+            r#"
+            local a, b = vec3(1.5, 2.5, 3.5), vec3(4, 5, 6)
+            local s = 0
+            for i = 1, 200000 do s = s + a:distance(b) end
+            return s
+            "#,
+        ),
+        (
+            "normalize",
+            "table",
+            r#"
+            local sqrt = math.sqrt
+            local a = {x = 1.5, y = 2.5, z = 3.5}
+            local s = 0
+            for i = 1, 200000 do
+                local l = sqrt(a.x * a.x + a.y * a.y + a.z * a.z)
+                local n = {x = a.x / l, y = a.y / l, z = a.z / l}
+                s = s + n.x
+            end
+            return s
+            "#,
+        ),
+        (
+            "normalize",
+            "vec3",
+            r#"
+            local a = vec3(1.5, 2.5, 3.5)
+            local s = 0
+            for i = 1, 200000 do s = s + a:normalize().x end
+            return s
+            "#,
+        ),
+    ];
+}
+
+#[cfg(feature = "vector")]
+fn vector_benches(c: &mut Criterion) {
+    for (name, form, src) in vector_bench::PAIRS {
+        c.bench_function(&format!("vec_{name}/{form}"), |b| b.iter(|| run(src)));
+    }
+}
+#[cfg(not(feature = "vector"))]
+fn vector_benches(_c: &mut Criterion) {}
+
+criterion_group!(g, benches, ud_benches, snippet_benches, vector_benches);
 criterion_main!(g);
 
 // ---------------------------------------------------------------------------
