@@ -31,6 +31,19 @@ macro_rules! devout {
 
 }
 
+/// What `fuse_operand!` could do with the instruction after a push.
+enum Fused<'gc> {
+    Arith(Value<'gc>),
+    Cmp(bool),
+    No,
+}
+
+impl<'gc> Fused<'gc> {
+    fn cmp(b: Option<bool>) -> Self {
+        b.map_or(Fused::No, Fused::Cmp)
+    }
+}
+
 macro_rules! bubble {
     ($arg:expr) => {
         match $arg {
@@ -194,16 +207,151 @@ fn lua_shr(a: i64, b: i64) -> i64 {
     }
 }
 
+/// `l op r` for two number Values (Integer stays Integer, any float makes Number).
+macro_rules! num_arith {
+    ($l:expr, $r:expr, $op:tt) => {
+        match ($l, $r) {
+            (Value::Integer(l), Value::Integer(r)) => Value::Integer(*l $op *r),
+            (Value::Integer(l), Value::Number(r)) => Value::Number(*l as f64 $op *r),
+            (Value::Number(l), Value::Integer(r)) => Value::Number(*l $op *r as f64),
+            (Value::Number(l), Value::Number(r)) => Value::Number(*l $op *r),
+            _ => unreachable!(),
+        }
+    };
+}
+
+/// `l op r` for two number Values; `None` for a mixed integer/float pair unless
+/// `$mixed` (equality leaves those to the general handler).
+macro_rules! num_cmp {
+    ($l:expr, $r:expr, $op:tt, $mixed:expr) => {
+        match ($l, $r) {
+            (Value::Integer(l), Value::Integer(r)) => Some(l $op r),
+            (Value::Number(l), Value::Number(r)) => Some(l $op r),
+            (Value::Integer(l), Value::Number(r)) if $mixed => Some((*l as f64) $op *r),
+            (Value::Number(l), Value::Integer(r)) if $mixed => Some(*l $op (*r as f64)),
+            _ => None,
+        }
+    };
+}
+
+/// Fused `x op r`: when the instruction after a push of `$r` (a constant or a
+/// local) is ADD/SUB/MULTIPLY or a comparison and both `$r` and the number `x`
+/// on top are numbers, run the op now: `n - 1`, `i < 1000000`, `sum + i` take
+/// one dispatch instead of push, op (and push, pop for a compare's branch).
+/// Otherwise falls through, leaving the caller to push `$r` as usual.
+///
+/// Measured alternatives that lost: moving the work out of line (a call per
+/// fusion cost more than it saved), and also storing straight into a following
+/// SET_LOCAL (a big win for `while` loops, but the larger dispatch loop slowed
+/// unrelated handlers by up to ~25%).
+macro_rules! fuse_operand {
+    ($lua:ident, $frame:ident, $r:expr) => {{
+        let top = $lua.stack_count;
+        // cheapest test first: most pushes are not followed by an operator
+        let next = $frame.next_instruction();
+        let fused = if top == 0 || !next.fuses() {
+            Fused::No
+        } else {
+            let r: &Value = $r;
+            let l = &$lua.stack[top - 1];
+            if matches!(r, Value::Integer(_) | Value::Number(_))
+                && matches!(l, Value::Integer(_) | Value::Number(_))
+            {
+                match next {
+                    OpCode::ADD => Fused::Arith(num_arith!(l, r, +)),
+                    OpCode::SUB => Fused::Arith(num_arith!(l, r, -)),
+                    OpCode::MULTIPLY => Fused::Arith(num_arith!(l, r, *)),
+                    OpCode::EQUAL => Fused::cmp(num_cmp!(l, r, ==, false)),
+                    OpCode::NOT_EQUAL => Fused::cmp(num_cmp!(l, r, !=, false)),
+                    OpCode::LESS => Fused::cmp(num_cmp!(l, r, <, true)),
+                    OpCode::LESS_EQUAL => Fused::cmp(num_cmp!(l, r, <=, true)),
+                    OpCode::GREATER => Fused::cmp(num_cmp!(l, r, >, true)),
+                    OpCode::GREATER_EQUAL => Fused::cmp(num_cmp!(l, r, >=, true)),
+                    _ => Fused::No,
+                }
+            } else {
+                Fused::No
+            }
+        };
+        match fused {
+            // arithmetic: the result replaces x in place
+            Fused::Arith(res) => {
+                $lua.stack[top - 1] = res;
+                $frame.iterate();
+                $frame.iterate();
+                continue;
+            }
+            Fused::Cmp(b) => {
+                $lua.stack_count = top - 1;
+                $frame.iterate();
+                $frame.iterate();
+                branch_on!($lua, $frame, b);
+                continue;
+            }
+            Fused::No => {}
+        }
+    }};
+}
+
+/// Fast path for a comparison of two numbers: compare in place and, when the
+/// next instruction is the `POP_AND_GOTO_IF_FALSE` an `if`/`while` emits, take
+/// the branch directly instead of pushing a Bool for it to pop. Anything else
+/// (strings, metamethods, errors) falls through to the general handler.
+/// `$mixed`: also handle integer-vs-float operands.
+macro_rules! compare_fast {
+    ($lua:ident, $frame:ident, $op:tt, $mixed:expr) => {{
+        let top = $lua.stack_count;
+        if let Some(b) = num_cmp!(&$lua.stack[top - 2], &$lua.stack[top - 1], $op, $mixed) {
+            // both operands are numbers: nothing to drop in their slots
+            $lua.stack_count = top - 2;
+            $frame.iterate();
+            branch_on!($lua, $frame, b);
+            continue;
+        }
+    }};
+}
+
+/// With ip on the instruction after a comparison that produced `$b`: take the
+/// `POP_AND_GOTO_IF_FALSE` there directly, or else push the Bool. Leaves ip on
+/// the next instruction to run (the caller `continue`s past the loop's iterate).
+macro_rules! branch_on {
+    ($lua:ident, $frame:ident, $b:expr) => {
+        if let OpCode::POP_AND_GOTO_IF_FALSE(offset) = *$frame.current_instruction() {
+            if !$b {
+                $frame.forward(offset);
+            }
+            $frame.iterate();
+        } else {
+            $lua.push(Value::Bool($b));
+        }
+    };
+}
+
 macro_rules! binary_op_push {
     ($src:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $op:tt, $opp:tt) => {{
         #[cfg(feature = "dev-out")]
         $src.body.chunk.print_constants();
-        // TODO test speed of this vs 1 pop and a mutate
-        let r = $src.pop();
-        let l = $src.pop();
-        let res = binary_op!($src, $ep, $frame, $frames, $frame_count, l, $op, r, $opp);
-
-        $src.push(res);
+        // Fast path: number op number writes the result over the left operand
+        // in place (no pop/pop/push). Everything else (strings, vectors,
+        // metamethods, errors) takes the general path below.
+        let top = $src.stack_count;
+        let fast = match (&$src.stack[top - 2], &$src.stack[top - 1]) {
+            (Value::Integer(l), Value::Integer(r)) => Some(Value::Integer(*l $op *r)),
+            (Value::Number(l), Value::Number(r)) => Some(Value::Number(*l $op *r)),
+            (Value::Integer(l), Value::Number(r)) => Some(Value::Number(*l as f64 $op *r)),
+            (Value::Number(l), Value::Integer(r)) => Some(Value::Number(*l $op *r as f64)),
+            _ => None,
+        };
+        if let Some(res) = fast {
+            // the right operand was a number: nothing to drop in its slot
+            $src.stack_count = top - 1;
+            $src.stack[top - 2] = res;
+        } else {
+            let r = $src.pop();
+            let l = $src.pop();
+            let res = binary_op!($src, $ep, $frame, $frames, $frame_count, l, $op, r, $opp);
+            $src.push(res);
+        }
     }};
 }
 
@@ -717,6 +865,18 @@ impl<'gc> Lua {
                 }
                 Err(err) => Err(err),
             })
+    }
+
+    /// Compile `code` and print its bytecode (every chunk, nested functions too)
+    /// to stdout. A development aid, e.g. `cargo run --example disassemble f.lua`.
+    pub fn disassemble(&mut self, name: Option<&str>, code: &str, compiler: &mut Compiler) -> LuaResult {
+        self.arena.mutate_root(|mc, _| match compiler.try_compile(mc, name, code) {
+            Ok(f) => {
+                f.chunk.print_chunk(&f.name);
+                Ok(ExVal::Nil)
+            }
+            Err(err) => Err(err),
+        })
     }
 
     pub fn cycle(&mut self) -> LuaResult {
@@ -1835,6 +1995,7 @@ impl<'gc> VM<'gc> {
                     // }
                 }
                 OpCode::CONSTANT { constant } => {
+                    fuse_operand!(self, frame, Self::get_chunk(frame).get_constant(*constant));
                     let value = Self::get_chunk(frame).get_constant(*constant);
                     self.push(value.clone());
                     // match value {
@@ -1877,14 +2038,12 @@ impl<'gc> VM<'gc> {
                     let value = Self::get_chunk(frame).get_constant(*constant);
                     // devout!("ident: {}", value);
                     // println!(" we have keys {}",self.globals.borrow().list_keys());
-                    if let Value::String(s) = value {
-                        devout!("\"{}\"", s);
-
-                        if let Some(v) = self.globals.borrow_mut(ep.mc).get(s) {
-                            self.push(v.clone());
-                        } else {
-                            self.push(Value::Nil);
-                        }
+                    if let Value::String(_) = value {
+                        // look up by the constant itself: `get(&String)` built (and
+                        // freed) a fresh String key per read. A read needs no write
+                        // barrier, so `borrow`, not `borrow_mut`.
+                        let v = self.globals.borrow().getr(value).cloned().unwrap_or_default();
+                        self.push(v);
                     } else {
                         break Err(SiltError::VmCorruptConstant);
                     }
@@ -1904,6 +2063,7 @@ impl<'gc> VM<'gc> {
                     // For variadic functions the frame base already sits past the
                     // variadic range (the fixed params are copied above the
                     // overflow at call time), so locals are addressed uniformly.
+                    fuse_operand!(self, frame, frame.get_val(&self.stack, *index));
                     let value = frame.get_val(&self.stack, *index).clone();
                     self.push(value);
 
@@ -2231,6 +2391,7 @@ impl<'gc> VM<'gc> {
                     self.push(Value::Bool(!Self::is_truthy(&value)));
                 }
                 OpCode::EQUAL => {
+                    compare_fast!(self, frame, ==, false);
                     let r = self.pop();
                     let l = self.pop();
                     // Userdata: consult `__eq` when both are userdata of distinct identity;
@@ -2271,11 +2432,13 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::NOT_EQUAL => {
+                    compare_fast!(self, frame, !=, false);
                     let r = self.pop();
                     let l = self.pop();
                     self.push(Value::Bool(!Self::is_equal(&l, &r)));
                 }
                 OpCode::LESS => {
+                    compare_fast!(self, frame, <, true);
                     let r = self.pop();
                     let l = self.pop();
                     match (l, r) {
@@ -2298,6 +2461,7 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::LESS_EQUAL => {
+                    compare_fast!(self, frame, <=, true);
                     let r = self.pop();
                     let l = self.pop();
                     match (l, r) {
@@ -2322,6 +2486,7 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::GREATER => {
+                    compare_fast!(self, frame, >, true);
                     let r = self.pop();
                     let l = self.pop();
                     // `l > r` is evaluated as `r < l`, so a table dispatches `__lt`
@@ -2346,6 +2511,7 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::GREATER_EQUAL => {
+                    compare_fast!(self, frame, >=, true);
                     let r = self.pop();
                     let l = self.pop();
                     // `l >= r` is evaluated as `r <= l` → `__le` with swapped operands.
@@ -2484,7 +2650,8 @@ impl<'gc> VM<'gc> {
                         self.push(it);
                     }
                 }
-                OpCode::FORLOOP(rewind) => {
+                OpCode::FORLOOP(rewind, pop) => {
+                    self.stack_count -= *pop as usize;
                     // Loop tail: the loop variable has already been popped, so the
                     // stack top is [iterator, limit, step] again. Increment the
                     // iterator by the step, re-test the bound, and either push the

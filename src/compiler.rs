@@ -1014,13 +1014,14 @@ impl Compiler {
     }
 
     /// Emit the fused numeric-for tail. `start` is the body-top index it rewinds to
-    /// when the loop continues (same backward-offset convention as `emit_rewind`).
-    fn emit_forloop(&mut self, f: FnRef, start: usize) {
+    /// when the loop continues (same backward-offset convention as `emit_rewind`);
+    /// `pop` body locals are dropped first.
+    fn emit_forloop(&mut self, f: FnRef, start: usize, pop: u8) {
         let jump = (self.get_chunk_size(f) + 1) - start;
         if jump > u16::MAX as usize {
             self.error_at(SiltError::TooManyOperations);
         }
-        self.write_code(f, OpCode::FORLOOP(jump as u16), self.current_location);
+        self.write_code(f, OpCode::FORLOOP(jump as u16, pop), self.current_location);
     }
 
     #[allow(dead_code)]
@@ -2110,8 +2111,9 @@ fn define_function<'c>(
     };
     let global_ident = if existing_local.is_some() {
         None
-    } else if this.scope_depth > 0 && local {
-        //local
+    } else if local {
+        // a real local at the top level too (it used to become a global there,
+        // unlike `local x` and `local f = function`)
         //TODO should we warn? redefine_behavior(this,ident)?
         add_local(this, ident)?;
         None
@@ -2121,8 +2123,8 @@ fn define_function<'c>(
 
     // A `local function f` may call itself: give the local its pre-scanned
     // signature before the body compiles, then the real one after.
-    // (only when a local slot was really added — at root scope `local function`
-    // compiles as a global and `locals.last()` is some other variable)
+    // (only when a local slot was really added: `function f` assigning an existing
+    // local adds none, and `locals.last()` is then some other variable)
     #[allow(unused_variables)]
     let added_local = global_ident.is_none() && existing_local.is_none();
     #[cfg(feature = "typing")]
@@ -2850,12 +2852,25 @@ fn for_statement<'c>(
         begin_scope(this);
         add_local(this, ident)?; // we add the local inside the scope which was actually added on by the for opcode already
         build_block_until_then_eat!(this, mc, f, it, End);
+        let body_end = this.get_chunk_size(f);
         end_scope(this, f, false);
+        // Fold the body scope's own POPS (the loop variable and body locals) into
+        // FORLOOP: one dispatch per iteration fewer. Only when end_scope emitted
+        // exactly that op, so whatever jumps to the body end (an `if`'s exit, a
+        // `goto` label) lands on FORLOOP at the same index.
+        let emitted_one = this.get_chunk_size(f) == body_end + 1;
+        let pop = match f.chunk.code.last() {
+            Some(&OpCode::POPS(n)) if emitted_one => {
+                f.chunk.drop_last();
+                n
+            }
+            _ => 0,
+        };
 
         // Fused loop tail: increment + bound-check + (push loop var & rewind) in one op.
         // It rewinds to the body start (just past FOR_NUMERIC), so the top check runs
         // only once on entry; FORLOOP drives every subsequent iteration.
-        this.emit_forloop(f, for_start + 1);
+        this.emit_forloop(f, for_start + 1, pop);
         this.patch(f, for_start)?;
         this.force_stack_pop(f, 3);
         // break jumps land here, after the hidden control slots are reclaimed

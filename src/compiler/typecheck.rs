@@ -477,7 +477,7 @@ impl Compiler {
                 self.tpopn(*n as usize);
             }
             FOR_NUMERIC(_) => self.tpush(Type::Number),
-            FORLOOP(_)
+            FORLOOP(..)
             | FORWARD(_)
             | REWIND(_)
             | INCREMENT { .. }

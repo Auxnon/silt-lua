@@ -74,6 +74,13 @@ impl<'frame> CallFrame<'frame> {
         &self.code[self.ip]
     }
 
+    /// The instruction after the current one (a comparison or `CONSTANT` is never
+    /// the last: every chunk ends in RETURN).
+    #[inline]
+    pub fn next_instruction(&self) -> &crate::code::OpCode {
+        &self.code[self.ip + 1]
+    }
+
     /** shift ip by 1 instruction */
     #[inline]
     pub fn iterate(&mut self) {

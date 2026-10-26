@@ -58,8 +58,9 @@ pub enum OpCode {
     /** Numeric-for loop tail: increment the iterator (3rd-from-top) by the step (top),
      *  re-test against the limit, and either push the new loop variable and REWIND by X
      *  to the loop body, or fall through to exit. Fuses INCREMENT + bound-check + REWIND
-     *  into one op so the steady-state loop runs `body + POP + FORLOOP` per iteration. */
-    FORLOOP(u16),
+     *  into one op. `.1` first drops the body's `.1` locals: the body's scope-end
+     *  POPS folded in, so the steady-state loop runs `body + FORLOOP` per iteration. */
+    FORLOOP(u16, u8),
     FORWARD(u16),
     REWIND(u16),
     RETURN(u8),
@@ -184,6 +185,26 @@ pub enum OpCode {
     DUP_N(u8),
 }
 
+
+impl OpCode {
+    /// Can the VM fuse a number push with this op (see `fuse_operand!`)?
+    #[inline]
+    pub(crate) fn fuses(&self) -> bool {
+        matches!(
+            self,
+            OpCode::ADD
+                | OpCode::SUB
+                | OpCode::MULTIPLY
+                | OpCode::EQUAL
+                | OpCode::NOT_EQUAL
+                | OpCode::LESS
+                | OpCode::LESS_EQUAL
+                | OpCode::GREATER
+                | OpCode::GREATER_EQUAL
+        )
+    }
+}
+
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -212,7 +233,7 @@ impl Display for OpCode {
             }
             Self::FORWARD(offset) => write!(f, "OP_FORWARD {}", offset),
             Self::REWIND(offset) => write!(f, "OP_REWIND {}", offset),
-            Self::FORLOOP(offset) => write!(f, "OP_FORLOOP {}", offset),
+            Self::FORLOOP(offset, pop) => write!(f, "OP_FORLOOP {} pop {}", offset, pop),
             Self::FOR_NUMERIC(offset) => {
                 write!(f, "OP_FOR_NUMERIC {}", offset)
             }

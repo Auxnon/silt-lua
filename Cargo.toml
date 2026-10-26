@@ -36,6 +36,12 @@ panic = "abort"
 [profile.wasm]
 inherits = "release"
 
+# release + symbols, for profilers: `cargo build -p silt-cli --profile profiling`
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+
 # `cargo bench` uses this profile; mirror release (speed-optimized) so bench numbers
 # reflect real release performance. Normal `cargo test`/`cargo build` are unaffected.
 [profile.bench]
