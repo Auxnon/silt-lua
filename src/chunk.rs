@@ -5,7 +5,7 @@ use crate::{
     error::TokenCell,
     value::Value,
 };
-use gc_arena::Collect;
+use gc_arena::{Collect, Mutation};
 
 // TODO benchmark/compare to using a manually resized array
 #[derive(Default, Collect)]
@@ -86,16 +86,16 @@ impl<'chnk> Chunk<'chnk> {
 
     // TODO lets change to a hashmap, cant see an advantage not to so far
     /** for global identifiers we attempt to resolve to an existing global variable if it exists and return that index */
-    pub fn write_identifier(&mut self, identifier: String) -> usize {
+    pub fn write_identifier(&mut self, mc: &Mutation<'chnk>, identifier: String) -> usize {
         match self.constants.iter().enumerate().position(|(_i, x)| {
             if let Value::String(s) = x {
-                s == &identifier
+                s.as_str() == identifier
             } else {
                 false
             }
         }) {
             Some(i) => i,
-            None => self.write_constant(Value::String(identifier)),
+            None => self.write_constant(Value::string(mc, identifier)),
         }
     }
 

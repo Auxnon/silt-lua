@@ -14,6 +14,7 @@ use crate::{
     function::{Closure, FunctionObject, WrappedFn},
     lua::VM,
     prelude::UserData,
+    lstr::{GcStr, LuaStr, StrKey},
     table::Table,
     userdata::{MetaMethod, UserDataWrapper},
 };
@@ -52,7 +53,7 @@ macro_rules! binary_self_op {
 // }
 
 /** Lua value enum representing different data types within a VM */
-#[derive(Collect, Default)]
+#[derive(Collect, Default, Clone, Copy)]
 #[collect(no_drop)]
 #[repr(u8)]
 pub enum Value<'gc> {
@@ -66,7 +67,7 @@ pub enum Value<'gc> {
     // Bool(bool),
     // TODO in most cases strings are just copied around on the heap, this is expensive but saves us from using GC here
     // TODO 2 consider other encoding options for efficiency. Is having a seperate ASCII string type beneficial to only english speakers? how would other speaking languages handle ascii strings without needed glyphs?
-    String(String),
+    String(GcStr<'gc>),
     // List(Vec<Value>),
     // Map(HashMap<String, Value>),
     Table(Gc<'gc, RefLock<Table<'gc>>>),
@@ -115,7 +116,7 @@ impl ExVal {
             ExVal::Nil => Value::Nil,
             ExVal::Bool(b) => Value::Bool(*b),
             ExVal::Number(n) => Value::Number(*n),
-            ExVal::String(s) => Value::String(s.to_owned()),
+            ExVal::String(s) => Value::String(LuaStr::gc(mc, s.as_str())),
             ExVal::Table(t) => vm.convert_table(mc, t)?,
             ExVal::Integer(i) => Value::Integer(*i),
             ExVal::Infinity(b) => Value::Infinity(*b),
@@ -194,7 +195,7 @@ impl From<Value<'_>> for ExVal {
             Value::Number(n) => ExVal::Number(n),
             Value::Bool(b) => ExVal::Bool(b),
             Value::Infinity(b) => ExVal::Infinity(b),
-            Value::String(s) => ExVal::String(s),
+            Value::String(s) => ExVal::String(s.to_string()),
             Value::Table(t) => ExVal::Table(t.borrow().to_exval()),
             Value::Function(f) => ExVal::Meta(format!("{}", f)),
             Value::Closure(c) => ExVal::Meta(format!("=>({})", c.function)),
@@ -458,32 +459,6 @@ impl<'v> Value<'v> {
         Err(SiltError::UDBadCall)
     }
 
-    pub fn clone(&self) -> Value<'v> {
-        match self {
-            Value::Integer(i) => Value::Integer(*i),
-            Value::Number(n) => Value::Number(*n),
-            Value::Bool(b) => Value::Bool(*b),
-            Value::Nil => Value::Nil,
-            Value::String(s) => Value::String(s.clone()),
-            Value::Infinity(b) => Value::Infinity(*b),
-            Value::NativeFunction(f) => Value::NativeFunction(*f),
-            // TODO: implement this
-            Value::Function(r) => Value::Function(Gc::clone(r)),
-            Value::Closure(c) => Value::Closure(Gc::clone(c)),
-            // Value::Table(t) => Value::Table(Reference {
-            //     value: Rc::clone(&t.value),
-            //     id: t.id,
-            // }),
-            Value::Table(t) => Value::Table(Gc::clone(t)),
-            Value::UserData(u) => Value::UserData(Gc::clone(u)),
-            #[cfg(feature = "vector")]
-            Value::Vec2(v) => Value::Vec2(*v),
-            #[cfg(feature = "vector")]
-            Value::Vec3(v) => Value::Vec3(*v),
-            #[cfg(feature = "vector")]
-            Value::Vec4(v) => Value::Vec4(*v),
-        }
-    }
 }
 
 impl PartialEq for Value<'_> {
@@ -493,7 +468,7 @@ impl PartialEq for Value<'_> {
             (Value::Number(i), Value::Number(j)) => i == j,
             (Value::Bool(i), Value::Bool(j)) => i == j,
             (Value::Nil, Value::Nil) => true,
-            (Value::String(i), Value::String(j)) => i == j,
+            (Value::String(i), Value::String(j)) => Gc::ptr_eq(*i, *j) || **i == **j,
             (Value::Infinity(i), Value::Infinity(j)) => i == j,
             (Value::NativeFunction(i), Value::NativeFunction(j)) => {
                 // i == j
@@ -516,11 +491,6 @@ impl PartialEq for Value<'_> {
     }
 }
 
-impl Clone for Value<'_> {
-    fn clone(&self) -> Self {
-        self.clone()
-    }
-}
 
 impl Hash for Value<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -530,6 +500,11 @@ impl Hash for Value<'_> {
         // every table access O(table size). This must stay consistent with `PartialEq`
         // (a == b ⇒ hash(a) == hash(b)); reference types hash by Gc identity to match
         // the `ptr_eq` comparisons.
+        // A string key hashes as its cached hash alone, so `StrKey` (a `&str`
+        // lookup) hashes the same without building a `LuaStr`.
+        if let Value::String(s) = self {
+            return state.write_u64(s.key_hash());
+        }
         core::mem::discriminant(self).hash(state);
         match self {
             Value::Integer(i) => i.hash(state),
@@ -544,7 +519,6 @@ impl Hash for Value<'_> {
             }
             Value::Bool(b) => b.hash(state),
             Value::Infinity(b) => b.hash(state),
-            Value::String(s) => s.hash(state),
             Value::Table(t) => (Gc::as_ptr(*t) as usize).hash(state),
             Value::Function(f) => (Gc::as_ptr(*f) as usize).hash(state),
             Value::Closure(c) => (Gc::as_ptr(*c) as usize).hash(state),
@@ -926,24 +900,9 @@ base_val!(bool);
 // }
 
 // ========== convert &str ==========
-impl From<&str> for Value<'_> {
-    fn from(value: &str) -> Self {
-        Value::String(value.to_string())
-    }
-}
 
-impl From<&String> for Value<'_> {
-    fn from(value: &String) -> Self {
-        Value::String(value.to_string())
-    }
-}
 
 // ========== convert String ==========
-impl From<String> for Value<'_> {
-    fn from(value: String) -> Self {
-        Value::String(value)
-    }
-}
 impl From<Value<'_>> for String {
     fn from(val: Value) -> Self {
         // NOT to_string(): Value's Display quotes strings (`"foo"`), which would
@@ -1959,4 +1918,28 @@ mod vector_conversions {
     vec_conv!(Vec2, glam::Vec2, Vec2, "vec2");
     vec_conv!(Vec3, glam::Vec3, Vec3, "vec3");
     vec_conv!(Vec4, glam::Vec4, Vec4, "vec4");
+}
+
+impl<'v> Value<'v> {
+    /// A collected string value.
+    #[inline]
+    pub fn string(mc: &Mutation<'v>, s: impl Into<Box<str>>) -> Self {
+        Value::String(LuaStr::gc(mc, s))
+    }
+
+    /// The string contents, if this is a string.
+    #[inline]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+}
+
+impl<'v> hashbrown::Equivalent<Value<'v>> for StrKey<'_> {
+    #[inline]
+    fn equivalent(&self, key: &Value<'v>) -> bool {
+        matches!(key, Value::String(s) if s.key_hash() == self.hash && s.as_str() == self.s)
+    }
 }

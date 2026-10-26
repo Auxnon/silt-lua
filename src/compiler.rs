@@ -686,8 +686,8 @@ impl Compiler {
     //     // self.code.last().unwrap()
     // }
 
-    fn write_identifier(&mut self, f: FnRef, identifier: String) -> usize {
-        f.chunk.write_identifier(identifier)
+    fn write_identifier<'c>(&mut self, mc: &Mutation<'c>, f: FnRef<'_, 'c>, identifier: String) -> usize {
+        f.chunk.write_identifier(mc, identifier)
     }
 
     fn change_code(&mut self, f: FnRef, offset: usize, byte: OpCode) {
@@ -1042,8 +1042,8 @@ impl Compiler {
         }
     }
 
-    fn identifer_constant(&mut self, f: FnRef, ident: String) -> ConstIndex {
-        let i = self.write_identifier(f, ident);
+    fn identifer_constant<'c>(&mut self, mc: &Mutation<'c>, f: FnRef<'_, 'c>, ident: String) -> ConstIndex {
+        let i = self.write_identifier(mc, f, ident);
         self.const_index(i)
     }
 
@@ -1065,8 +1065,8 @@ impl Compiler {
     }
 
     /** write identifier to constant table, remove duplicates, and emit code */
-    fn emit_identifer_constant_at<'a, 'c: 'a>(&mut self, f: FnRef, ident: String) {
-        let constant = self.identifer_constant(f, ident);
+    fn emit_identifer_constant_at<'a, 'c: 'a>(&mut self, mc: &Mutation<'c>, f: FnRef<'_, 'c>, ident: String) {
+        let constant = self.identifer_constant(mc, f, ident);
         self.emit(f, OpCode::CONSTANT { constant }, self.current_location);
     }
 
@@ -1742,7 +1742,7 @@ fn declaration_keyword<'a, 'c: 'a>(
                 typing(this, mc, f, it, None)?;
             } else {
                 this.global_declare_mode = !local;
-                let ident = this.identifer_constant(f, ident.to_string());
+                let ident = this.identifer_constant(mc, f, ident.to_string());
                 typing(
                     this,
                     mc,
@@ -1791,7 +1791,7 @@ fn declaration_scope<'a, 'c: 'a>(
         add_local(this, ident)?;
         typing(this, mc, f, it, None)?;
     } else {
-        let ident = this.identifer_constant(f, ident);
+        let ident = this.identifer_constant(mc, f, ident);
         typing(this, mc, f, it, Some((ident, location)))?;
     }
     Ok(())
@@ -2118,7 +2118,7 @@ fn define_function<'c>(
         add_local(this, ident)?;
         None
     } else {
-        Some((this.identifer_constant(f, ident), location))
+        Some((this.identifer_constant(mc, f, ident), location))
     };
 
     // A `local function f` may call itself: give the local its pre-scanned
@@ -2180,7 +2180,7 @@ fn define_function_member<'c>(
 ) -> Catch {
     devnote!(this it "define_function_member");
     // Push the receiver table.
-    let (_setter, getter) = resolve_etters(this, f, it, base);
+    let (_setter, getter) = resolve_etters(this, mc, f, it, base);
     this.emit_at(f, getter);
 
     loop {
@@ -2201,11 +2201,11 @@ fn define_function_member<'c>(
                 return Err(this.error_at(SiltError::ExpectedToken(Token::OpenParen)));
             }
             // descend into the intermediate table
-            this.emit_identifer_constant_at(f, field);
+            this.emit_identifer_constant_at(mc, f, field);
             this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
         } else {
             // final component: key, closure, then assign
-            this.emit_identifer_constant_at(f, field.clone());
+            this.emit_identifer_constant_at(mc, f, field.clone());
             build_function(this, mc, f, it, field, false, is_method, location.0)?;
             this.emit_at(f, OpCode::TABLE_SET { depth: 1 });
             break;
@@ -3393,9 +3393,10 @@ fn vararg_variable(
     Ok(())
 }
 
-fn resolve_etters(
+fn resolve_etters<'c>(
     this: &mut Compiler,
-    f: FnRef,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     ident: String,
 ) -> (OpCode, OpCode) {
@@ -3416,7 +3417,7 @@ fn resolve_etters(
         }
         None => {
             // println!("============== we're in {}", ident);
-            let ident = this.identifer_constant(f, ident);
+            let ident = this.identifer_constant(mc, f, ident);
             // add_upvalue(this, ident, this.scope_depth);
             (
                 OpCode::SET_GLOBAL { constant: ident },
@@ -3586,7 +3587,7 @@ fn named_variable<'c>(
             add_local(this, ident.clone())?;
             // this.eat(it);
         }
-        resolve_etters(this, f, it, ident)
+        resolve_etters(this, mc, f, it, ident)
     } else {
         unreachable!()
     };
@@ -3626,7 +3627,7 @@ fn named_variable<'c>(
                         add_local(this, ident.clone())?;
                         // this.eat(it);
                     }
-                    resolve_etters(this, f, it, ident)
+                    resolve_etters(this, mc, f, it, ident)
                 } else {
                     unreachable!()
                 };
@@ -3843,7 +3844,7 @@ fn named_variable<'c>(
                     // method call on a chained receiver, e.g. `a.b:m()`. Resolve
                     // the chain to leave the receiver on the stack, then METHOD_GET.
                     this.emit_at(f, OpCode::TABLE_GET { depth: count });
-                    emit_method_get(this, f, it)?;
+                    emit_method_get(this, mc, f, it)?;
                 }
                 _ => {
                     this.emit_at(f, OpCode::TABLE_GET { depth: count });
@@ -3854,7 +3855,7 @@ fn named_variable<'c>(
         Token::Colon => {
             // method call on a bare variable receiver, e.g. `t:m()`.
             this.drain_getters(f);
-            emit_method_get(this, f, it)?;
+            emit_method_get(this, mc, f, it)?;
         }
         _ => {
             if this.local_declare_mode {
@@ -4013,7 +4014,7 @@ fn grouping_or_arrow<'c>(
                 build_arrow_function(this, mc, f, it, vec![first], start.0)
             } else {
                 // `(a)` — ordinary parenthesized variable; emit its getter
-                let (_set, getter) = resolve_etters(this, f, it, first);
+                let (_set, getter) = resolve_etters(this, mc, f, it, first);
                 this.emit_at(f, getter);
                 Ok(())
             }
@@ -4049,9 +4050,9 @@ fn finish_grouped_method_call<'c>(
     start: TokenCell,
 ) -> Catch {
     devnote!(this it "finish_grouped_method_call");
-    let (_set, getter) = resolve_etters(this, f, it, receiver);
+    let (_set, getter) = resolve_etters(this, mc, f, it, receiver);
     this.emit_at(f, getter);
-    let constant = this.identifer_constant(f, method);
+    let constant = this.identifer_constant(mc, f, method);
     this.emit_at(f, OpCode::METHOD_GET { constant });
     this.self_arg = true;
     // The receiver+method are on the stack; resume the infix loop so the call's
@@ -4109,7 +4110,7 @@ fn tabulate<'c>(
                     this.store(it);
                     if let Token::Assign = this.peek(it)? {
                         let ident = this.get_current()?.unwrap_identifier();
-                        this.emit_identifer_constant_at(f, ident.clone());
+                        this.emit_identifer_constant_at(mc, f, ident.clone());
                         this.eat(it);
                         true
                     } else {
@@ -4239,7 +4240,7 @@ fn table_indexer<'c>(
             true
         }
         Token::Dot => {
-            single_table_index(this, f, it)?;
+            single_table_index(this, mc, f, it)?;
             true
         }
         _ => false,
@@ -4251,6 +4252,7 @@ fn table_indexer<'c>(
 
 fn single_table_index<'c>(
     this: &mut Compiler,
+    mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
 ) -> Result<(), ErrorTuple> {
@@ -4260,7 +4262,7 @@ fn single_table_index<'c>(
     let field = t.0?;
     devout!("table_indexer: {} p:{}", field, this.peek(it)?);
     if let Token::Identifier(ident) = field {
-        this.emit_identifer_constant_at(f, ident);
+        this.emit_identifer_constant_at(mc, f, ident);
     } else {
         return Err(this.error_at(SiltError::ExpectedFieldIdentifier));
     }
@@ -4273,6 +4275,7 @@ fn single_table_index<'c>(
 /// any receiver expression (`t:m()`, `a.b:m()`, `f():m()`).
 fn emit_method_get<'c>(
     this: &mut Compiler,
+    mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
 ) -> Catch {
@@ -4283,7 +4286,7 @@ fn emit_method_get<'c>(
         Token::Identifier(ident) => ident,
         _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
     };
-    let constant = this.identifer_constant(f, name);
+    let constant = this.identifer_constant(mc, f, name);
     this.emit_at(f, OpCode::METHOD_GET { constant });
     this.self_arg = true;
     Ok(())
@@ -4296,7 +4299,7 @@ fn emit_method_get<'c>(
 /// so this only fires for grouped / call-result receivers.
 fn method_infix<'c>(
     this: &mut Compiler,
-    _mc: &Mutation<'c>,
+    mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     _can_assign: bool,
@@ -4308,7 +4311,7 @@ fn method_infix<'c>(
         Token::Identifier(ident) => ident,
         _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
     };
-    let constant = this.identifer_constant(f, name);
+    let constant = this.identifer_constant(mc, f, name);
     this.emit_at(f, OpCode::METHOD_GET { constant });
     this.self_arg = true;
     Ok(())
@@ -4322,7 +4325,7 @@ fn method_infix<'c>(
 /// `(a + b).x` / `f().field` parse.
 fn dot_infix<'c>(
     this: &mut Compiler,
-    _mc: &Mutation<'c>,
+    mc: &Mutation<'c>,
     f: FnRef<'_, 'c>,
     it: &mut Peekable<Lexer>,
     _can_assign: bool,
@@ -4331,7 +4334,7 @@ fn dot_infix<'c>(
     let (res, loc) = this.pop(it);
     this.current_location = loc;
     match res? {
-        Token::Identifier(ident) => this.emit_identifer_constant_at(f, ident),
+        Token::Identifier(ident) => this.emit_identifer_constant_at(mc, f, ident),
         _ => return Err(this.error_at(SiltError::ExpectedFieldIdentifier)),
     }
     this.emit_at(f, OpCode::TABLE_GET { depth: 1 });
@@ -4525,7 +4528,7 @@ fn string<'c>(
     devnote!(this _it "string");
     let t = this.copy_store()?;
     let value = if let Token::StringLiteral(s) = t {
-        Value::String(s.into_string())
+        Value::string(_mc, s)
     } else {
         unreachable!()
     };
@@ -4605,10 +4608,15 @@ fn call<'c>(
 /// Emit the getter for the callee identifier that is the current token. Shared by
 /// the string/table call-sugar paths, which (unlike the `(...)` path via
 /// `named_variable`) must push the callee themselves before the single argument.
-fn emit_sugar_callee(this: &mut Compiler, f: FnRef, it: &mut Peekable<Lexer>) -> Catch {
+fn emit_sugar_callee<'c>(
+    this: &mut Compiler,
+    mc: &Mutation<'c>,
+    f: FnRef<'_, 'c>,
+    it: &mut Peekable<Lexer>,
+) -> Catch {
     let start = this.current_location;
     let get = match this.copy_store()? {
-        Token::Identifier(ident) => resolve_etters(this, f, it, ident).1,
+        Token::Identifier(ident) => resolve_etters(this, mc, f, it, ident).1,
         // `variable` only routes identifiers here.
         _ => unreachable!(),
     };
@@ -4625,7 +4633,7 @@ fn call_table<'c>(
 ) -> Catch {
     // Current token is the callee identifier; push it, then advance onto `{` and
     // build the table literal as the single argument.
-    emit_sugar_callee(this, f, it)?;
+    emit_sugar_callee(this, mc, f, it)?;
     let start = this.current_location;
     this.store(it); // current = `{`
 
@@ -4651,7 +4659,7 @@ fn call_string<'c>(
 ) -> Catch {
     // Current token is the callee identifier; push it, then advance onto the string
     // literal and emit it as the single argument.
-    emit_sugar_callee(this, f, it)?;
+    emit_sugar_callee(this, mc, f, it)?;
     let start = this.current_location;
     this.store(it); // current = the string literal
 

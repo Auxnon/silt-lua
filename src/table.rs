@@ -4,7 +4,8 @@ use gc_arena::{Collect, Mutation};
 
 use crate::{
     error::SiltError,
-    hash::FxMap,
+    hash::FxBuild,
+    lstr::StrKey,
     userdata::MetaMethod,
     value::{ExVal, FromLua, ToLua, Value},
     VM,
@@ -29,7 +30,7 @@ use crate::{
 #[collect(no_drop)]
 pub struct Table<'v> {
     array: Vec<Value<'v>>,
-    hash: FxMap<Value<'v>, Value<'v>>,
+    hash: hashbrown::HashMap<Value<'v>, Value<'v>, FxBuild>,
     meta: Option<Value<'v>>,
     id: usize,
 }
@@ -38,7 +39,7 @@ impl<'v> Table<'v> {
     pub fn new(id: usize) -> Self {
         Table {
             array: Vec::new(),
-            hash: FxMap::default(),
+            hash: hashbrown::HashMap::default(),
             meta: None,
             id,
         }
@@ -83,6 +84,12 @@ impl<'v> Table<'v> {
             }
         }
         self.hash.get(key)
+    }
+
+    /// The value at string key `key`, looked up without allocating a string.
+    #[inline]
+    pub fn get_str(&self, key: &str) -> Option<&Value<'v>> {
+        self.hash.get(&StrKey::new(key))
     }
 
     /// Drop trailing `Nil`s so `array.last()` is a real value (or the array is empty).
@@ -408,7 +415,7 @@ impl<'v> Table<'v> {
     /// pattern). Returns `None` when there is no metatable or no `__index`.
     pub fn meta_index(&self) -> Option<Value<'v>> {
         if let Some(Value::Table(mt)) = &self.meta {
-            let v = mt.borrow().get_value(&Value::String("__index".to_string()));
+            let v = mt.borrow().get_str("__index").copied().unwrap_or_default();
             if !matches!(v, Value::Nil) {
                 return Some(v);
             }
@@ -420,7 +427,7 @@ impl<'v> Table<'v> {
         if let Some(Value::Table(t)) = &self.meta {
             if let Some(func) = t
                 .borrow()
-                .get(Value::String(method.as_table_key().to_string()))
+                .get_str(method.as_table_key())
             {
                 return if let Value::Closure(_) = func {
                     Ok(func.clone())

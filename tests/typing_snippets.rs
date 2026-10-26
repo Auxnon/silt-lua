@@ -263,7 +263,7 @@ fn std_globals_match_the_runtime() {
     lua.enter(|vm, _mc| {
         for (k, _) in vm.globals.borrow().iter() {
             if let silt_lua::value::Value::String(s) = k {
-                names.push(s.clone());
+                names.push(s.to_string());
             }
         }
     });

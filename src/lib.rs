@@ -4,6 +4,7 @@ mod compiler;
 pub mod error;
 mod function;
 mod lexer;
+pub mod lstr;
 #[cfg(feature = "snippets")]
 pub mod snippet;
 pub(crate) mod lua_pattern;

@@ -360,7 +360,7 @@ impl Compiler {
         match f.chunk.get_constant(constant) {
             Value::Integer(_) | Value::Number(_) | Value::Infinity(_) => Type::Number,
             Value::String(s) => {
-                self.tc.last_const_str = Some(s.clone());
+                self.tc.last_const_str = Some(s.to_string());
                 Type::StringLit(s.to_string())
             }
             Value::Bool(b) => Type::BoolLit(*b),
@@ -375,7 +375,7 @@ impl Compiler {
 
     fn const_name(f: &FunctionObject, constant: u16) -> Option<String> {
         match f.chunk.get_constant(constant) {
-            Value::String(s) => Some(s.clone()),
+            Value::String(s) => Some(s.to_string()),
             _ => None,
         }
     }

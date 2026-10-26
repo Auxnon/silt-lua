@@ -107,7 +107,8 @@ wasm-bindgen = {version= "0.2.103", optional=true }
 serde = { version = "1.0.219", features = ["derive"], optional=true }
 serde-wasm-bindgen = {version="0.6.5", optional=true}
 serde_json = { version = "1.0.150", optional = true }
-gc-arena = {version= "0.5.3", features=["allocator-api2"] }
+gc-arena = {version= "0.5.3", features=["allocator-api2", "hashbrown"] }
+hashbrown = { version = "0.14", default-features = false, features = ["inline-more", "allocator-api2"] }
 glam = { version = "0.29", optional = true }
 string-interner = "0.18.0"
 colored = "3.0.0"

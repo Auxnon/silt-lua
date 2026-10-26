@@ -965,15 +965,15 @@ impl UserData for TestEnt {
     fn add_methods<'gc, M: UserDataMethods<'gc, Self>>(methods: &mut M) {
         methods.add_meta_method(
             MetaMethod::ToString,
-            |_vm, _mc, this: Option<&mut TestEnt>, _: ()| {
+            |_vm, mc, this: Option<&mut TestEnt>, _: ()| {
                 let id = if let Some(ud) = this { ud.get_id() } else { 0 };
-                Ok(Value::String(format!("[entity {}]", id)))
+                Ok(Value::string(mc, format!("[entity {}]", id)))
             },
         );
 
-        methods.add_meta_method("__concat", |_vm, _mc, this, _: ()| {
+        methods.add_meta_method("__concat", |_vm, mc, this, _: ()| {
             let id = if let Some(ud) = this { ud.get_id() } else { 0 };
-            Ok(Value::String(format!("[entity {}]", id)))
+            Ok(Value::string(mc, format!("[entity {}]", id)))
         });
 
         // Comparison metamethods (trivial impls — ignore the other operand — that just
@@ -988,7 +988,7 @@ impl UserData for TestEnt {
         // the end-to-end proof that `pairs(userdata)` dispatches `__pairs` (§3 / §6.1).
         methods.add_meta_method(MetaMethod::Pairs, |_vm, mc, this, _: ()| {
             let (x, y, z) = this.map(|e| (e.x, e.y, e.z)).unwrap_or((0.0, 0.0, 0.0));
-            let iter = move |_vm: &mut VM<'gc>, _mc: &Mutation<'gc>, args: &[Value<'gc>]| {
+            let iter = move |_vm: &mut VM<'gc>, mc: &Mutation<'gc>, args: &[Value<'gc>]| {
                 let control = args.get(1).cloned().unwrap_or(Value::Nil);
                 let (k, v) = match &control {
                     Value::Nil => ("x", x),
@@ -996,7 +996,7 @@ impl UserData for TestEnt {
                     Value::String(s) if s.as_str() == "y" => ("z", z),
                     _ => return Ok(vec![Value::Nil]),
                 };
-                Ok(vec![Value::String(k.to_string()), Value::Number(v)])
+                Ok(vec![Value::string(mc, k), Value::Number(v)])
             };
             Ok(Value::NativeFunction(Gc::new(
                 mc,

@@ -83,9 +83,9 @@ impl UserData for Counter {
             }
         });
 
-        methods.add_meta_method("__tostring", |_vm, _m, counter, _: ()| {
+        methods.add_meta_method("__tostring", |_vm, mc, counter, _: ()| {
             if let Some(this) = counter {
-                Ok(Value::String(format!("Counter({})", this.get_count())))
+                Ok(Value::string(mc, format!("Counter({})", this.get_count())))
             } else {
                 Err(LuaError::UDBadCall)
             }

@@ -227,7 +227,7 @@ impl Snippet {
         let mut ref_globals = Vec::new();
         let globals = vm.globals.borrow();
         for name in names {
-            match globals.get(name.as_str()) {
+            match globals.get_str(name.as_str()) {
                 Some(v) => match value_snapshot(v) {
                     Some(ex) => value_globals.push((name, ex)),
                     None => ref_globals.push(name),
@@ -292,7 +292,7 @@ pub fn instantiate<'g>(
     // Inject value-typed globals the snippet snapshotted.
     for (name, ex) in &snippet.value_globals {
         let v = ex.into_value(vm, mc)?;
-        vm.globals.borrow_mut(mc).set(name.clone(), v);
+        vm.globals.borrow_mut(mc).set(Value::string(mc, name.as_str()), v);
     }
     let func = materialize_proto(&snippet.proto, vm, mc)?;
     let mut upvalues = Vec::with_capacity(snippet.upvalues.len());

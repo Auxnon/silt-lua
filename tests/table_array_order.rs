@@ -28,9 +28,9 @@ impl UserData for Rec {
             t.list = val;
             Ok(Value::Nil)
         });
-        f.add_field_method_get("joined", |_, _, t| {
+        f.add_field_method_get("joined", |_, mc, t| {
             let s = t.list.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
-            Ok(Value::String(s.into()))
+            Ok(Value::string(mc, s))
         });
         f.add_field_method_get("vx", |_, _, t| Ok(Value::Number(t.v[0])));
         f.add_field_method_get("vy", |_, _, t| Ok(Value::Number(t.v[1])));

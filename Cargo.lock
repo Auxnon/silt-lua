@@ -368,7 +368,7 @@ checksum = "3cd70cf88a32937834aae9614ff2569b5d9467fa0c42c5d7762fd94a8de88266"
 dependencies = [
  "allocator-api2",
  "gc-arena-derive",
- "hashbrown 0.14.0",
+ "hashbrown 0.14.5",
  "sptr",
 ]
 
@@ -403,9 +403,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.14.0"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c6201b9ff9fd90a5a3bac2e56a830d0caa509576f0e503818ee82c181b3437a"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
  "allocator-api2",
 ]
@@ -906,6 +906,7 @@ dependencies = [
  "criterion",
  "gc-arena",
  "glam",
+ "hashbrown 0.14.5",
  "lending-iterator",
  "serde",
  "serde-wasm-bindgen",

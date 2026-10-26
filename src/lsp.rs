@@ -1064,7 +1064,7 @@ pub fn stdlib_names() -> Vec<String> {
         let globals = vm.globals.borrow();
         for (k, v) in globals.iter() {
             if let crate::value::Value::String(name) = k {
-                names.push(name.clone());
+                names.push(name.to_string());
                 if let crate::value::Value::Table(t) = v {
                     for (fk, _) in t.borrow().iter() {
                         if let crate::value::Value::String(f) = fk {

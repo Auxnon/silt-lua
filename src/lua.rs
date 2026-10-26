@@ -691,6 +691,17 @@ impl<'gc> Lua {
         self.arena.collect_all();
     }
 
+    /// Carry a run started with `yieldable` set to completion: while it is paused,
+    /// collect what it owes and resume it. `out` is the result once it has returned.
+    fn drive(&mut self, mut out: LuaResult) -> LuaResult {
+        while self.arena.mutate(|_, vm| vm.is_suspended()) {
+            self.arena.collect_debt();
+            out = self.arena.mutate_root(|mc, vm| vm.resume(mc));
+        }
+        self.arena.mutate_root(|_, vm| vm.yieldable = false);
+        out
+    }
+
     /// Total bytes currently tracked as live by the garbage collector. Useful for
     /// asserting that collection actually reclaims memory.
     pub fn allocated_bytes(&self) -> usize {
@@ -701,6 +712,7 @@ impl<'gc> Lua {
         let out = self.arena.mutate_root(|mc, root| {
             match compiler.try_compile(mc, name, code) {
                 Ok(f) => {
+                    root.yieldable = true;
                     let res: LuaResult = root.borrow_mut().run(mc, Gc::new(mc, f));
 
                     // let res=root..run(mc, Gc::new(mc,f));
@@ -709,6 +721,7 @@ impl<'gc> Lua {
                 Err(er) => Err(er),
             }
         });
+        let out = self.drive(out);
         // `last_return` exists only for `extract_snippet`, which reads it inside its own
         // mutation; don't let a plain run keep the returned value alive until the next one.
         #[cfg(feature = "snippets")]
@@ -880,7 +893,11 @@ impl<'gc> Lua {
     }
 
     pub fn cycle(&mut self) -> LuaResult {
-        let out = self.arena.mutate_root(|mc, vm| vm.borrow_mut().cycle(mc));
+        let out = self.arena.mutate_root(|mc, vm| {
+            vm.yieldable = true;
+            vm.cycle(mc)
+        });
+        let out = self.drive(out);
         self.arena.collect_debt();
         out
     }
@@ -957,7 +974,11 @@ impl<'gc> Lua {
     {
         let out = self
             .arena
-            .mutate_root(|mc, vm| vm.call_fn(mc, name, index, params));
+            .mutate_root(|mc, vm| {
+                vm.yieldable = true;
+                vm.call_fn(mc, name, index, params)
+            });
+        let out = self.drive(out);
         self.arena.collect_debt();
         out
         // rr
@@ -1061,7 +1082,32 @@ pub struct VM<'gc> {
     /// native call doesn't heap-allocate a fresh Vec (see the CALL handler). Taken out
     /// via `mem::take` during the call to avoid aliasing `&mut VM`, then restored.
     arg_scratch: Vec<Value<'gc>>,
+    /// A top-level run paused so the collector can run (see `Lua::drive`): its frames,
+    /// resumed by `VM::resume`, and how to wrap it up once it returns.
+    suspended: Option<Vec<CallFrame<'gc>>>,
+    finish: Finish,
+    /// Lets the outermost interpreter loop pause for collection. Only `Lua`'s entry
+    /// points set it, since they are the ones that collect and resume.
+    yieldable: bool,
+    /// Nesting depth of `process`: a native calling back into Lua (pcall, gsub, sort)
+    /// runs a nested loop on the Rust stack, which can't be parked, so only depth 1 pauses.
+    depth: u32,
 }
+
+/// What a top-level run does after its last RETURN.
+#[derive(Collect, Clone, Copy)]
+#[collect(require_static)]
+enum Finish {
+    /// A chunk (`execute`): close upvalues into its slots and clear the stack.
+    Chunk,
+    /// A stored function (`call_fn`): reset the stack.
+    Call,
+}
+
+/// Allocation debt (bytes) at which the outermost loop pauses so the collector can run.
+/// Without this a long loop that allocates (strings, tables) would hold every
+/// allocation until the script returned.
+const YIELD_DEBT: f64 = 64.0 * 1024.0;
 
 /// Slots guaranteed above a frame's base when it is entered (see `VM::ensure_stack`).
 const STACK_HEADROOM: usize = 256;
@@ -1150,6 +1196,10 @@ impl<'gc> VM<'gc> {
             #[cfg(feature = "snippets")]
             snippet_closure: None,
             arg_scratch: Vec::with_capacity(8),
+            suspended: None,
+            finish: Finish::Chunk,
+            yieldable: false,
+            depth: 0,
         }
     }
 
@@ -1280,7 +1330,7 @@ impl<'gc> VM<'gc> {
                     // not a fresh recompile. (self.root isn't a reliable handle: `run` does
                     // not install the program as root.)
                     let live_top = new_top.name.as_ref().and_then(|n| {
-                        match self.globals.borrow().get(n.as_str()) {
+                        match self.globals.borrow().get_str(n.as_str()) {
                             Some(Value::Closure(c)) => Some(c.function),
                             _ => None,
                         }
@@ -1394,7 +1444,7 @@ impl<'gc> VM<'gc> {
         //    stage 2 (function-slot indirection).
         for (fn_name, new_fn) in changed_globals {
             // Capture the live closure's upvalue cells, if this name is a global closure.
-            let old_upvalues = match self.globals.borrow().get(fn_name.as_str()) {
+            let old_upvalues = match self.globals.borrow().get_str(fn_name.as_str()) {
                 Some(Value::Closure(old)) => Some(old.upvalues.clone()),
                 _ => None,
             };
@@ -1415,7 +1465,7 @@ impl<'gc> VM<'gc> {
             let new_closure = Gc::new(mc, Closure::new(new_fn, upvalues));
             self.globals
                 .borrow_mut(mc)
-                .set(Value::String(fn_name), Value::Closure(new_closure));
+                .set(Value::string(mc, fn_name), Value::Closure(new_closure));
         }
 
         // 7b. STAGE 2 — live-apply nested function swaps. Each changed nested function
@@ -1463,13 +1513,7 @@ impl<'gc> VM<'gc> {
         self.push(Value::Function(object)); // frame base / self slot
         let frames = vec![frame];
         let out = self.process(&mut ep, frames);
-        // The chunk is over. Close every upvalue still pointing into its stack slots — a
-        // root local captured by a global function keeps its value instead of aliasing
-        // whatever the next chunk puts in that slot — then drop the dead slots so the
-        // chunk's locals (and anything they held) can be collected.
-        self.close_upvalues_by_return(mc, 0);
-        self.stack.iter_mut().for_each(|v| *v = Value::Nil);
-        out
+        self.finish_run(mc, Finish::Chunk, out)
     }
 
     /// dump all newest userdata as weak references but keep atomic strong references within the lua
@@ -1814,7 +1858,7 @@ impl<'gc> VM<'gc> {
     where
         T: for<'e> ToLuaMulti<'e>,
     {
-        let func = match self.globals.borrow().get(name) {
+        let func = match self.globals.borrow().get_str(name) {
             None | Some(Value::Nil) => return None,
             Some(v) => v.clone(),
         };
@@ -1849,13 +1893,63 @@ impl<'gc> VM<'gc> {
     fn process(
         &mut self,
         ep: &mut Ephemeral<'_, 'gc>,
+        frames: Vec<CallFrame<'gc>>,
+    ) -> Result<ExVal, ErrorOut> {
+        self.depth += 1;
+        let out = self.process_loop(ep, frames);
+        self.depth -= 1;
+        out
+    }
+
+    /// Resume a run that paused for collection (`suspended`), finishing it like the
+    /// entry point that started it. Returns `Ok(Nil)` if it pauses again.
+    pub(crate) fn resume(&mut self, mc: &Mutation<'gc>) -> Result<ExVal, ErrorOut> {
+        let Some(frames) = self.suspended.take() else {
+            return Ok(ExVal::Nil);
+        };
+        let mut ep = Ephemeral::new(mc);
+        let out = self.process(&mut ep, frames);
+        self.finish_run(mc, self.finish, out)
+    }
+
+    /// Wrap up a top-level run once it has returned; a paused one is left alone.
+    fn finish_run(
+        &mut self,
+        mc: &Mutation<'gc>,
+        finish: Finish,
+        out: Result<ExVal, ErrorOut>,
+    ) -> Result<ExVal, ErrorOut> {
+        if self.suspended.is_some() {
+            self.finish = finish;
+            return out;
+        }
+        match finish {
+            Finish::Chunk => {
+                // Close every upvalue still pointing into the chunk's stack slots — a
+                // root local captured by a global function keeps its value instead of
+                // aliasing whatever the next chunk puts in that slot — then drop the
+                // dead slots so the chunk's locals can be collected.
+                self.close_upvalues_by_return(mc, 0);
+                self.stack.iter_mut().for_each(|v| *v = Value::Nil);
+            }
+            // Top-level entry: leave the stack empty for the next call regardless of outcome.
+            Finish::Call => self.stack_count = 0,
+        }
+        out
+    }
+
+    /// Is a top-level run paused for collection?
+    pub(crate) fn is_suspended(&self) -> bool {
+        self.suspended.is_some()
+    }
+
+    fn process_loop(
+        &mut self,
+        ep: &mut Ephemeral<'_, 'gc>,
         mut frames: Vec<CallFrame<'gc>>,
     ) -> Result<ExVal, ErrorOut> {
-        // let mut last = Value::Nil; // TODO temporary for testing
-        // let stack_pointer = self.stack.as_mut_ptr();
-        // let mut dummy_frame = CallFrame::new(Rc::new(FunctionObject::new(None, false)), 0);
+        let mut frame_count = frames.len() as isize;
         let mut frame = frames.last_mut().unwrap();
-        let mut frame_count = 1;
         // When the previous instruction was a trailing multiret call (Lua's `f(g())`),
         // this records the stack index where that call's return values begin, so the
         // immediately-following outer CALL can spread them. Consumed (taken) by that CALL.
@@ -1864,6 +1958,23 @@ impl<'gc> VM<'gc> {
         // body.chunk.print_chunk(None);
         #[cfg(feature = "dev-out")]
         let mut step_count = 0;
+        // Only the outermost loop of a `Lua`-driven run may park itself.
+        let may_pause = self.yieldable && self.depth == 1;
+        let mut paused = false;
+        // After an allocating instruction: if the collector is owed enough work, step
+        // past it, park the frames and return so `Lua::drive` can collect and resume.
+        macro_rules! pause_point {
+            () => {
+                if may_pause
+                    && pending_multiret.is_none()
+                    && ep.mc.metrics().allocation_debt() > YIELD_DEBT
+                {
+                    frame.iterate();
+                    paused = true;
+                    break Ok(ExVal::Nil);
+                }
+            };
+        }
         let results: Result<ExVal, SiltError> = loop {
             let instruction = frame.current_instruction();
 
@@ -2010,7 +2121,7 @@ impl<'gc> VM<'gc> {
                     let value = Self::get_chunk(frame).get_constant(*constant);
                     if let Value::String(s) = value {
                         let v = self.pop();
-                        self.globals.borrow_mut(ep.mc).set(s, v);
+                        self.globals.borrow_mut(ep.mc).set(Value::String(*s), v);
                     } else {
                         break Err(SiltError::VmCorruptConstant);
                     }
@@ -2026,7 +2137,7 @@ impl<'gc> VM<'gc> {
                         // Assignment consumes its value (no trailing POP from the
                         // compiler), so pop rather than clone-and-leave.
                         let v = self.pop();
-                        self.globals.borrow_mut(ep.mc).set(s, v);
+                        self.globals.borrow_mut(ep.mc).set(Value::String(*s), v);
                     } else {
                         // devout!("0SET_GLOBAL: {}", value);
                         #[cfg(feature = "dev-out")]
@@ -2541,7 +2652,10 @@ impl<'gc> VM<'gc> {
                     let l = self.pop();
                     match (l, r) {
                         (Value::String(left), Value::String(right)) => {
-                            self.push(Value::String(left + &right))
+                            let mut out = String::with_capacity(left.len() + right.len());
+                            out.push_str(&left);
+                            out.push_str(&right);
+                            self.push(Value::string(ep.mc, out))
                         }
                         // A userdata operand (either side) dispatches its `__concat`
                         // metamethod, with the operands passed in source order. Checked
@@ -2567,7 +2681,7 @@ impl<'gc> VM<'gc> {
                             self.push(v);
                         }
                         (Value::String(left), v2) => {
-                            self.push(Value::String(left + &v2.to_string()))
+                            self.push(Value::string(ep.mc, format!("{}{}", left, v2)))
                         }
                         // A table operand dispatches to its `__concat` metamethod.
                         (Value::Table(table), rr) => {
@@ -2577,10 +2691,11 @@ impl<'gc> VM<'gc> {
                             self.push(v);
                         }
                         (v1, Value::String(right)) => {
-                            self.push(Value::String(v1.to_string() + &right))
+                            self.push(Value::string(ep.mc, format!("{}{}", v1, right)))
                         }
-                        (v1, v2) => self.push(Value::String(v1.to_string() + &v2.to_string())),
+                        (v1, v2) => self.push(Value::string(ep.mc, format!("{}{}", v1, v2))),
                     }
+                    pause_point!();
                 }
 
                 OpCode::LITERAL {
@@ -2764,6 +2879,7 @@ impl<'gc> VM<'gc> {
 
                         bubble!(FunctionObject::push_closure(f.clone(), self, frame, ep));
                     }
+                    pause_point!();
                 }
 
                 OpCode::GET_UPVALUE { index } => {
@@ -2974,6 +3090,7 @@ impl<'gc> VM<'gc> {
                                     }
                                 }
                             }
+                            pause_point!();
                         }
                         _ => {
                             break Err(SiltError::NotCallable(format!("Value: {}", value)));
@@ -3000,6 +3117,7 @@ impl<'gc> VM<'gc> {
                 OpCode::NEW_TABLE => {
                     self.push(self.new_table(ep.mc));
                     *self.table_counter.borrow_mut() += 1;
+                    pause_point!();
                 }
                 OpCode::TABLE_INSERT { offset } => {
                     if let Err(e) = self.insert_immediate_table(ep, *offset) {
@@ -3017,6 +3135,7 @@ impl<'gc> VM<'gc> {
                     if let Err(e) = self.build_table(ep, n) {
                         break Err(e);
                     }
+                    pause_point!();
                 }
                 OpCode::TABLE_SET { depth } => {
                     let value = self.pop();
@@ -3053,7 +3172,7 @@ impl<'gc> VM<'gc> {
                         Value::Table(t) => Self::meta_index_get(*t, &key),
                         // Strings dispatch methods through the `string` library
                         // (Lua's string metatable: `("x"):upper()` == string.upper("x")).
-                        Value::String(_) => match self.globals.borrow().get("string") {
+                        Value::String(_) => match self.globals.borrow().get_str("string") {
                             Some(Value::Table(t)) => t.borrow().get_value(&key),
                             _ => Value::Nil,
                         },
@@ -3061,7 +3180,7 @@ impl<'gc> VM<'gc> {
                         // exactly like strings: `v:length()` == vec.length(v).
                         #[cfg(feature = "vector")]
                         Value::Vec2(_) | Value::Vec3(_) | Value::Vec4(_) => {
-                            match self.globals.borrow().get("vec") {
+                            match self.globals.borrow().get_str("vec") {
                                 Some(Value::Table(t)) => t.borrow().get_value(&key),
                                 _ => Value::Nil,
                             }
@@ -3170,6 +3289,10 @@ impl<'gc> VM<'gc> {
                 println!("--------------------------------------");
             }
         };
+        if paused {
+            self.suspended = Some(frames);
+            return Ok(ExVal::Nil);
+        }
         match results {
             Ok(o) => Ok(o),
             Err(e) => {
@@ -3232,7 +3355,7 @@ impl<'gc> VM<'gc> {
             (Value::Integer(left), Value::Integer(right)) => left == right,
             (Value::Number(left), Value::Integer(right)) => *left == *right as f64,
             (Value::Integer(left), Value::Number(right)) => *left as f64 == *right,
-            (Value::String(left), Value::String(right)) => left == right,
+            (Value::String(left), Value::String(right)) => Gc::ptr_eq(*left, *right) || **left == **right,
             (Value::Bool(left), Value::Bool(right)) => left == right,
             (Value::Nil, Value::Nil) => true,
             (Value::Infinity(left), Value::Infinity(right)) => left == right,
@@ -3260,7 +3383,7 @@ impl<'gc> VM<'gc> {
             (Value::Number(left), Value::Integer(right)) => *left < *right as f64,
             (Value::Integer(left), Value::Number(right)) => (*left as f64) < (*right),
             // strings compare lexicographically by byte order (Lua's default)
-            (Value::String(left), Value::String(right)) => left < right,
+            (Value::String(left), Value::String(right)) => left.as_str() < right.as_str(),
             (Value::Infinity(left), Value::Infinity(right)) => left != right && *left,
             (_, _) => Err(SiltError::ExpOpValueWithValue(
                 l.to_error(),
@@ -3280,7 +3403,7 @@ impl<'gc> VM<'gc> {
             }
             (Value::Number(left), Value::Integer(right)) => *left > *right as f64,
             (Value::Integer(left), Value::Number(right)) => (*left as f64) > (*right),
-            (Value::String(left), Value::String(right)) => left > right,
+            (Value::String(left), Value::String(right)) => left.as_str() > right.as_str(),
             (Value::Infinity(left), Value::Infinity(right)) => left != right && !*left,
             (_, _) => Err(SiltError::ExpOpValueWithValue(
                 l.to_error(),
@@ -3378,9 +3501,7 @@ impl<'gc> VM<'gc> {
         let mut frame = CallFrame::new(closure, 0, n.min(u8::MAX as usize) as u8, 0);
         frame.base = frame_top;
         let out = self.process(&mut ep, vec![frame]);
-        // Top-level entry: leave the stack empty for the next call regardless of outcome.
-        self.stack_count = 0;
-        out
+        self.finish_run(mc, Finish::Call, out)
         // Ok(ExVal::Nil)
 
         // if !params.is_empty() {
@@ -3888,7 +4009,7 @@ impl<'gc> VM<'gc> {
         self.register_native_multi_function_to(mc, &mut table, "concat", crate::standard::table_concat);
         self.register_native_multi_function_to(mc, &mut table, "unpack", crate::standard::table_unpack);
         let t = self.wrap_table(mc, table);
-        self.globals.borrow_mut(mc).set("table", t);
+        self.globals.borrow_mut(mc).set(Value::string(mc, "table"), t);
 
         // math library
         let mut math = self.raw_table();
@@ -3909,12 +4030,12 @@ impl<'gc> VM<'gc> {
             "randomseed",
             crate::standard::math_randomseed,
         );
-        math.set("pi", Value::Number(std::f64::consts::PI));
-        math.set("huge", Value::Number(f64::INFINITY));
-        math.set("maxinteger", Value::Integer(i64::MAX));
-        math.set("mininteger", Value::Integer(i64::MIN));
+        math.set(Value::string(mc, "pi"), Value::Number(std::f64::consts::PI));
+        math.set(Value::string(mc, "huge"), Value::Number(f64::INFINITY));
+        math.set(Value::string(mc, "maxinteger"), Value::Integer(i64::MAX));
+        math.set(Value::string(mc, "mininteger"), Value::Integer(i64::MIN));
         let math_t = self.wrap_table(mc, math);
-        self.globals.borrow_mut(mc).set("math", math_t);
+        self.globals.borrow_mut(mc).set(Value::string(mc, "math"), math_t);
 
         // string library
         let mut string = self.raw_table();
@@ -3943,7 +4064,7 @@ impl<'gc> VM<'gc> {
         );
         self.register_native_multi_function_to(mc, &mut string, "gsub", crate::standard::string_gsub);
         let string_t = self.wrap_table(mc, string);
-        self.globals.borrow_mut(mc).set("string", string_t);
+        self.globals.borrow_mut(mc).set(Value::string(mc, "string"), string_t);
 
         // Vector library (feature `vector`): global `vec2`/`vec3`/`vec4` constructors and
         // the `vec` method table (`v:length()` etc., dispatched like the string library).
@@ -3965,7 +4086,7 @@ impl<'gc> VM<'gc> {
             self.register_native_function_to(mc, &mut vec, "distance", crate::vector_lib::distance);
             self.register_native_function_to(mc, &mut vec, "cross", crate::vector_lib::cross);
             let vec_t = self.wrap_table(mc, vec);
-            self.globals.borrow_mut(mc).set("vec", vec_t);
+            self.globals.borrow_mut(mc).set(Value::string(mc, "vec"), vec_t);
         }
 
         // Example of closure without turbofish
@@ -4004,7 +4125,7 @@ impl<'gc> VM<'gc> {
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
         // println!("add native {}, {}", name,v);
-        self.globals.borrow_mut(mc).set(name, v);
+        self.globals.borrow_mut(mc).set(Value::string(mc, name), v);
     }
 
     /// Register a multi-return native function (raw arg slice in, `Vec<Value>` out).
@@ -4016,7 +4137,7 @@ impl<'gc> VM<'gc> {
         let raw = NativeFunctionRaw::new_multi(function);
         let f = WrappedFn { f: Rc::new(raw) };
         let v = Value::NativeFunction(Gc::new(mc, f));
-        self.globals.borrow_mut(mc).set(name, v);
+        self.globals.borrow_mut(mc).set(Value::string(mc, name), v);
     }
 
     /// Like [`register_native_multi_function`] but binds the multi-return native into
@@ -4033,7 +4154,7 @@ impl<'gc> VM<'gc> {
     {
         let raw = NativeFunctionRaw::new_multi(function);
         let f = WrappedFn { f: Rc::new(raw) };
-        table.set(name, Value::NativeFunction(Gc::new(mc, f)));
+        table.set(Value::string(mc, name), Value::NativeFunction(Gc::new(mc, f)));
     }
     //
     pub fn register_native_function_to<A, F, R>(
@@ -4054,7 +4175,7 @@ impl<'gc> VM<'gc> {
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
-        table.set(name, v);
+        table.set(Value::string(mc, name), v);
     }
     // pub fn register_native_function<T, R>(
     //     &mut self,

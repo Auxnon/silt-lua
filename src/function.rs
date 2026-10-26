@@ -36,6 +36,15 @@ pub struct CallFrame<'gc> {
     pub call_arity: u8,
 }
 
+// A suspended run parks its frames in the VM root (see `VM::suspended`), so they
+// must be traced. `code` borrows from `proto`, which is traced here.
+unsafe impl<'gc> Collect for CallFrame<'gc> {
+    fn trace(&self, cc: &gc_arena::Collection) {
+        self.function.trace(cc);
+        self.proto.trace(cc);
+    }
+}
+
 impl<'frame> CallFrame<'frame> {
     pub fn new<'a>(
         function: Gc<'frame, Closure<'frame>>,
