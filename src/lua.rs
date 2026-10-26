@@ -168,6 +168,50 @@ fn field_key<'a>(key: &'a Value<'_>) -> std::borrow::Cow<'a, str> {
     }
 }
 
+/// Whether a value is a vector, which indexes like a read-only record.
+#[inline]
+fn is_vector(v: &Value<'_>) -> bool {
+    #[cfg(feature = "vector")]
+    if let Value::Vec2(_) | Value::Vec3(_) | Value::Vec4(_) = v {
+        return true;
+    }
+    let _ = v;
+    false
+}
+
+/// A vector's `.x/.y/.z/.w` as a number. Only called on vectors (`is_vector`).
+fn vector_field<'gc>(v: &Value<'gc>, key: &Value<'gc>) -> Result<Value<'gc>, SiltError> {
+    let name = field_key(key);
+    #[cfg(feature = "vector")]
+    {
+        let c = match (v, &*name) {
+            (Value::Vec2(v), "x") => Some(v.0.x),
+            (Value::Vec2(v), "y") => Some(v.0.y),
+            (Value::Vec3(v), "x") => Some(v.0.x),
+            (Value::Vec3(v), "y") => Some(v.0.y),
+            (Value::Vec3(v), "z") => Some(v.0.z),
+            (Value::Vec4(v), "x") => Some(v.0.x),
+            (Value::Vec4(v), "y") => Some(v.0.y),
+            (Value::Vec4(v), "z") => Some(v.0.z),
+            (Value::Vec4(v), "w") => Some(v.0.w),
+            _ => None,
+        };
+        if let Some(c) = c {
+            return Ok(Value::Number(c as f64));
+        }
+    }
+    Err(SiltError::Custom(format!("'{}' is not a field of {}", name, v.type_name())))
+}
+
+/// Vectors are values: `t.n.x = 9` can't change the vector `t.n` holds in place.
+fn vector_read_only(v: &Value<'_>, key: &Value<'_>) -> SiltError {
+    let ty = v.type_name();
+    SiltError::Custom(format!(
+        "{ty} fields are read-only: cannot set '{}', assign a new {ty} instead",
+        field_key(key)
+    ))
+}
+
 /// Coerce a value to an integer for bitwise ops, per Lua: integers pass through,
 /// floats with an exact integer value convert, everything else has "no integer
 /// representation" and is rejected by the caller.
@@ -3147,6 +3191,8 @@ impl<'gc> VM<'gc> {
                         Value::Table(_) | Value::UserData(_) => {
                             self.operate_table(ep, *depth, Some(value))
                         }
+                        // read-only; operate_table names the field in its error
+                        v if is_vector(v) => self.operate_table(ep, *depth, Some(value)),
                         // Same message as TABLE_GET on a non-table receiver.
                         other => Err(SiltError::VmNonTableOperations(other.to_error())),
                     });
@@ -3223,36 +3269,22 @@ impl<'gc> VM<'gc> {
                         // Vector field access `.x/.y/.z/.w` → the component as a number.
                         // Mirrors the userdata write-back: collapse [vec, key] into the
                         // single component value at the receiver slot.
+                        // A longer chain (`v.x.y`) goes through operate_table, which
+                        // reports indexing the component.
+                        #[cfg(feature = "vector")]
+                        v @ (Value::Vec2(_) | Value::Vec3(_) | Value::Vec4(_)) if *depth == 1 => {
+                            match vector_field(v, &self.stack[table_point + 1]) {
+                                Ok(c) => {
+                                    self.stack_count = table_point + 1;
+                                    self.stack[table_point] = c;
+                                }
+                                Err(e) => break Err(e),
+                            }
+                        }
                         #[cfg(feature = "vector")]
                         Value::Vec2(_) | Value::Vec3(_) | Value::Vec4(_) => {
-                            let value = self.stack[table_point].clone();
-                            let field = self.pop();
-                            let field_name = field.pure_string();
-                            let component = match (&value, field_name.as_str()) {
-                                (Value::Vec2(v), "x") => Some(v.0.x),
-                                (Value::Vec2(v), "y") => Some(v.0.y),
-                                (Value::Vec3(v), "x") => Some(v.0.x),
-                                (Value::Vec3(v), "y") => Some(v.0.y),
-                                (Value::Vec3(v), "z") => Some(v.0.z),
-                                (Value::Vec4(v), "x") => Some(v.0.x),
-                                (Value::Vec4(v), "y") => Some(v.0.y),
-                                (Value::Vec4(v), "z") => Some(v.0.z),
-                                (Value::Vec4(v), "w") => Some(v.0.w),
-                                _ => None,
-                            };
-                            match component {
-                                Some(c) => {
-                                    // the key was already popped above (u - 1 == 1 here)
-                                    self.stack_count = table_point + 1;
-                                    self.stack[table_point] = Value::Number(c as f64);
-                                }
-                                None => {
-                                    break Err(SiltError::Custom(format!(
-                                        "'{}' is not a field of {}",
-                                        field_name,
-                                        value.type_name()
-                                    )))
-                                }
+                            if let Err(e) = self.operate_table(ep, *depth, None) {
+                                break Err(e);
                             }
                         }
                         other => break Err(SiltError::VmNonTableOperations(other.to_error())),
@@ -3764,7 +3796,7 @@ impl<'gc> VM<'gc> {
         };
         let table_point = self.stack_count - u;
         let table = &self.stack[table_point];
-        if let Value::Table(_) | Value::UserData(_) = table {
+        if matches!(table, Value::Table(_) | Value::UserData(_)) || is_vector(table) {
             // Each link may be a table or a userdata: `b.ent.x = v` walks the
             // table `b` to the userdata `b.ent`, then sets its field.
             let mut current = table.clone();
@@ -3797,7 +3829,7 @@ impl<'gc> VM<'gc> {
                                         value,
                                     )?;
                                 }
-                                _ => unreachable!(),
+                                v => return Err(vector_read_only(v, &key)),
                             }
                             self.stack[table_point] = Value::Nil;
                         }
@@ -3815,7 +3847,7 @@ impl<'gc> VM<'gc> {
                                         &name,
                                     )?
                                 }
-                                _ => unreachable!(),
+                                v => vector_field(v, &key)?,
                             };
                             self.stack[table_point] = out;
                         }
@@ -3835,10 +3867,22 @@ impl<'gc> VM<'gc> {
                                 &name,
                             )?)
                         }
-                        _ => unreachable!(),
+                        // a component is a number, so nothing past it can be indexed
+                        v => {
+                            let c = vector_field(v, &key)?;
+                            return Err(SiltError::Custom(format!(
+                                "cannot index '{}' of {}: it is a {}",
+                                field_key(&key),
+                                v.type_name(),
+                                c.type_name()
+                            )));
+                        }
                     };
                     match check {
                         Some(v @ (Value::Table(_) | Value::UserData(_))) => {
+                            current = v;
+                        }
+                        Some(v) if is_vector(&v) => {
                             current = v;
                         }
                         Some(Value::Nil) | None => {
