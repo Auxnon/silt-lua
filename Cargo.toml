@@ -14,16 +14,16 @@ exclude = [
     "./wasm-tester/index.html",
 ]
 
+# The library is the root package; the `silt` binary (CLI, REPL, `silt lsp`) is the
+# `cli/` member, so its terminal dependencies never reach library users.
+[workspace]
+members = ["cli"]
+
 [lib]
 name = "silt_lua"
 path = "src/lib.rs"
 crate-type = ["cdylib", "lib"]
 bench = false   # only benches/interpreter.rs is a benchmark target (avoids cargo 6313 warning)
-
-[[bin]]
-name = "silt"
-path = "src/main.rs"
-bench = false
 
 [profile.release]
 strip = true    # Automatically strip symbols from the binary.

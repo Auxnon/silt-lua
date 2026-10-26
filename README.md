@@ -14,6 +14,12 @@ This library has been written from the ground up with observations of the lua la
 
 ## Running
 
+The `silt` command is the `cli/` package of this workspace (the library itself has no binary or terminal dependencies):
+
+```sh
+just install                     # = cargo install --path cli; the REPL, `silt lsp` and vectors are built in
+```
+
 The `silt` binary takes either a file path or an inline program:
 
 ```sh
@@ -24,6 +30,23 @@ silt --help                      # usage (alias: -h)
 ```
 
 With `--run`/`-r`, everything after the flag is treated as the Lua source (quote it so your shell passes it as one argument). The final returned value is printed after a separator line.
+
+### REPL
+
+`silt` with no arguments (or `silt repl`) starts an interactive REPL in the style of Luau's:
+
+```sh
+silt                 # or: silt --theme ocean
+```
+
+- Expressions print their value (`> 1 + 2` → `3`, tables expanded); anything else runs as a statement. Globals persist between inputs; locals last for the input that declares them, as in Luau.
+- Live syntax highlighting, and type errors before anything runs (with `typing`).
+- An unfinished block, bracket or expression continues on a `┆` line, auto-indented one level per open block (a nested function goes two in); `end`, `}`, `else` … step back out. An empty line runs it anyway.
+- <kbd>Tab</kbd> indents on a blank continuation line, and otherwise completes keywords, the standard library and globals defined earlier in the session; history is kept in `$XDG_STATE_HOME/silt/history`.
+- `:help`, `:theme [name]`, `:reset`, `:clear`, `:quit`.
+- Themes are Charm-style palettes from [ratatui-cheese](https://github.com/shashanktomar/ratatui-cheese): `charm` (default), `dark`, `light`, `ocean`, `sunset` — pick with `--theme`, `SILT_THEME`, or `:theme`. `NO_COLOR` turns colour off; piped input runs as a script.
+
+The REPL lives in the `cli/` package (`cli/src/repl/`) with its dependencies (`reedline`, `nu-ansi-term`); the `silt-lua` library doesn't depend on them, so embedders and wasm builds never compile them.
 
 ## Limitations
 
@@ -66,10 +89,10 @@ Keep in mind these may be polarizing and an LSP will flag them as an error
 
 silt can act as a language server so editors get live diagnostics and formatting for silt/Lua source — including silt's custom syntax (arrow functions, compound assignment, `!`, etc.) that a stock Lua LSP wouldn't understand.
 
-Build with the server feature and launch over stdio:
+Install the `silt` command and launch the server over stdio:
 
 ```sh
-cargo build --release --features lsp-server   # add to defaults: --features "silt lsp-server"
+cargo install --path cli                       # `silt lsp` is on by default
 silt lsp                                       # speaks LSP/JSON-RPC on stdio
 ```
 

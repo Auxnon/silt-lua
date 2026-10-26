@@ -1,8 +1,19 @@
 use silt_lua::{Compiler, Lua};
 
-const FALLBACK_FILE: &str = "scripts/vararg.lua";
+// The interactive REPL lives only in this binary package, never the library.
+mod repl;
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    // `--theme <name>` (REPL colours) may appear anywhere
+    let theme = match args.iter().position(|a| a == "--theme") {
+        Some(i) if i + 1 < args.len() => {
+            let t = args.remove(i + 1);
+            args.remove(i);
+            Some(t)
+        }
+        _ => None,
+    };
     {
         // cli(source_in, &mut global);
 
@@ -262,11 +273,15 @@ fn main() {
             #[cfg(not(feature = "lsp-server"))]
             {
                 eprintln!(
-                    "silt was built without the 'lsp-server' feature; rebuild with \
-                     `cargo build --release --features lsp-server`"
+                    "silt was built without the 'lsp-server' feature (on by default); \
+                     reinstall with `cargo install --path cli`"
                 );
                 return;
             }
+        }
+        Some("repl") | Some("-i") | Some("--interactive") => {
+            repl::run(theme);
+            return;
         }
         Some("--run") | Some("-r") => {
             // Everything after the flag is the program. Joining args[2..] lets an
@@ -286,13 +301,8 @@ fn main() {
             }
         },
         None => {
-            #[cfg(not(debug_assertions))]
-            {
-                println!("REPL not yet available! Pass a lua file path or --run \"<lua>\"");
-                return;
-            }
-            #[cfg(debug_assertions)]
-            std::fs::read_to_string(FALLBACK_FILE).unwrap()
+            repl::run(theme);
+            return;
         }
     };
     let source_in = file.as_str();
@@ -390,13 +400,18 @@ USAGE:
     silt [OPTIONS] [FILE]
 
 ARGS:
-    <FILE>             Path to a Lua script to run
+    <FILE>             Path to a Lua script to run (none: start the REPL)
 
 OPTIONS:
     -r, --run <LUA>    Run a Lua program string directly
+    -i, repl           Start the interactive REPL
+    --theme <NAME>     REPL colours: charm (default), dark, light, ocean, sunset
+                       (or set SILT_THEME; NO_COLOR disables colour)
     -h, --help         Show this help
+    lsp                Run the language server
 
 EXAMPLES:
+    silt
     silt script.lua
     silt --run \"return 1 + 2\"
     silt -r 'print(\"hello\")'
