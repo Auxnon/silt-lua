@@ -1,6 +1,7 @@
 use std::vec;
 
 use crate::{
+    lstr::LuaStr,
     code::{ConstIndex, OpCode},
     error::TokenCell,
     value::Value,
@@ -95,7 +96,7 @@ impl<'chnk> Chunk<'chnk> {
             }
         }) {
             Some(i) => i,
-            None => self.write_constant(Value::string(mc, identifier)),
+            None => self.write_constant(Value::String(LuaStr::gc(mc, identifier))),
         }
     }
 

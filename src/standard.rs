@@ -3,6 +3,7 @@ use std::rc::Rc;
 use gc_arena::{Gc, Mutation};
 
 use crate::{
+    lstr::LuaStr,
     error::SiltError,
     function::{NativeFunctionRaw, WrappedFn},
     prelude::VM,
@@ -155,7 +156,7 @@ pub fn lua_pcall<'lua>(
     };
     match vm.call_protected(mc, func, &args[1..]) {
         Ok(v) => Ok(vec![Value::Bool(true), v]),
-        Err(e) => Ok(vec![Value::Bool(false), Value::string(mc, format!("{}", e))]),
+        Err(e) => Ok(vec![Value::Bool(false), Value::String(LuaStr::gc(mc, format!("{}", e)))]),
     }
 }
 
@@ -211,7 +212,7 @@ pub fn table_concat<'lua>(
         }
         k += 1;
     }
-    Ok(vec![Value::string(mc, out)])
+    Ok(vec![Value::String(LuaStr::gc(mc, out))])
 }
 
 /// `table.unpack(list [, i [, j]])` — return the sequence elements `list[i..j]` as
@@ -313,7 +314,7 @@ fn to_f64(v: &Value) -> Option<f64> {
 
 pub fn lua_type<'lua>(_: &mut VM, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
     let v = args.first().cloned().unwrap_or(Value::Nil);
-    Ok(Value::string(mc, v.type_name()))
+    Ok(Value::String(LuaStr::gc(mc, v.type_name())))
 }
 
 pub fn tostring<'lua>(vm: &mut VM<'lua>, mc: &Mutation<'lua>, args: Vec<Value<'lua>>) -> InnerResult<'lua> {
@@ -343,7 +344,7 @@ pub fn tostring<'lua>(vm: &mut VM<'lua>, mc: &Mutation<'lua>, args: Vec<Value<'l
         Value::NativeFunction(f) => format!("function: builtin: {:p}", Gc::as_ptr(*f)),
         _ => v.coerce_string(),
     };
-    Ok(Value::string(mc, s))
+    Ok(Value::String(LuaStr::gc(mc, s)))
 }
 
 pub fn tonumber<'lua>(
@@ -677,7 +678,7 @@ pub fn string_upper<'lua>(
     args: Vec<Value<'lua>>,
 ) -> InnerResult<'lua> {
     let s = args.first().map(|v| v.coerce_string()).unwrap_or_default();
-    Ok(Value::string(mc, s.to_uppercase()))
+    Ok(Value::String(LuaStr::gc(mc, s.to_uppercase())))
 }
 
 pub fn string_lower<'lua>(
@@ -686,7 +687,7 @@ pub fn string_lower<'lua>(
     args: Vec<Value<'lua>>,
 ) -> InnerResult<'lua> {
     let s = args.first().map(|v| v.coerce_string()).unwrap_or_default();
-    Ok(Value::string(mc, s.to_lowercase()))
+    Ok(Value::String(LuaStr::gc(mc, s.to_lowercase())))
 }
 
 pub fn string_reverse<'lua>(
@@ -695,7 +696,7 @@ pub fn string_reverse<'lua>(
     args: Vec<Value<'lua>>,
 ) -> InnerResult<'lua> {
     let s = args.first().map(|v| v.coerce_string()).unwrap_or_default();
-    Ok(Value::string(mc, s.chars().rev().collect::<String>()))
+    Ok(Value::String(LuaStr::gc(mc, s.chars().rev().collect::<String>())))
 }
 
 pub fn string_rep<'lua>(
@@ -705,7 +706,7 @@ pub fn string_rep<'lua>(
 ) -> InnerResult<'lua> {
     let s = args.0.coerce_string();
     let n = args.1.coerce_int();
-    Ok(Value::string(mc, if n > 0 { s.repeat(n as usize) } else { String::new() }))
+    Ok(Value::String(LuaStr::gc(mc, if n > 0 { s.repeat(n as usize) } else { String::new() })))
 }
 
 pub fn string_sub<'lua>(
@@ -730,10 +731,10 @@ pub fn string_sub<'lua>(
         j = len;
     }
     if i > j {
-        return Ok(Value::string(mc, String::new()));
+        return Ok(Value::String(LuaStr::gc(mc, String::new())));
     }
     let out: String = chars[(i - 1) as usize..j as usize].iter().collect();
-    Ok(Value::string(mc, out))
+    Ok(Value::String(LuaStr::gc(mc, out)))
 }
 
 pub fn string_byte<'lua>(
@@ -769,7 +770,7 @@ pub fn string_char<'lua>(
         }
         s.push(c as u8 as char);
     }
-    Ok(Value::string(mc, s))
+    Ok(Value::String(LuaStr::gc(mc, s)))
 }
 
 /// `string.format` — supports `%d %i %u %x %X %o %f %e %g %s %c %q %%` with the
@@ -953,7 +954,7 @@ pub fn string_format<'lua>(
         };
         out.push_str(&body);
     }
-    Ok(Value::string(mc, out))
+    Ok(Value::String(LuaStr::gc(mc, out)))
 }
 
 /// Pad a string field to `width`, space-filled, honoring left alignment.
@@ -997,7 +998,7 @@ use crate::lua_pattern::{self, Capture};
 fn cap_to_value<'lua>(mc: &Mutation<'lua>, cap: &Capture, bytes: &[u8]) -> Value<'lua> {
     match cap {
         Capture::Str(a, b) => {
-            Value::string(mc, String::from_utf8_lossy(&bytes[*a..*b]).into_owned())
+            Value::String(LuaStr::gc(mc, String::from_utf8_lossy(&bytes[*a..*b]).into_owned()))
         }
         Capture::Pos(p) => Value::Integer(*p as i64),
     }
@@ -1103,9 +1104,9 @@ pub fn string_match<'lua>(
     match lua_pattern::find(bytes, pat.as_bytes(), start)? {
         Some(m) => {
             if m.caps.is_empty() {
-                Ok(vec![Value::string(mc, 
+                Ok(vec![Value::String(LuaStr::gc(mc, 
                     String::from_utf8_lossy(&bytes[m.start..m.end]).into_owned(),
-                )])
+                ))])
             } else {
                 Ok(m.caps.iter().map(|c| cap_to_value(mc, c, bytes)).collect())
             }
@@ -1198,7 +1199,7 @@ pub fn string_gsub<'lua>(
     }
 
     Ok(vec![
-        Value::string(mc, String::from_utf8_lossy(&out).into_owned()),
+        Value::String(LuaStr::gc(mc, String::from_utf8_lossy(&out).into_owned())),
         Value::Integer(count),
     ])
 }
@@ -1243,14 +1244,14 @@ fn append_replacement<'lua>(
         // --- table replacement: key = first capture (or whole match) ---
         Value::Table(t) => {
             let key = one_capture(0, m, bytes)?;
-            let key = Value::string(mc, String::from_utf8_lossy(&key).into_owned());
+            let key = Value::String(LuaStr::gc(mc, String::from_utf8_lossy(&key).into_owned()));
             let v = t.borrow().get_value(&key);
             append_repl_result(out, v, whole)?;
         }
         // --- function replacement: call with the captures ---
         Value::Closure(_) | Value::Function(_) | Value::NativeFunction(_) => {
             let call_args: Vec<Value<'lua>> = if m.caps.is_empty() {
-                vec![Value::string(mc, String::from_utf8_lossy(whole).into_owned())]
+                vec![Value::String(LuaStr::gc(mc, String::from_utf8_lossy(whole).into_owned()))]
             } else {
                 m.caps.iter().map(|c| cap_to_value(mc, c, bytes)).collect()
             };

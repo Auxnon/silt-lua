@@ -9,6 +9,7 @@ use std::{
 };
 
 use crate::hash::{FxMap, TypeIdMap};
+use crate::lstr::LuaStr;
 
 // use colored::Colorize;
 use gc_arena::{Collect, Gc, Mutation};
@@ -967,13 +968,13 @@ impl UserData for TestEnt {
             MetaMethod::ToString,
             |_vm, mc, this: Option<&mut TestEnt>, _: ()| {
                 let id = if let Some(ud) = this { ud.get_id() } else { 0 };
-                Ok(Value::string(mc, format!("[entity {}]", id)))
+                Ok(Value::String(LuaStr::gc(mc, format!("[entity {}]", id))))
             },
         );
 
         methods.add_meta_method("__concat", |_vm, mc, this, _: ()| {
             let id = if let Some(ud) = this { ud.get_id() } else { 0 };
-            Ok(Value::string(mc, format!("[entity {}]", id)))
+            Ok(Value::String(LuaStr::gc(mc, format!("[entity {}]", id))))
         });
 
         // Comparison metamethods (trivial impls — ignore the other operand — that just
@@ -996,7 +997,7 @@ impl UserData for TestEnt {
                     Value::String(s) if s.as_str() == "y" => ("z", z),
                     _ => return Ok(vec![Value::Nil]),
                 };
-                Ok(vec![Value::string(mc, k), Value::Number(v)])
+                Ok(vec![Value::String(LuaStr::gc(mc, k)), Value::Number(v)])
             };
             Ok(Value::NativeFunction(Gc::new(
                 mc,

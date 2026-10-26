@@ -4,6 +4,7 @@ use colored::Colorize;
 use gc_arena::{lock::RefLock, Arena, Collect, Gc, Mutation, Rootable};
 
 use crate::{
+    lstr::LuaStr,
     code::OpCode,
     compiler::Compiler,
     error::{ErrorOut, ErrorTuple, SiltError, ValueTypes},
@@ -1465,7 +1466,7 @@ impl<'gc> VM<'gc> {
             let new_closure = Gc::new(mc, Closure::new(new_fn, upvalues));
             self.globals
                 .borrow_mut(mc)
-                .set(Value::string(mc, fn_name), Value::Closure(new_closure));
+                .set(Value::String(LuaStr::gc(mc, fn_name)), Value::Closure(new_closure));
         }
 
         // 7b. STAGE 2 — live-apply nested function swaps. Each changed nested function
@@ -2655,7 +2656,7 @@ impl<'gc> VM<'gc> {
                             let mut out = String::with_capacity(left.len() + right.len());
                             out.push_str(&left);
                             out.push_str(&right);
-                            self.push(Value::string(ep.mc, out))
+                            self.push(Value::String(LuaStr::gc(ep.mc, out)))
                         }
                         // A userdata operand (either side) dispatches its `__concat`
                         // metamethod, with the operands passed in source order. Checked
@@ -2681,7 +2682,7 @@ impl<'gc> VM<'gc> {
                             self.push(v);
                         }
                         (Value::String(left), v2) => {
-                            self.push(Value::string(ep.mc, format!("{}{}", left, v2)))
+                            self.push(Value::String(LuaStr::gc(ep.mc, format!("{}{}", left, v2))))
                         }
                         // A table operand dispatches to its `__concat` metamethod.
                         (Value::Table(table), rr) => {
@@ -2691,9 +2692,9 @@ impl<'gc> VM<'gc> {
                             self.push(v);
                         }
                         (v1, Value::String(right)) => {
-                            self.push(Value::string(ep.mc, format!("{}{}", v1, right)))
+                            self.push(Value::String(LuaStr::gc(ep.mc, format!("{}{}", v1, right))))
                         }
-                        (v1, v2) => self.push(Value::string(ep.mc, format!("{}{}", v1, v2))),
+                        (v1, v2) => self.push(Value::String(LuaStr::gc(ep.mc, format!("{}{}", v1, v2)))),
                     }
                     pause_point!();
                 }
@@ -3633,6 +3634,11 @@ impl<'gc> VM<'gc> {
         // });
     }
 
+    /// create a new String Value; like tables, strings are collected, so they need `mc`
+    pub fn new_string(&self, mc: &Mutation<'gc>, s: impl Into<Box<str>>) -> Value<'gc> {
+        Value::String(LuaStr::gc(mc, s))
+    }
+
     /// create a new Table Value, iterating our primative table id counter
     pub fn new_table(&self, mc: &Mutation<'gc>) -> Value<'gc> {
         let t = Table::new(*self.table_counter.borrow());
@@ -4009,7 +4015,7 @@ impl<'gc> VM<'gc> {
         self.register_native_multi_function_to(mc, &mut table, "concat", crate::standard::table_concat);
         self.register_native_multi_function_to(mc, &mut table, "unpack", crate::standard::table_unpack);
         let t = self.wrap_table(mc, table);
-        self.globals.borrow_mut(mc).set(Value::string(mc, "table"), t);
+        self.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, "table")), t);
 
         // math library
         let mut math = self.raw_table();
@@ -4030,12 +4036,12 @@ impl<'gc> VM<'gc> {
             "randomseed",
             crate::standard::math_randomseed,
         );
-        math.set(Value::string(mc, "pi"), Value::Number(std::f64::consts::PI));
-        math.set(Value::string(mc, "huge"), Value::Number(f64::INFINITY));
-        math.set(Value::string(mc, "maxinteger"), Value::Integer(i64::MAX));
-        math.set(Value::string(mc, "mininteger"), Value::Integer(i64::MIN));
+        math.set(Value::String(LuaStr::gc(mc, "pi")), Value::Number(std::f64::consts::PI));
+        math.set(Value::String(LuaStr::gc(mc, "huge")), Value::Number(f64::INFINITY));
+        math.set(Value::String(LuaStr::gc(mc, "maxinteger")), Value::Integer(i64::MAX));
+        math.set(Value::String(LuaStr::gc(mc, "mininteger")), Value::Integer(i64::MIN));
         let math_t = self.wrap_table(mc, math);
-        self.globals.borrow_mut(mc).set(Value::string(mc, "math"), math_t);
+        self.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, "math")), math_t);
 
         // string library
         let mut string = self.raw_table();
@@ -4064,7 +4070,7 @@ impl<'gc> VM<'gc> {
         );
         self.register_native_multi_function_to(mc, &mut string, "gsub", crate::standard::string_gsub);
         let string_t = self.wrap_table(mc, string);
-        self.globals.borrow_mut(mc).set(Value::string(mc, "string"), string_t);
+        self.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, "string")), string_t);
 
         // Vector library (feature `vector`): global `vec2`/`vec3`/`vec4` constructors and
         // the `vec` method table (`v:length()` etc., dispatched like the string library).
@@ -4086,7 +4092,7 @@ impl<'gc> VM<'gc> {
             self.register_native_function_to(mc, &mut vec, "distance", crate::vector_lib::distance);
             self.register_native_function_to(mc, &mut vec, "cross", crate::vector_lib::cross);
             let vec_t = self.wrap_table(mc, vec);
-            self.globals.borrow_mut(mc).set(Value::string(mc, "vec"), vec_t);
+            self.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, "vec")), vec_t);
         }
 
         // Example of closure without turbofish
@@ -4125,7 +4131,7 @@ impl<'gc> VM<'gc> {
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
         // println!("add native {}, {}", name,v);
-        self.globals.borrow_mut(mc).set(Value::string(mc, name), v);
+        self.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, name)), v);
     }
 
     /// Register a multi-return native function (raw arg slice in, `Vec<Value>` out).
@@ -4137,7 +4143,7 @@ impl<'gc> VM<'gc> {
         let raw = NativeFunctionRaw::new_multi(function);
         let f = WrappedFn { f: Rc::new(raw) };
         let v = Value::NativeFunction(Gc::new(mc, f));
-        self.globals.borrow_mut(mc).set(Value::string(mc, name), v);
+        self.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, name)), v);
     }
 
     /// Like [`register_native_multi_function`] but binds the multi-return native into
@@ -4154,7 +4160,7 @@ impl<'gc> VM<'gc> {
     {
         let raw = NativeFunctionRaw::new_multi(function);
         let f = WrappedFn { f: Rc::new(raw) };
-        table.set(Value::string(mc, name), Value::NativeFunction(Gc::new(mc, f)));
+        table.set(Value::String(LuaStr::gc(mc, name)), Value::NativeFunction(Gc::new(mc, f)));
     }
     //
     pub fn register_native_function_to<A, F, R>(
@@ -4175,7 +4181,7 @@ impl<'gc> VM<'gc> {
         let f = WrappedFn { f: Rc::new(raw) };
         // Value::NativeFunction(Gc::new(mc, f))
         let v = Value::NativeFunction(Gc::new(mc, f));
-        table.set(Value::string(mc, name), v);
+        table.set(Value::String(LuaStr::gc(mc, name)), v);
     }
     // pub fn register_native_function<T, R>(
     //     &mut self,

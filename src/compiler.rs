@@ -10,6 +10,7 @@ use colored::Colorize;
 use gc_arena::{Gc, Mutation};
 
 use crate::{
+    lstr::LuaStr,
     code::{ConstIndex, OpCode},
     error::{ErrorOut, ErrorTuple, SiltError, TokenCell, TokenTriple},
     function::FunctionObject,
@@ -4528,7 +4529,7 @@ fn string<'c>(
     devnote!(this _it "string");
     let t = this.copy_store()?;
     let value = if let Token::StringLiteral(s) = t {
-        Value::string(_mc, s)
+        Value::String(LuaStr::gc(_mc, s))
     } else {
         unreachable!()
     };

@@ -50,8 +50,8 @@ impl UserData for Label {
         2
     }
     fn add_methods<'v, M: UserDataMethods<'v, Self>>(m: &mut M) {
-        m.add_method("text", |_, mc, this: Option<&mut Self>, _: ()| {
-            Ok(Value::string(mc, this.map(|t| t.s.clone()).unwrap_or_default()))
+        m.add_method("text", |vm, mc, this: Option<&mut Self>, _: ()| {
+            Ok(vm.new_string(mc, this.map(|t| t.s.clone()).unwrap_or_default()))
         });
     }
 }

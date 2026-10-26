@@ -1921,12 +1921,6 @@ mod vector_conversions {
 }
 
 impl<'v> Value<'v> {
-    /// A collected string value.
-    #[inline]
-    pub fn string(mc: &Mutation<'v>, s: impl Into<Box<str>>) -> Self {
-        Value::String(LuaStr::gc(mc, s))
-    }
-
     /// The string contents, if this is a string.
     #[inline]
     pub fn as_str(&self) -> Option<&str> {

@@ -18,6 +18,7 @@
 //! then `vm.call_f64(&[phase])` per sample.
 
 use crate::{
+    lstr::LuaStr,
     chunk::Chunk,
     code::{ConstIndex, OpCode},
     error::SiltError,
@@ -292,7 +293,7 @@ pub fn instantiate<'g>(
     // Inject value-typed globals the snippet snapshotted.
     for (name, ex) in &snippet.value_globals {
         let v = ex.into_value(vm, mc)?;
-        vm.globals.borrow_mut(mc).set(Value::string(mc, name.as_str()), v);
+        vm.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, name.as_str())), v);
     }
     let func = materialize_proto(&snippet.proto, vm, mc)?;
     let mut upvalues = Vec::with_capacity(snippet.upvalues.len());
