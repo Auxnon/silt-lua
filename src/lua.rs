@@ -1844,9 +1844,9 @@ impl<'gc> VM<'gc> {
                     // }
                 }
                 OpCode::DEFINE_GLOBAL { constant } => {
-                    // Copy the Gc out first so the constant borrows the local, not `self`.
-                    let body = self.body;
-                    let value = body.chunk.get_constant(*constant);
+                    // the running function's constants, not the root's: `function c()`
+                    // inside `function b()` names `c` in b's constant table
+                    let value = Self::get_chunk(frame).get_constant(*constant);
                     if let Value::String(s) = value {
                         let v = self.pop();
                         self.globals.borrow_mut(ep.mc).set(s, v);

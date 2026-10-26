@@ -1300,8 +1300,14 @@ fn set_trailing_vararg(&mut self,bool: bool){
             if self.get_expression_count() <= 1 {
                 self.drop_last_if(&mut body, &OpCode::POP);
             }
-        } else {
+        } else if self.last_was_expression {
+            // a script ending in a bare call yields that call's result
             self.drop_last_if(&mut body, &OpCode::POP);
+        } else {
+            // anything else yields nil. The last POP is not ours to drop: after
+            // `if … else f() end` it is inside the else branch, and dropping it
+            // left the jump past the end of the code
+            self.emit(&mut body, OpCode::NIL, (0, 0));
         }
         // self.expression_count we should convert to tuple right? piping to CLI ???
         #[cfg(feature = "typing")]
@@ -1746,6 +1752,9 @@ fn declaration_keyword<'a, 'c: 'a>(
                 this.global_declare_mode = false;
                 // typing(this, f, it, Some((ident, (location.line,location.col))))?;
             }
+            // the initializer went through expression_statement, but a declaration
+            // is not an expression: a function ending in `local x = 1` returns nil
+            this.last_was_expression = false;
         }
         Token::Function => {
             if !already_function {
@@ -2146,6 +2155,9 @@ fn define_function<'c>(
         Some((index, false)) => this.emit(f, OpCode::SET_LOCAL { index }, location),
         None => define_variable(this, it, f, global_ident)?,
     }
+    // the body's last statement must not leak out as ours: `function b()
+    // function c() x end end` would otherwise implicitly return from `b`
+    this.last_was_expression = false;
 
     Ok(())
 }
@@ -2308,7 +2320,11 @@ fn build_function<'c>(
 
     if let &OpCode::RETURN(_) = fr2.chunk.code.last().unwrap() { //read_last_code
     } else {
-        this.drop_last_if(fr2, &OpCode::POP);
+        // only an expression statement's POP is ours to drop (after a block the
+        // last POP is inside it)
+        if this.last_was_expression {
+            this.drop_last_if(fr2, &OpCode::POP);
+        }
         // println!("impli {}",implicit_return);
         // TODO if last was semicolon we also push a nil
         // Check if implicit returns are enabled and last statement was an expression
@@ -2317,6 +2333,9 @@ fn build_function<'c>(
             // If we have multiple expressions, they're all on the stack for multiple returns
         } else {
             this.emit_at(fr2, OpCode::NIL);
+            // one nil, whatever count the last statement left (`local x, y = 1, 2`
+            // sets 2, which would return `y, nil`)
+            this.set_expression_count(1);
         }
         print_var_stack(&this.var_stack);
         devout!(
@@ -2473,8 +2492,15 @@ fn statement<'c>(
         //     // this.eat();
         //     // TODO ???
         // }
-        _ => expression_statement(this, mc, f, it)?, // This will set last_was_expression = true
+        _ => {
+            expression_statement(this, mc, f, it)?; // sets last_was_expression
+            return Ok(());
+        }
     }
+    // a block statement (`if`, `while`, `do` …) is not an expression, whatever its
+    // body ended with: implicit return must not drop the POP inside its last branch
+    // (that left the `if`'s jump past the end of the code)
+    this.last_was_expression = false;
 
     Ok(())
 }
