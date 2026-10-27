@@ -71,3 +71,26 @@ fn empty_body_and_values_after_the_loop() {
     let src = "local before = 7 for i = 1, 3 do end local after = 8 return before * 10 + after";
     assert_eq!(run(src), ExVal::Integer(78));
 }
+
+#[test]
+fn integer_loop_ends_at_maxinteger() {
+    // stepping past the bound used to wrap to mininteger and loop forever
+    let src = "
+        local n = 0
+        for i = math.maxinteger - 2, math.maxinteger do n = n + 1 end
+        for i = math.mininteger + 2, math.mininteger, -1 do n = n + 10 end
+        return n";
+    assert_eq!(run(src), ExVal::Integer(33));
+}
+
+#[test]
+fn descending_float_and_empty_loops() {
+    let src = "
+        local s = 0
+        for i = 10, 1, -3 do s = s * 10 + i end      -- 10, 7, 4, 1
+        for x = 0.5, 1.5, 0.5 do s = s + x end       -- + 3.0
+        for i = 1, 0 do s = -1 end
+        for i = 0, -1, 1 do s = -1 end
+        return s";
+    assert_eq!(run(src), ExVal::Number(10741.0 + 3.0));
+}

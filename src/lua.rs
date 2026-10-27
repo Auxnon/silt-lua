@@ -2825,24 +2825,40 @@ impl<'gc> VM<'gc> {
                     // iterator by the step, re-test the bound, and either push the
                     // new loop variable and jump back to the body, or fall through.
                     let top = self.stack_count;
-                    let step = self.stack[top - 1].clone();
-                    let descending = match step {
-                        Value::Integer(i) => i < 0,
-                        Value::Number(n) => n < 0.0,
-                        _ => false,
-                    };
-                    bubble!(self.stack[top - 3].increment(&step));
-                    let iterator = &self.stack[top - 3];
-                    let compare = &self.stack[top - 2];
-                    let done = if descending {
-                        bubble!(Self::is_less(iterator, compare))
+                    // Integer loops, the common case: step and test inline instead of
+                    // through `increment` and `is_greater`. Overflow ends the loop,
+                    // like Lua 5.4.
+                    if let [Value::Integer(i), Value::Integer(limit), Value::Integer(step)] =
+                        self.stack[top - 3..top]
+                    {
+                        match i.checked_add(step) {
+                            Some(n) if (if step < 0 { n >= limit } else { n <= limit }) => {
+                                self.stack[top - 3] = Value::Integer(n);
+                                self.push(Value::Integer(n));
+                                frame.rewind(*rewind);
+                            }
+                            _ => {}
+                        }
                     } else {
-                        bubble!(Self::is_greater(iterator, compare))
-                    };
-                    if !done {
-                        let it = iterator.clone();
-                        self.push(it);
-                        frame.rewind(*rewind);
+                        let step = self.stack[top - 1].clone();
+                        let descending = match step {
+                            Value::Integer(i) => i < 0,
+                            Value::Number(n) => n < 0.0,
+                            _ => false,
+                        };
+                        bubble!(self.stack[top - 3].increment(&step));
+                        let iterator = &self.stack[top - 3];
+                        let compare = &self.stack[top - 2];
+                        let done = if descending {
+                            bubble!(Self::is_less(iterator, compare))
+                        } else {
+                            bubble!(Self::is_greater(iterator, compare))
+                        };
+                        if !done {
+                            let it = iterator.clone();
+                            self.push(it);
+                            frame.rewind(*rewind);
+                        }
                     }
                 }
                 OpCode::INCREMENT { index } => {
