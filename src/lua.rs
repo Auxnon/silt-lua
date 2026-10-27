@@ -1095,6 +1095,12 @@ pub struct VM<'gc> {
     // stack_top: *mut Value,
     pub globals: Gc<'gc, RefLock<Table<'gc>>>, // TODO store strings as identifer usize and use that as key
     pub primative_meta_tables: Vec<Gc<'gc, RefLock<Table<'gc>>>>,
+    /// The `string` and `vec` libraries, where `s:upper()` and `v:length()` find
+    /// their methods. Held directly, like Lua's string metatable, so a method call
+    /// skips the globals lookup and reassigning the global doesn't break methods.
+    /// Nil until the standard library loads.
+    string_lib: Value<'gc>,
+    vec_lib: Value<'gc>,
     // original CI code uses linked list, most recent closed upvalue is the first and links to previous closed values down the chain
     // allegedly performance of a linked list is heavier then an array and shifting values but is that true here or the opposite?
     // resizing a sequential array is faster then non sequential heap items, BUT since we'll USUALLY resolve the upvalue on the top of the list we're derefencing once to get our Upvalue vs an index lookup which is slightly slower.
@@ -1231,6 +1237,8 @@ impl<'gc> VM<'gc> {
             // stack_top,
             globals: Gc::new(mc, RefLock::new(Table::new(0))), //Gc::new(mc, gtable),
             primative_meta_tables: vec![],
+            string_lib: Value::Nil,
+            vec_lib: Value::Nil,
             open_upvalues: vec![],
             table_counter: RefCell::new(1),
             userdata_registry: UserDataRegistry::new(),
@@ -3219,16 +3227,16 @@ impl<'gc> VM<'gc> {
                         Value::Table(t) => Self::meta_index_get(*t, &key),
                         // Strings dispatch methods through the `string` library
                         // (Lua's string metatable: `("x"):upper()` == string.upper("x")).
-                        Value::String(_) => match self.globals.borrow().get_str("string") {
-                            Some(Value::Table(t)) => t.borrow().get_value(&key),
+                        Value::String(_) => match self.string_lib {
+                            Value::Table(t) => t.borrow().get_value(&key),
                             _ => Value::Nil,
                         },
-                        // Vectors dispatch methods through the global `vec` library,
+                        // Vectors dispatch methods through the `vec` library,
                         // exactly like strings: `v:length()` == vec.length(v).
                         #[cfg(feature = "vector")]
                         Value::Vec2(_) | Value::Vec3(_) | Value::Vec4(_) => {
-                            match self.globals.borrow().get_str("vec") {
-                                Some(Value::Table(t)) => t.borrow().get_value(&key),
+                            match self.vec_lib {
+                                Value::Table(t) => t.borrow().get_value(&key),
                                 _ => Value::Nil,
                             }
                         }
@@ -4114,6 +4122,7 @@ impl<'gc> VM<'gc> {
         );
         self.register_native_multi_function_to(mc, &mut string, "gsub", crate::standard::string_gsub);
         let string_t = self.wrap_table(mc, string);
+        self.string_lib = string_t;
         self.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, "string")), string_t);
 
         // Vector library (feature `vector`): global `vec2`/`vec3`/`vec4` constructors and
@@ -4136,6 +4145,7 @@ impl<'gc> VM<'gc> {
             self.register_native_function_to(mc, &mut vec, "distance", crate::vector_lib::distance);
             self.register_native_function_to(mc, &mut vec, "cross", crate::vector_lib::cross);
             let vec_t = self.wrap_table(mc, vec);
+            self.vec_lib = vec_t;
             self.globals.borrow_mut(mc).set(Value::String(LuaStr::gc(mc, "vec")), vec_t);
         }
 
