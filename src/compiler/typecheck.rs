@@ -721,6 +721,8 @@ impl Compiler {
             TAILCALL(arity, variadic) => {
                 self.check_call(*arity as usize, *variadic, 1, loc);
             }
+            // patched over an emitted GET_LOCAL, which already had its effect
+            RETURN_LOCAL { .. } => {}
         }
     }
 

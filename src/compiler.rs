@@ -2977,9 +2977,10 @@ fn return_statement<'c>(
     // what `process` returns from. The call's `multi` is 0 here (an inner call
     // marked MULTIRET is never the last op), so no information is lost.
     if this.get_expression_count() == 1 && !f.is_script {
-        if let OpCode::CALL(a, 0, v) = f.chunk.read_last_code() {
-            let op = OpCode::TAILCALL(*a, *v);
-            f.chunk.patch_last(op);
+        match *f.chunk.read_last_code() {
+            OpCode::CALL(a, 0, v) => f.chunk.patch_last(OpCode::TAILCALL(a, v)),
+            OpCode::GET_LOCAL { index } => f.chunk.patch_last(OpCode::RETURN_LOCAL { index }),
+            _ => {}
         }
     }
 

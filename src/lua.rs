@@ -2051,8 +2051,16 @@ impl<'gc> VM<'gc> {
 
             // TODO how much faster would it be to order these ops in order of usage, does match hash? probably.
             match instruction {
-                OpCode::RETURN(c) => {
-                    let count = *c;
+                OpCode::RETURN(_) | OpCode::RETURN_LOCAL { .. } => {
+                    let count = match instruction {
+                        OpCode::RETURN(c) => *c,
+                        OpCode::RETURN_LOCAL { index } => {
+                            let v = *frame.get_val(&self.stack, *index);
+                            self.push(v);
+                            1
+                        }
+                        _ => unreachable!(),
+                    };
                     frame_count -= 1;
                     if frame_count <= 0 {
                         // The outermost frame of this run is over (a chunk, or the callee
@@ -2087,8 +2095,24 @@ impl<'gc> VM<'gc> {
                         count
                     );
                     let multi_return = frame.multi_return;
-                    // if  || frame.need>1 {
-                    if multi_return == crate::code::MULTIRET {
+                    if count <= 1 && multi_return <= 1 {
+                        // The common case: at most one value back to a caller that
+                        // wants at most one. It lands in the callee's function slot
+                        // (the snapshot) directly, with no pop and push. Upvalues
+                        // close first, while the slots they alias still hold their
+                        // values; the result was copied out before that.
+                        let res = if count == 0 {
+                            Value::Nil
+                        } else {
+                            self.stack[self.stack_count - 1]
+                        };
+                        let snapshot = frame.stack_snapshot;
+                        self.close_upvalues_by_return(ep.mc, snapshot);
+                        self.stack[snapshot] = res;
+                        self.stack_count = snapshot + 1;
+                        frames.pop();
+                        frame = frames.last_mut().unwrap();
+                    } else if multi_return == crate::code::MULTIRET {
                         // Trailing multiret call (`outer(inner())`): leave ALL `count`
                         // return values on the stack and record where they start so the
                         // immediately-following outer CALL can spread them as arguments.
@@ -3038,24 +3062,23 @@ impl<'gc> VM<'gc> {
                             // stack above the args, so the callee read stale values, and
                             // a later push (e.g. a nested call's function) showed up as
                             // the "missing" parameter.
-                            let fixed = if cc.is_variadic() {
-                                cc.get_variadic()
-                            } else {
-                                cc.get_arity()
-                            };
+                            let variadic = cc.is_variadic();
+                            let fixed = if variadic { cc.get_variadic() } else { cc.get_arity() };
                             let mut ar = ar;
-                            while ar < fixed {
-                                self.push(Value::Nil);
-                                ar += 1;
+                            if ar != fixed {
+                                while ar < fixed {
+                                    self.push(Value::Nil);
+                                    ar += 1;
+                                }
+                                // A fixed-arity callee drops extra args, as in Lua. Left
+                                // on the stack they sat where the body's first locals
+                                // belong, so `local a` read the first extra arg instead.
+                                if !variadic && ar > fixed {
+                                    self.stack_count -= (ar - fixed) as usize;
+                                    ar = fixed;
+                                }
                             }
-                            // A fixed-arity callee drops extra args, as in Lua. Left on
-                            // the stack they sat where the body's first locals belong,
-                            // so `local a` read the first extra arg instead.
-                            if !cc.is_variadic() && ar > fixed {
-                                self.stack_count -= (ar - fixed) as usize;
-                                ar = fixed;
-                            }
-                            if cc.is_variadic() {
+                            if variadic {
                                 // Lua-style variadic adjust: the overflow args stay
                                 // where they are and we copy the function slot plus
                                 // the fixed params *above* them. The new frame base

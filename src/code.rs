@@ -64,6 +64,10 @@ pub enum OpCode {
     FORWARD(u16),
     REWIND(u16),
     RETURN(u8),
+    /// `return x` for a local `x`: return that local as RETURN(1) would, one
+    /// dispatch instead of GET_LOCAL + RETURN. The compiler keeps the RETURN(1)
+    /// after it, since a short-circuit (`return a and x`) can jump straight there.
+    RETURN_LOCAL { index: u8 },
     POP,
     POPS(u8),
     CLOSE_UPVALUES(u8),
@@ -248,6 +252,7 @@ impl Display for OpCode {
             }
             Self::NEED(u) => write!(f, "OP_NEED {}", u),
             Self::RETURN(u) => write!(f, "OP_RETURNx{}", u),
+            Self::RETURN_LOCAL { index } => write!(f, "OP_RETURN_LOCAL {}", index),
             Self::POP => write!(f, "OP_POP"),
             Self::POPS(n) => {
                 write!(f, "OP_POPx{}", n)
