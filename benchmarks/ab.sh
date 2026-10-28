@@ -15,6 +15,10 @@
 #          PERF=1         also print `perf stat` counters (instructions, branch and
 #                         i-cache misses) for one run of each side; needs `perf` and
 #                         kernel.perf_event_paranoid <= 1
+#          COUNT=1        count user-space instructions instead of timing: build the
+#                         `silt` CLI on both sides and run each bench script through
+#                         `perf stat`. Counts barely move with machine load, so this
+#                         still works while other jobs run. FILTER is a regex here.
 #
 # Not run by CI. A manual tool, like compare.sh.
 set -euo pipefail
@@ -29,10 +33,20 @@ CORE="${CORE-5}"
 OUT="$ROOT/target/ab"
 mkdir -p "$OUT"
 
-bench_bin() { # build the bench in $1, print the binary's path
-    (cd "$1" && CARGO_TARGET_DIR="$ROOT/target" cargo bench --bench interpreter \
-        --features "$FEATURES" --no-run 2>&1) |
-        grep -oE 'target/release/deps/interpreter-[0-9a-f]+' | tail -1
+# Each side builds into its own target dir. Cargo hashes a path package by its
+# place in the workspace, so the base worktree and the working tree compile to
+# the same unit; in one shared dir the second build looks fresh and reuses the
+# first side's binary.
+bench_bin() { # build the bench in $1 into target dir $2, copy it to $3
+    (cd "$1" && CARGO_TARGET_DIR="$2" cargo bench -q --bench interpreter \
+        --features "$FEATURES" --no-run)
+    cp "$(ls -t "$2"/release/deps/interpreter-* | grep -v '\.d$' | head -1)" "$3"
+}
+
+silt_bin() { # build the CLI in $1 into target dir $2, copy it to $3
+    (cd "$1" && CARGO_TARGET_DIR="$2" cargo build -q --release -p silt-cli \
+        --no-default-features --features "$FEATURES")
+    cp "$2/release/silt" "$3"
 }
 
 echo "Building A ($BASE)..."
@@ -40,12 +54,52 @@ WT="$OUT/base"
 git worktree remove --force "$WT" 2>/dev/null || true
 git worktree add --detach --quiet "$WT" "$BASE"
 trap 'git worktree remove --force "$WT" 2>/dev/null || true' EXIT
-cp "$ROOT/$(bench_bin "$WT")" "$OUT/A"
+if [[ "${COUNT:-}" == 1 ]]; then BUILD=silt_bin A="$OUT/silt-A" B="$OUT/silt-B"
+else BUILD=bench_bin A="$OUT/A" B="$OUT/B"; fi
+"$BUILD" "$WT" "$OUT/target-base" "$A"
 echo "Building B (working tree)..."
-cp "$ROOT/$(bench_bin "$ROOT")" "$OUT/B"
+"$BUILD" "$ROOT" "$ROOT/target" "$B"
+if cmp -s "$A" "$B"; then
+    echo "note: A and B are the same binary (no code change between them)"
+fi
 
 PIN=()
 [[ -n "$CORE" ]] && command -v taskset >/dev/null && PIN=(taskset -c "$CORE")
+
+if [[ "${COUNT:-}" == 1 ]]; then
+    # both sides run the working tree's scripts, so an edited bench can't skew A
+    W="$OUT/scripts"
+    rm -rf "$W" && mkdir -p "$W"
+    python3 -I - "$ROOT/benches/interpreter.rs" "$W" "$FILTER" <<'PY'
+import re, sys
+src, out, filt = open(sys.argv[1]).read(), sys.argv[2], sys.argv[3]
+scripts = {m[1].lower(): m[2] for m in re.finditer(r'const (\w+): &str = r#"(.*?)"#;', src, re.S)}
+for m in re.finditer(r'\(\s*"(\w+)",\s*"(\w+)",\s*r#"(.*?)"#,\s*\)', src, re.S):
+    scripts[f"vec_{m[1]}_{m[2]}"] = m[3]
+for name, body in scripts.items():
+    # the userdata benches need types the CLI doesn't register
+    if name.startswith("ud_") or (filt and not re.search(filt, name)):
+        continue
+    open(f"{out}/{name}.lua", "w").write(body)
+PY
+    printf '\n%-26s %14s %14s %8s\n' bench 'A instr' 'B instr' 'B vs A'
+    for f in "$W"/*.lua; do
+        for side in A B; do
+            best=""
+            for _ in $(seq "$ROUNDS"); do
+                "${PIN[@]}" perf stat -x, -e instructions:u -o "$OUT/stat" \
+                    "$OUT/silt-$side" "$f" >/dev/null 2>&1
+                n=$(grep -m1 instructions "$OUT/stat" | cut -d, -f1)
+                [[ -z "$best" || "$n" -lt "$best" ]] && best=$n
+            done
+            declare "n_$side=$best"
+        done
+        python3 -I -c 'import sys; a, b = int(sys.argv[2]), int(sys.argv[3])
+print(f"{sys.argv[1]:26} {a:14,} {b:14,} {(b / a - 1) * 100:+7.1f}%")' \
+            "$(basename "$f" .lua)" "$n_A" "$n_B"
+    done
+    exit 0
+fi
 
 RES="$OUT/results.txt"
 : >"$RES"
