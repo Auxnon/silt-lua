@@ -1686,7 +1686,16 @@ impl<'gc> VM<'gc> {
     /// own heap cell, so surviving closures keep seeing the right value after
     /// the frame is gone. We must `borrow_mut` the actual Gc cell here — closing
     /// a copy would leave the real cell open on a dead slot.
+    /// Most returns have none open, so that check is inline and the scan isn't.
+    #[inline]
     fn close_upvalues_by_return(&mut self, mc: &Mutation<'gc>, last: usize) {
+        if !self.open_upvalues.is_empty() {
+            self.close_open_upvalues(mc, last);
+        }
+    }
+
+    #[inline(never)]
+    fn close_open_upvalues(&mut self, mc: &Mutation<'gc>, last: usize) {
         #[cfg(feature = "dev-out")]
         self.print_upvalues();
         let mut i = 0;
