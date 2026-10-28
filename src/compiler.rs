@@ -10,7 +10,7 @@ use colored::Colorize;
 use gc_arena::{Gc, Mutation};
 
 use crate::{
-    lstr::LuaStr,
+    lstr::{ConstIds, LuaStr},
     code::{ConstIndex, OpCode},
     error::{ErrorOut, ErrorTuple, SiltError, TokenCell, TokenTriple},
     function::FunctionObject,
@@ -444,6 +444,9 @@ pub struct Compiler {
     /// This statement is a `global` declaration (its names may take `: T` annotations)
     global_declare_mode: bool,
     labels: HashMap<String, usize>,
+    /// Ids for string constants, kept across compiles so a REPL line's `f()`
+    /// matches the `f` an earlier line defined.
+    const_ids: ConstIds,
     // location: (usize, usize),
     // previous: TokenTuple,
     // pre_previous: TokenTuple,
@@ -517,6 +520,7 @@ impl Compiler {
             local_declare_mode: false,
             global_declare_mode: false,
             labels: HashMap::new(),
+            const_ids: ConstIds::new(),
             pending_gotos: vec![],
             loops: vec![],
             // location: (0, 0),
@@ -688,7 +692,8 @@ impl Compiler {
     // }
 
     fn write_identifier<'c>(&mut self, mc: &Mutation<'c>, f: FnRef<'_, 'c>, identifier: String) -> usize {
-        f.chunk.write_identifier(mc, identifier)
+        let id = self.const_ids.id(&identifier);
+        f.chunk.write_identifier(mc, identifier, id)
     }
 
     fn change_code(&mut self, f: FnRef, offset: usize, byte: OpCode) {
@@ -4529,7 +4534,8 @@ fn string<'c>(
     devnote!(this _it "string");
     let t = this.copy_store()?;
     let value = if let Token::StringLiteral(s) = t {
-        Value::String(LuaStr::gc(_mc, s))
+        let id = this.const_ids.id(&s);
+        Value::String(LuaStr::gc_const(_mc, s, id))
     } else {
         unreachable!()
     };

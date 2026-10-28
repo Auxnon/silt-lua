@@ -8,9 +8,11 @@
 
 use std::{
     cell::Cell,
+    collections::HashMap,
     fmt,
     hash::{Hash, Hasher},
     ops::Deref,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use gc_arena::{metrics::Metrics, Collect, Gc, Mutation};
@@ -25,6 +27,11 @@ pub struct LuaStr {
     /// doesn't pay a pass over its bytes.
     hash: Cell<u64>,
     s: Box<str>,
+    /// Constant id from [`ConstIds`] (0 = none). Two strings with the same
+    /// nonzero id are equal, so a global or field lookup by a constant name
+    /// matches a key from another chunk of the same compile without comparing
+    /// bytes. Different ids prove nothing: those fall back to the bytes.
+    id: u64,
     /// The arena's metrics: the text lives outside the `Gc` allocation, so it is
     /// reported as external memory (and returned on drop) to pace collection.
     metrics: Metrics,
@@ -50,7 +57,16 @@ impl LuaStr {
         let s = s.into();
         let metrics = mc.metrics().clone();
         metrics.mark_external_allocation(s.len());
-        Gc::new(mc, LuaStr { hash: Cell::new(0), s, metrics })
+        Gc::new(mc, LuaStr { hash: Cell::new(0), s, id: 0, metrics })
+    }
+
+    /// Allocate a compiled constant carrying its [`ConstIds`] id.
+    #[inline]
+    pub fn gc_const<'gc>(mc: &Mutation<'gc>, s: impl Into<Box<str>>, id: u64) -> GcStr<'gc> {
+        let s = s.into();
+        let metrics = mc.metrics().clone();
+        metrics.mark_external_allocation(s.len());
+        Gc::new(mc, LuaStr { hash: Cell::new(0), s, id, metrics })
     }
 
     #[inline]
@@ -71,6 +87,46 @@ impl LuaStr {
     }
 }
 
+/// Hands out the ids of [`LuaStr::gc_const`]: one per distinct text, the same
+/// for every constant a compiler emits with that text, across all its compiles.
+/// Each table takes a fresh serial (the high 32 bits) from a process-wide
+/// counter, so ids from different compilers never collide.
+pub struct ConstIds {
+    serial: u64,
+    ids: HashMap<Box<str>, u64>,
+}
+
+/// Past this many texts the table starts over under a new serial (an editor
+/// recompiling as you type would otherwise grow it forever). Strings with an
+/// old id just compare by bytes.
+const MAX_CONST_IDS: usize = 1 << 16;
+
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
+
+impl ConstIds {
+    pub fn new() -> Self {
+        ConstIds { serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed), ids: HashMap::new() }
+    }
+
+    pub fn id(&mut self, s: &str) -> u64 {
+        if let Some(&id) = self.ids.get(s) {
+            return id;
+        }
+        if self.ids.len() >= MAX_CONST_IDS {
+            *self = ConstIds::new();
+        }
+        let id = (self.serial << 32) | (self.ids.len() as u64 + 1);
+        self.ids.insert(s.into(), id);
+        id
+    }
+}
+
+impl Default for ConstIds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for LuaStr {
     fn drop(&mut self) {
         self.metrics.mark_external_deallocation(self.s.len());
@@ -88,7 +144,7 @@ impl Deref for LuaStr {
 impl PartialEq for LuaStr {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.s == other.s
+        (self.id != 0 && self.id == other.id) || self.s == other.s
     }
 }
 
