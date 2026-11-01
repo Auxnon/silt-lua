@@ -84,18 +84,6 @@ impl<'frame> CallFrame<'frame> {
         self.code
     }
 
-    #[inline]
-    pub fn current_instruction(&self) -> &crate::code::OpCode {
-        &self.code[self.ip]
-    }
-
-    /// The instruction after the current one (a comparison or `CONSTANT` is never
-    /// the last: every chunk ends in RETURN).
-    #[inline]
-    pub fn next_instruction(&self) -> &crate::code::OpCode {
-        &self.code[self.ip + 1]
-    }
-
     /** shift ip by 1 instruction */
     #[inline]
     pub fn iterate(&mut self) {
@@ -150,16 +138,6 @@ impl<'frame> CallFrame<'frame> {
         let end = (self.base + 10).min(stack.len());
         print!("local stack: {:?}", &stack[self.base..end]);
         println!("(top: {})", stack[self.base]);
-    }
-
-    #[inline]
-    pub fn forward(&mut self, offset: u16) {
-        self.ip += offset as usize;
-    }
-
-    #[inline]
-    pub fn rewind(&mut self, offset: u16) {
-        self.ip -= offset as usize;
     }
 
     /// Source span of the instruction `ip` points at. `ip` indexes the

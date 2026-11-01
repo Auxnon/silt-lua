@@ -2155,7 +2155,7 @@ impl<'gc> VM<'gc> {
                         frame = frames.last_mut().unwrap();
                         code = frame.code();
                         ip = frame.ip;
-                        devout!("next instruction {}", frame.current_instruction());
+                        devout!("next instruction {}", code[ip]);
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
 
@@ -2180,7 +2180,7 @@ impl<'gc> VM<'gc> {
                         frame = frames.last_mut().unwrap();
                         code = frame.code();
                         ip = frame.ip;
-                        devout!("next instruction {}", frame.current_instruction());
+                        devout!("next instruction {}", code[ip]);
                         self.push(res);
                         // The caller wanted `multi_return` values (e.g. `local a,b,c = f()`)
                         // but only one was produced — pad the remaining targets with nil so
@@ -2996,7 +2996,12 @@ impl<'gc> VM<'gc> {
                         //     frame.shift(f.upvalue_count as usize);
                         // }
 
-                        bubble!(FunctionObject::push_closure(f.clone(), self, frame, ep));
+                        // reads the upvalue codes after ip from the frame, and steps past them
+                        let f = *f;
+                        frame.ip = ip;
+                        let r = FunctionObject::push_closure(f, self, frame, ep);
+                        ip = frame.ip;
+                        bubble!(r);
                     }
                     pause_point!();
                 }
