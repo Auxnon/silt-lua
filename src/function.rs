@@ -78,6 +78,12 @@ impl<'frame> CallFrame<'frame> {
         }
     }
 
+    /// This frame's code, for the dispatch loop to index with its own ip.
+    #[inline]
+    pub fn code(&self) -> &'frame [crate::code::OpCode] {
+        self.code
+    }
+
     #[inline]
     pub fn current_instruction(&self) -> &crate::code::OpCode {
         &self.code[self.ip]

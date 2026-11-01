@@ -290,10 +290,10 @@ macro_rules! num_cmp {
 /// SET_LOCAL (a big win for `while` loops, but the larger dispatch loop slowed
 /// unrelated handlers by up to ~25%).
 macro_rules! fuse_operand {
-    ($lua:ident, $frame:ident, $r:expr) => {{
+    ($lua:ident, $code:ident, $ip:ident, $r:expr) => {{
         let top = $lua.stack_count;
         // cheapest test first: most pushes are not followed by an operator
-        let next = $frame.next_instruction();
+        let next = &$code[$ip + 1];
         let fused = if top == 0 || !next.fuses() {
             Fused::No
         } else {
@@ -322,15 +322,13 @@ macro_rules! fuse_operand {
             // arithmetic: the result replaces x in place
             Fused::Arith(res) => {
                 $lua.stack[top - 1] = res;
-                $frame.iterate();
-                $frame.iterate();
+                $ip += 2;
                 continue;
             }
             Fused::Cmp(b) => {
                 $lua.stack_count = top - 1;
-                $frame.iterate();
-                $frame.iterate();
-                branch_on!($lua, $frame, b);
+                $ip += 2;
+                branch_on!($lua, $code, $ip, b);
                 continue;
             }
             Fused::No => {}
@@ -344,13 +342,13 @@ macro_rules! fuse_operand {
 /// (strings, metamethods, errors) falls through to the general handler.
 /// `$mixed`: also handle integer-vs-float operands.
 macro_rules! compare_fast {
-    ($lua:ident, $frame:ident, $op:tt, $mixed:expr) => {{
+    ($lua:ident, $code:ident, $ip:ident, $op:tt, $mixed:expr) => {{
         let top = $lua.stack_count;
         if let Some(b) = num_cmp!(&$lua.stack[top - 2], &$lua.stack[top - 1], $op, $mixed) {
             // both operands are numbers: nothing to drop in their slots
             $lua.stack_count = top - 2;
-            $frame.iterate();
-            branch_on!($lua, $frame, b);
+            $ip += 1;
+            branch_on!($lua, $code, $ip, b);
             continue;
         }
     }};
@@ -360,12 +358,12 @@ macro_rules! compare_fast {
 /// `POP_AND_GOTO_IF_FALSE` there directly, or else push the Bool. Leaves ip on
 /// the next instruction to run (the caller `continue`s past the loop's iterate).
 macro_rules! branch_on {
-    ($lua:ident, $frame:ident, $b:expr) => {
-        if let OpCode::POP_AND_GOTO_IF_FALSE(offset) = *$frame.current_instruction() {
+    ($lua:ident, $code:ident, $ip:ident, $b:expr) => {
+        if let OpCode::POP_AND_GOTO_IF_FALSE(offset) = $code[$ip] {
             if !$b {
-                $frame.forward(offset);
+                $ip += offset as usize;
             }
-            $frame.iterate();
+            $ip += 1;
         } else {
             $lua.push(Value::Bool($b));
         }
@@ -373,7 +371,7 @@ macro_rules! branch_on {
 }
 
 macro_rules! binary_op_push {
-    ($src:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $op:tt, $opp:tt) => {{
+    ($src:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $code:ident, $ip:ident, $op:tt, $opp:tt) => {{
         #[cfg(feature = "dev-out")]
         $src.body.chunk.print_constants();
         // Fast path: number op number writes the result over the left operand
@@ -394,14 +392,14 @@ macro_rules! binary_op_push {
         } else {
             let r = $src.pop();
             let l = $src.pop();
-            let res = binary_op!($src, $ep, $frame, $frames, $frame_count, l, $op, r, $opp);
+            let res = binary_op!($src, $ep, $frame, $frames, $frame_count, $code, $ip, l, $op, r, $opp);
             $src.push(res);
         }
     }};
 }
 
 macro_rules! binary_op  {
-    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $l:ident, $op:tt, $r:ident, $opp:tt) => {
+    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $code:ident, $ip:ident, $l:ident, $op:tt, $r:ident, $opp:tt) => {
         match ($l, $r) {
             (Value::Number(left), Value::Number(right)) => (Value::Number(left $op right)),
             (Value::Integer(left), Value::Integer(right)) => (Value::Integer(left $op right)),
@@ -444,7 +442,7 @@ macro_rules! binary_op  {
             #[cfg(feature = "vector")]
             (Value::Vec4(l), Value::Integer(r)) => Value::Vec4(l $op (r as f32)),
             (Value::Table(left), rr ) => {
-                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, left,  rr, $opp)
+                table_meta_op!($lua, $ep, $frame, $frames, $frame_count, $code, $ip, left,  rr, $opp)
             },
             (Value::UserData(left), right) => {
                 let er = right.to_error(); // just in case, cheap op
@@ -474,7 +472,7 @@ macro_rules! check_meta {
 }
 
 macro_rules! table_meta_op {
-    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $table:ident, $right:ident, $opp:tt) => {{
+    ($lua:ident, $ep:ident, $frame:ident, $frames:ident, $frame_count:ident, $code:ident, $ip:ident, $table:ident, $right:ident, $opp:tt) => {{
         let a = $table.borrow().by_meta_method(MetaMethod::$opp);
         match a {
             Ok(f) => {
@@ -501,8 +499,11 @@ macro_rules! table_meta_op {
                     let mut new_frame = CallFrame::new(c.clone(), frame_top, ARITY as u8, 0); // TODO using this opcode method means metamethods cant multireturn
                     new_frame.base = frame_top;
                     $lua.ensure_stack();
+                    $frame.ip = $ip;
                     $frames.push(new_frame);
                     $frame = $frames.last_mut().unwrap();
+                    $code = $frame.code();
+                    $ip = $frame.ip;
                     $frame_count += 1;
 
                     $lua.print_stack();
@@ -2012,6 +2013,12 @@ impl<'gc> VM<'gc> {
     ) -> Result<ExVal, ErrorOut> {
         let mut frame_count = frames.len() as isize;
         let mut frame = frames.last_mut().unwrap();
+        // The running frame's code and ip live here rather than in `frame`, so the
+        // dispatch head reads locals instead of fields behind a pointer into
+        // `frames`. `frame.ip` is written back before another frame becomes
+        // current, and once after the loop for error spans and pausing.
+        let mut code = frame.code();
+        let mut ip = frame.ip;
         // When the previous instruction was a trailing multiret call (Lua's `f(g())`),
         // this records the stack index where that call's return values begin, so the
         // immediately-following outer CALL can spread them. Consumed (taken) by that CALL.
@@ -2031,14 +2038,14 @@ impl<'gc> VM<'gc> {
                     && pending_multiret.is_none()
                     && ep.mc.metrics().allocation_debt() > YIELD_DEBT
                 {
-                    frame.iterate();
+                    ip += 1;
                     paused = true;
                     break Ok(ExVal::Nil);
                 }
             };
         }
         let results: Result<ExVal, SiltError> = loop {
-            let instruction = frame.current_instruction();
+            let instruction = &code[ip];
 
             // devout!("ip: {:p} | {}", self.ip, instruction);
 
@@ -2112,6 +2119,8 @@ impl<'gc> VM<'gc> {
                         self.stack_count = snapshot + 1;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
+                        code = frame.code();
+                        ip = frame.ip;
                     } else if multi_return == crate::code::MULTIRET {
                         // Trailing multiret call (`outer(inner())`): leave ALL `count`
                         // return values on the stack and record where they start so the
@@ -2122,6 +2131,8 @@ impl<'gc> VM<'gc> {
                         self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
+                        code = frame.code();
+                        ip = frame.ip;
                         pending_multiret = Some(snapshot);
                         self.pushn(vres, count as usize, false);
                     } else if multi_return > 1 && count > 1 {
@@ -2142,6 +2153,8 @@ impl<'gc> VM<'gc> {
                         self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
+                        code = frame.code();
+                        ip = frame.ip;
                         devout!("next instruction {}", frame.current_instruction());
                         #[cfg(feature = "dev-out")]
                         self.print_stack();
@@ -2165,6 +2178,8 @@ impl<'gc> VM<'gc> {
                         self.stack_count = snapshot;
                         frames.pop();
                         frame = frames.last_mut().unwrap();
+                        code = frame.code();
+                        ip = frame.ip;
                         devout!("next instruction {}", frame.current_instruction());
                         self.push(res);
                         // The caller wanted `multi_return` values (e.g. `local a,b,c = f()`)
@@ -2192,7 +2207,7 @@ impl<'gc> VM<'gc> {
                     // }
                 }
                 OpCode::CONSTANT { constant } => {
-                    fuse_operand!(self, frame, Self::get_chunk(frame).get_constant(*constant));
+                    fuse_operand!(self, code, ip, Self::get_chunk(frame).get_constant(*constant));
                     let value = Self::get_chunk(frame).get_constant(*constant);
                     self.push(value.clone());
                     // match value {
@@ -2260,7 +2275,7 @@ impl<'gc> VM<'gc> {
                     // For variadic functions the frame base already sits past the
                     // variadic range (the fixed params are copied above the
                     // overflow at call time), so locals are addressed uniformly.
-                    fuse_operand!(self, frame, frame.get_val(&self.stack, *index));
+                    fuse_operand!(self, code, ip, frame.get_val(&self.stack, *index));
                     let value = frame.get_val(&self.stack, *index).clone();
                     self.push(value);
 
@@ -2309,9 +2324,9 @@ impl<'gc> VM<'gc> {
                 }
                 OpCode::NEED(_) => {}
                 OpCode::DEFINE_LOCAL { constant: _ } => todo!(),
-                OpCode::ADD => binary_op_push!(self, ep, frame, frames, frame_count, +, Add),
-                OpCode::SUB => binary_op_push!(self, ep, frame, frames, frame_count, -, Sub),
-                OpCode::MULTIPLY => binary_op_push!(self, ep, frame, frames, frame_count, *, Mul),
+                OpCode::ADD => binary_op_push!(self, ep, frame, frames, frame_count, code, ip, +, Add),
+                OpCode::SUB => binary_op_push!(self, ep, frame, frames, frame_count, code, ip, -, Sub),
+                OpCode::MULTIPLY => binary_op_push!(self, ep, frame, frames, frame_count, code, ip, *, Mul),
                 OpCode::DIVIDE => {
                     let right = self.pop();
                     let left = self.pop();
@@ -2368,6 +2383,8 @@ impl<'gc> VM<'gc> {
                                 frame,
                                 frames,
                                 frame_count,
+                                code,
+                                ip,
                                 table,
                                 rr,
                                 Div
@@ -2415,7 +2432,7 @@ impl<'gc> VM<'gc> {
                         }
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
-                                self, ep, frame, frames, frame_count, table, rr, Mod
+                                self, ep, frame, frames, frame_count, code, ip, table, rr, Mod
                             );
                             self.push(v);
                         }
@@ -2447,7 +2464,7 @@ impl<'gc> VM<'gc> {
                         }
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
-                                self, ep, frame, frames, frame_count, table, rr, Pow
+                                self, ep, frame, frames, frame_count, code, ip, table, rr, Pow
                             );
                             self.push(v);
                         }
@@ -2490,7 +2507,7 @@ impl<'gc> VM<'gc> {
                         }
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
-                                self, ep, frame, frames, frame_count, table, rr, IDiv
+                                self, ep, frame, frames, frame_count, code, ip, table, rr, IDiv
                             );
                             self.push(v);
                         }
@@ -2588,7 +2605,7 @@ impl<'gc> VM<'gc> {
                     self.push(Value::Bool(!Self::is_truthy(&value)));
                 }
                 OpCode::EQUAL => {
-                    compare_fast!(self, frame, ==, false);
+                    compare_fast!(self, code, ip, ==, false);
                     let r = self.pop();
                     let l = self.pop();
                     // Userdata: consult `__eq` when both are userdata of distinct identity;
@@ -2620,7 +2637,7 @@ impl<'gc> VM<'gc> {
                     match meta_eq {
                         Some(table) => {
                             let v = table_meta_op!(
-                                self, ep, frame, frames, frame_count, table, r, Eq
+                                self, ep, frame, frames, frame_count, code, ip, table, r, Eq
                             );
                             self.push(v);
                         }
@@ -2629,19 +2646,19 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::NOT_EQUAL => {
-                    compare_fast!(self, frame, !=, false);
+                    compare_fast!(self, code, ip, !=, false);
                     let r = self.pop();
                     let l = self.pop();
                     self.push(Value::Bool(!Self::is_equal(&l, &r)));
                 }
                 OpCode::LESS => {
-                    compare_fast!(self, frame, <, true);
+                    compare_fast!(self, code, ip, <, true);
                     let r = self.pop();
                     let l = self.pop();
                     match (l, r) {
                         (Value::Table(table), rr) => {
                             let v =
-                                table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Lt);
+                                table_meta_op!(self, ep, frame, frames, frame_count, code, ip, table, rr, Lt);
                             self.push(v);
                         }
                         (Value::UserData(ud), rr) => {
@@ -2658,13 +2675,13 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::LESS_EQUAL => {
-                    compare_fast!(self, frame, <=, true);
+                    compare_fast!(self, code, ip, <=, true);
                     let r = self.pop();
                     let l = self.pop();
                     match (l, r) {
                         (Value::Table(table), rr) => {
                             let v =
-                                table_meta_op!(self, ep, frame, frames, frame_count, table, rr, Le);
+                                table_meta_op!(self, ep, frame, frames, frame_count, code, ip, table, rr, Le);
                             self.push(v);
                         }
                         (Value::UserData(ud), rr) => {
@@ -2683,7 +2700,7 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::GREATER => {
-                    compare_fast!(self, frame, >, true);
+                    compare_fast!(self, code, ip, >, true);
                     let r = self.pop();
                     let l = self.pop();
                     // `l > r` is evaluated as `r < l`, so a table dispatches `__lt`
@@ -2691,7 +2708,7 @@ impl<'gc> VM<'gc> {
                     match (r, l) {
                         (Value::Table(table), ll) => {
                             let v =
-                                table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Lt);
+                                table_meta_op!(self, ep, frame, frames, frame_count, code, ip, table, ll, Lt);
                             self.push(v);
                         }
                         (Value::UserData(ud), ll) => {
@@ -2708,14 +2725,14 @@ impl<'gc> VM<'gc> {
                     }
                 }
                 OpCode::GREATER_EQUAL => {
-                    compare_fast!(self, frame, >=, true);
+                    compare_fast!(self, code, ip, >=, true);
                     let r = self.pop();
                     let l = self.pop();
                     // `l >= r` is evaluated as `r <= l` → `__le` with swapped operands.
                     match (r, l) {
                         (Value::Table(table), ll) => {
                             let v =
-                                table_meta_op!(self, ep, frame, frames, frame_count, table, ll, Le);
+                                table_meta_op!(self, ep, frame, frames, frame_count, code, ip, table, ll, Le);
                             self.push(v);
                         }
                         (Value::UserData(ud), ll) => {
@@ -2772,7 +2789,7 @@ impl<'gc> VM<'gc> {
                         // A table operand dispatches to its `__concat` metamethod.
                         (Value::Table(table), rr) => {
                             let v = table_meta_op!(
-                                self, ep, frame, frames, frame_count, table, rr, Concat
+                                self, ep, frame, frames, frame_count, code, ip, table, rr, Concat
                             );
                             self.push(v);
                         }
@@ -2802,7 +2819,7 @@ impl<'gc> VM<'gc> {
                     let value = self.peek();
                     // println!("GOTO_IF_FALSE: {}", value);
                     if !Self::is_truthy(value) {
-                        frame.forward(*offset);
+                        ip += *offset as usize;
                     }
                 }
 
@@ -2810,20 +2827,20 @@ impl<'gc> VM<'gc> {
                     let value = &self.pop();
                     // println!("GOTO_IF_FALSE: {}", value);
                     if !Self::is_truthy(value) {
-                        frame.forward(*offset);
+                        ip += *offset as usize;
                     }
                 }
                 OpCode::GOTO_IF_TRUE(offset) => {
                     let value = self.peek();
                     if Self::is_truthy(value) {
-                        frame.forward(*offset);
+                        ip += *offset as usize;
                     }
                 }
                 OpCode::FORWARD(offset) => {
-                    frame.forward(*offset);
+                    ip += *offset as usize;
                 }
                 OpCode::REWIND(offset) => {
-                    frame.rewind(*offset);
+                    ip -= *offset as usize;
                 }
 
                 OpCode::FOR_NUMERIC(skip) => {
@@ -2845,7 +2862,7 @@ impl<'gc> VM<'gc> {
                         bubble!(Self::is_greater(iterator, compare))
                     };
                     if done {
-                        frame.forward(*skip);
+                        ip += *skip as usize;
                     } else {
                         let it = iterator.clone();
                         self.push(it);
@@ -2868,7 +2885,7 @@ impl<'gc> VM<'gc> {
                             Some(n) if (if step < 0 { n >= limit } else { n <= limit }) => {
                                 self.stack[top - 3] = Value::Integer(n);
                                 self.push(Value::Integer(n));
-                                frame.rewind(*rewind);
+                                ip -= *rewind as usize;
                             }
                             _ => {}
                         }
@@ -2890,7 +2907,7 @@ impl<'gc> VM<'gc> {
                         if !done {
                             let it = iterator.clone();
                             self.push(it);
-                            frame.rewind(*rewind);
+                            ip -= *rewind as usize;
                         }
                     }
                 }
@@ -2925,7 +2942,7 @@ impl<'gc> VM<'gc> {
                     };
                     let first = results.first().cloned().unwrap_or(Value::Nil);
                     if matches!(first, Value::Nil) {
-                        frame.forward(*exit);
+                        ip += *exit as usize;
                     } else {
                         // advance the control variable, then push the loop vars
                         *self.peek_mut() = first;
@@ -3033,6 +3050,8 @@ impl<'gc> VM<'gc> {
                     devout!(" | -> {}", value);
                     match value {
                         Value::Closure(c) => {
+                            // the caller resumes here when the callee returns
+                            frame.ip = ip;
                             if self.stack_count > MAX_STACK {
                                 break Err(SiltError::StackOverflow);
                             }
@@ -3101,6 +3120,8 @@ impl<'gc> VM<'gc> {
                                 new_frame.base = frame_top;
                                 frames.push(new_frame);
                                 frame = frames.last_mut().unwrap();
+                                code = frame.code();
+                                ip = frame.ip;
                             } else {
                                 let frame_top = self.stack_count - (ar as usize) - 1;
                                 self.ensure_stack();
@@ -3108,6 +3129,8 @@ impl<'gc> VM<'gc> {
                                 new_frame.base = frame_top;
                                 frames.push(new_frame);
                                 frame = frames.last_mut().unwrap();
+                                code = frame.code();
+                                ip = frame.ip;
                             }
                             frame_count += 1;
                         }
@@ -3370,7 +3393,7 @@ impl<'gc> VM<'gc> {
                     }
                 }
             }
-            frame.iterate();
+            ip += 1;
             //stack
             #[cfg(feature = "dev-out")]
             {
@@ -3378,6 +3401,7 @@ impl<'gc> VM<'gc> {
                 println!("--------------------------------------");
             }
         };
+        frame.ip = ip;
         if paused {
             self.suspended = Some(frames);
             return Ok(ExVal::Nil);
