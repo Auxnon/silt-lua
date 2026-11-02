@@ -90,9 +90,9 @@ fn signed_zero_is_one_key() {
 
 // SILT-BUGS.md #2 & #3: table.insert/remove on a table grown by index assignment
 // (`t[#t+1] = v`, how any line/file buffer is built) used to overwrite / leave a hole,
-// because the shift loops were bounded by a `counter` that only the `{...}` constructor
-// path maintained — `t[k] = v` never touched it. `border()` now derives the array length
-// from actual contents, so insert/remove work regardless of how the table was built.
+// because the shift loops were bounded by a counter that only the `{...}` constructor
+// maintained. Kept as regressions for the array part, which `t[k] = v` and the
+// constructor now grow alike.
 
 #[test]
 fn insert_positional_on_loop_built_table() {
