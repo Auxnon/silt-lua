@@ -67,7 +67,7 @@ silt = [
     "arrow",
     # "vectors",
 ]
-wasm=["wasm-bindgen", "serde", "serde-wasm-bindgen"]
+wasm=["wasm-bindgen", "serde", "serde-wasm-bindgen", "dep:serde_json"]
 under-number = []
 bang = []
 global = []
