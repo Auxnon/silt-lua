@@ -1506,7 +1506,6 @@ fn set_trailing_vararg(&mut self,bool: bool){
     }
 
     #[cfg(feature = "wasm")]
-    #[wasm_bindgen]
     pub fn lsp_wasm(&mut self, source: &str, format: bool) -> String {
         let output = self.lsp(source, format);
         serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string())
