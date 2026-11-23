@@ -14,7 +14,7 @@ pub const MULTIRET: u8 = u8::MAX;
 pub type ConstIndex = u16;
 
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-#[derive(Clone, Debug, Collect)]
+#[derive(Clone, Debug, PartialEq, Collect)]
 #[collect(no_drop)]
 pub enum OpCode {
     CONSTANT {
@@ -339,11 +339,3 @@ impl Display for OpCode {
     }
 }
 
-impl PartialEq for OpCode {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::POP, Self::POP) => true,
-            _ => false,
-        }
-    }
-}

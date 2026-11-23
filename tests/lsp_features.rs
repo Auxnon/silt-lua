@@ -500,3 +500,19 @@ fn typed_globals_are_checked_and_hovered() {
     let h = hover(ok, pos(1, 1)).expect("hover on `speed`");
     assert!(h.contains("number"), "{h}");
 }
+
+#[test]
+fn long_string_tokens_cover_their_brackets() {
+    // each string token's text, by line: the opening `[[`/`[==[` is coloured too
+    let text = |src: &str| {
+        let lines: Vec<&str> = src.split('\n').collect();
+        semantic_tokens(src)
+            .into_iter()
+            .filter(|t| t.3 == 1) // "string"
+            .map(|(l, c, n, _)| lines[l as usize][c as usize..(c + n) as usize].to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(text("local s = [[abc]]"), ["[[abc]]"]);
+    assert_eq!(text("local s = [==[ab]==]"), ["[==[ab]==]"]);
+    assert_eq!(text("local s = [[ab\ncd]]"), ["[[ab", "cd]]"]);
+}

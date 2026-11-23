@@ -159,3 +159,39 @@ fn method_call_sugar() {
     valeq!(r#"return ("hello"):match("l+")"#, ExVal::String("ll".to_string()));
     valeq!(r#"return ("a,b,c"):gsub(",", ";")"#, ExVal::String("a;b;c".to_string()));
 }
+
+// ── gmatch ───────────────────────────────────────────────────────────────────
+// Results checked against Lua 5.4.8.
+
+const GM_ALL: &str = "local function all(s, p, init)
+    local out = {}
+    for a, b in string.gmatch(s, p, init) do out[#out+1] = b and (a .. '=' .. b) or a end
+    return table.concat(out, ',')
+end ";
+
+fn gm(body: &str) -> String {
+    format!("{GM_ALL} return {body}")
+}
+
+#[test]
+fn gmatch_words_and_captures() {
+    valeq!(&gm("all('hello world from lua', '%a+')"), ExVal::String("hello,world,from,lua".into()));
+    valeq!(&gm("all('k1=v1, k2=v2', '(%w+)=(%w+)')"), ExVal::String("k1=v1,k2=v2".into()));
+    valeq!(&gm("all('x', 'y')"), ExVal::String("".into()));
+}
+
+#[test]
+fn gmatch_empty_matches_do_not_repeat() {
+    valeq!(&gm("all('abc', '')"), ExVal::String(",,,".into()));
+    valeq!(&gm("all('a,,b', '[^,]*')"), ExVal::String("a,,b".into()));
+    valeq!(&gm("all('()ab()', '()')"), ExVal::String("1,2,3,4,5,6,7".into()));
+}
+
+#[test]
+fn gmatch_init_and_manual_calls() {
+    valeq!(&gm("all('one two three', '%a+', 5)"), ExVal::String("two,three".into()));
+    valeq!(
+        "local it = ('a b c'):gmatch('%a') return it() .. it() .. it() .. tostring(it() == nil)",
+        ExVal::String("abctrue".into())
+    );
+}

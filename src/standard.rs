@@ -1115,6 +1115,58 @@ pub fn string_match<'lua>(
     }
 }
 
+/// `string.gmatch(s, pattern [, init])` → an iterator yielding each match's captures (or
+/// the whole match) in turn, as Lua 5.4's: a match may not end where the previous one did,
+/// so an empty match never repeats at the same place.
+pub fn string_gmatch<'lua>(
+    _: &mut VM<'lua>,
+    mc: &Mutation<'lua>,
+    args: &[Value<'lua>],
+) -> Result<Vec<Value<'lua>>, SiltError> {
+    let s = args
+        .first()
+        .ok_or_else(|| SiltError::Custom("bad argument #1 to 'gmatch' (string expected)".into()))?
+        .coerce_string();
+    let pat = args
+        .get(1)
+        .ok_or_else(|| SiltError::Custom("bad argument #2 to 'gmatch' (string expected)".into()))?
+        .coerce_string();
+    let src = s.as_bytes().to_vec();
+    let pat = pat.as_bytes().to_vec();
+    let init = args.get(2).map(|v| v.coerce_int()).unwrap_or(1);
+    // past the end: an iterator that yields nothing
+    let start = resolve_init(init, src.len() as i64).unwrap_or(src.len() + 1);
+    // owned bytes and positions only, so the closure holds nothing the collector traces
+    let pos = std::cell::Cell::new(start);
+    let last = std::cell::Cell::new(None::<usize>);
+    let iter = move |_: &mut VM<'lua>, mc: &Mutation<'lua>, _: &[Value<'lua>]| {
+        let mut at = pos.get();
+        while at <= src.len() {
+            if let Some(m) = lua_pattern::match_at(&src, &pat, at)? {
+                if Some(m.end) != last.get() {
+                    pos.set(m.end);
+                    last.set(Some(m.end));
+                    return Ok(if m.caps.is_empty() {
+                        vec![Value::String(LuaStr::gc(
+                            mc,
+                            String::from_utf8_lossy(&src[m.start..m.end]).into_owned(),
+                        ))]
+                    } else {
+                        m.caps.iter().map(|c| cap_to_value(mc, c, &src)).collect()
+                    });
+                }
+            }
+            at += 1;
+        }
+        pos.set(at);
+        Ok(vec![Value::Nil])
+    };
+    Ok(vec![Value::NativeFunction(Gc::new(
+        mc,
+        WrappedFn::new(Rc::new(NativeFunctionRaw::new_multi(iter))),
+    ))])
+}
+
 /// The capture `idx` (0-based) as bytes, following Lua's `push_onecapture`: an out-of-range
 /// index 0 means "whole match" (patterns with no explicit captures), anything else errors.
 fn one_capture(idx: usize, m: &lua_pattern::MatchResult, bytes: &[u8]) -> Result<Vec<u8>, SiltError> {

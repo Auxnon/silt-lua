@@ -88,6 +88,17 @@ fn signed_zero_is_one_key() {
     valeq!("local t={} t[0.0]=1 t[-0.0]=2 return t[-0.0]", ExVal::Integer(2));
 }
 
+#[test]
+fn integral_float_keys_are_integer_keys() {
+    // as in Lua: a float with an integer value addresses that integer key
+    valeq!("local t={} t[3]='int' return t[6/2]", ExVal::String("int".into()));
+    valeq!("local t={} t[2.0]='b' t[1]='a' return #t", ExVal::Integer(2));
+    valeq!("local t={[1.0]='a', [2]='b'} return t[1] .. t[2.0]", ExVal::String("ab".into()));
+    valeq!("local t={} t[0]=1 return t[-0.0]", ExVal::Integer(1));
+    // a fractional float stays its own key
+    valeq!("local t={} t[0.5]='h' return tostring(t[0]) .. t[0.5]", ExVal::String("nilh".into()));
+}
+
 // SILT-BUGS.md #2 & #3: table.insert/remove on a table grown by index assignment
 // (`t[#t+1] = v`, how any line/file buffer is built) used to overwrite / leave a hole,
 // because the shift loops were bounded by a counter that only the `{...}` constructor

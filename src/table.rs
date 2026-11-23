@@ -35,6 +35,18 @@ pub struct Table<'v> {
     id: usize,
 }
 
+/// A float key with an integer value is that integer, as in Lua: `t[6/2]` is `t[3]`
+/// (and `-0.0` is `0`). `None` for every other key, which is used as it is.
+#[inline]
+fn float_key<'v>(key: &Value<'v>) -> Option<Value<'v>> {
+    match *key {
+        Value::Number(f) if f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64 => {
+            Some(Value::Integer(f as i64))
+        }
+        _ => None,
+    }
+}
+
 impl<'v> Table<'v> {
     pub fn new(id: usize) -> Self {
         Table {
@@ -83,7 +95,25 @@ impl<'v> Table<'v> {
                 };
             }
         }
-        self.hash.get(key)
+        match self.hash.get(key) {
+            // `set` stores an integral float under its integer, so only a miss can
+            // still be found by converting: hits never pay for the check
+            None if matches!(key, Value::Number(_)) => self.get_float(key),
+            found => found,
+        }
+    }
+
+    /// [`get_ref`](Self::get_ref) for a float key, which may name an integer key.
+    #[cold]
+    #[inline(never)]
+    fn get_float(&self, key: &Value<'v>) -> Option<&Value<'v>> {
+        let Some(k @ Value::Integer(i)) = float_key(key) else {
+            return None;
+        };
+        match self.slot(i) {
+            Some(idx) => Some(&self.array[idx]).filter(|v| !matches!(v, Value::Nil)),
+            None => self.hash.get(&k),
+        }
     }
 
     /// The value at string key `key`, looked up without allocating a string.
@@ -247,6 +277,11 @@ impl<'v> Table<'v> {
         let v = val.into();
         if let Value::Integer(i) = k {
             return self.set_int(i, v);
+        }
+        if let Value::Number(_) = k {
+            if let Some(Value::Integer(i)) = float_key(&k) {
+                return self.set_int(i, v);
+            }
         }
         if matches!(v, Value::Nil) {
             self.hash.remove(&k)

@@ -484,6 +484,8 @@ pub struct Compiler {
     /// `FunctionObject` produced in this pass (root and nested closures) is stamped
     /// with it, so a runtime error in any of them reports the right source.
     current_source_index: usize,
+    /// The chunk name of the compile in flight, stamped like `current_source_index`.
+    current_chunk_name: Option<std::rc::Rc<str>>,
     /// Static type checker state (see `compiler/typecheck.rs`).
     #[cfg(feature = "typing")]
     tc: typecheck::TypeCheck,
@@ -536,6 +538,7 @@ impl Compiler {
             last_end_line: 0,
             source_counter: 0,
             current_source_index: crate::error::SOURCE_INDEX_UNKNOWN,
+            current_chunk_name: None,
             #[cfg(feature = "typing")]
             tc: typecheck::TypeCheck::default(),
         }
@@ -1282,12 +1285,14 @@ fn set_trailing_vararg(&mut self,bool: bool){
         let source_index = self.source_counter;
         self.source_counter += 1;
         self.current_source_index = source_index;
+        self.current_chunk_name = name.map(std::rc::Rc::from);
         #[cfg(feature = "typing")]
         self.tc_prescan(source);
 
         let lexer = Lexer::new(source);
         let mut body = FunctionObject::new(to_op_string(name), true);
         body.source_index = source_index;
+        body.chunk_name = self.current_chunk_name.clone();
         let mut iter = lexer.peekable();
 
         while iter.peek().is_some() {
@@ -2237,6 +2242,7 @@ fn build_function<'c>(
     // Nested functions share the enclosing compile's source index so a runtime
     // error inside them resolves back to the source they were written in.
     f2.source_index = this.current_source_index;
+    f2.chunk_name = this.current_chunk_name.clone();
     let fr2 = &mut f2;
     // The enclosing statement may be mid-assignment (`set = function(v) x = v end`):
     // its setters sit on the var stacks. The body's own assignments swap/drain
@@ -3246,6 +3252,7 @@ fn build_arrow_function<'c>(
     let mut f2 = FunctionObject::new(Some("".to_owned()), false);
     f2.start_line = start_line;
     f2.source_index = this.current_source_index;
+    f2.chunk_name = this.current_chunk_name.clone();
     let fr2 = &mut f2;
     let saved_assign = this.save_assignment_state();
     begin_scope(this);

@@ -172,6 +172,10 @@ pub struct FunctionObject<'chnk> {
     /// the same pass. A runtime error stamps this onto the `ErrorOut` so the caller
     /// can look up the originating source. `usize::MAX` = untracked.
     pub source_index: usize,
+    /// The chunk name the source was compiled under (`Lua::run(Some(name), ..)`),
+    /// shared by the root and every function nested in it.
+    #[collect(require_static)]
+    pub chunk_name: Option<std::rc::Rc<str>>,
     /// Hot-swap redirect cell (stage 2). `None` normally. When a function body is
     /// hot-swapped, this *shared* prototype's cell is set to the newly-compiled
     /// prototype; because every live closure of a definition points at the same
@@ -200,6 +204,7 @@ impl<'chnk> FunctionObject<'chnk> {
             start_line: 0,
             end_line: 0,
             source_index: crate::error::SOURCE_INDEX_UNKNOWN,
+            chunk_name: None,
             #[cfg(feature = "hot-swap")]
             swap: RefLock::new(None),
         }

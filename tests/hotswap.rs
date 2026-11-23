@@ -173,8 +173,8 @@ fn hotswap_whitespace_only_change_in_function() {
         .map_err(|e| e.to_string())
         .unwrap();
     let result = hotswap(&mut lua, &mut compiler, old, new);
-    // Body line changed → not NoChange.
-    assert_ne!(result, HotswapResult::NoChange);
+    // The compiled code is identical, so nothing runs differently.
+    assert_eq!(result, HotswapResult::NoChange);
 }
 
 #[test]
@@ -522,7 +522,7 @@ fn hotswap_shared_line_root_change_is_full_reset() {
 }
 
 #[test]
-fn hotswap_root_change_clears_stale_globals() {
+fn hotswap_root_change_keeps_globals() {
     let (mut lua, mut compiler) = make_vm();
     // Old defines a global `obsolete`; new removes it and changes root code.
     let old = "obsolete = 1\nthreshold = 10";
@@ -535,9 +535,134 @@ fn hotswap_root_change_clears_stale_globals() {
     let result = hotswap(&mut lua, &mut compiler, old, new);
     assert_eq!(result, HotswapResult::RootChanged);
 
-    // Fresh-reset semantics: `obsolete` should be gone (not lingering), and the
-    // standard library should still be available after the globals wipe.
-    assert_eq!(run(&mut lua, "return obsolete"), silt_lua::ExVal::Nil);
+    // The file's root runs again over the live globals: what it assigns is
+    // reassigned, nothing is cleared (the host's and other files' globals live there).
+    assert_eq!(run(&mut lua, "return obsolete"), silt_lua::ExVal::Integer(1));
     assert_eq!(run(&mut lua, "return threshold"), silt_lua::ExVal::Integer(20));
     assert_eq!(run(&mut lua, "return type(3)"), silt_lua::ExVal::String("number".to_string()));
+}
+
+// ── Files as scopes: code-based diff, no globals reset ──────────────────────
+
+fn load(lua: &mut Lua, compiler: &mut Compiler, name: &str, src: &str) {
+    lua.run(Some(name), src, compiler).map_err(|e| e.to_string()).unwrap();
+}
+
+fn swap_file(lua: &mut Lua, compiler: &mut Compiler, name: &str, old: &str, new: &str) -> HotswapResult {
+    lua.hotswap(Some(name), old, new, compiler).map_err(|e| e.to_string()).unwrap()
+}
+
+#[test]
+fn hotswap_inserted_lines_and_comments_are_not_root_changes() {
+    let (mut lua, mut compiler) = make_vm();
+    let old = "x = 1\n\nfunction a() return 1 end\n\nfunction b() return 2 end";
+    // a comment and a blank line above everything, and b's body edited
+    let new = "-- header\n\nx = 1\n\nfunction a() return 1 end\n\nfunction b() return 20 end";
+    run_with(&mut lua, &mut compiler, old);
+    let result = hotswap(&mut lua, &mut compiler, old, new);
+    assert_eq!(result, HotswapResult::FunctionChanged(vec!["b".to_string()]));
+    assert_eq!(run(&mut lua, "return a() + b()"), silt_lua::ExVal::Integer(21));
+
+    // comments alone change nothing that runs
+    let commented = new.replace("function a()", "-- a is one\nfunction a()");
+    assert_eq!(hotswap(&mut lua, &mut compiler, new, &commented), HotswapResult::NoChange);
+}
+
+fn run_with(lua: &mut Lua, compiler: &mut Compiler, src: &str) {
+    lua.run(None, src, compiler).map_err(|e| e.to_string()).unwrap();
+}
+
+#[test]
+fn hotswap_moved_function_reports_its_new_line() {
+    let (mut lua, mut compiler) = make_vm();
+    let old = "function boom()\n  return nil + 1\nend";
+    let new = "\n\nfunction boom()\n  return nil + 1\nend";
+    run_with(&mut lua, &mut compiler, old);
+    assert_eq!(hotswap(&mut lua, &mut compiler, old, new), HotswapResult::NoChange);
+    let err = lua.run(None, "boom()", &mut Compiler::new()).unwrap_err().to_string();
+    assert!(err.contains("@4:"), "error should point at line 4 now: {err}");
+}
+
+#[test]
+fn hotswap_root_change_keeps_host_natives_and_function_state() {
+    let (mut lua, mut compiler) = make_vm();
+    let old = "limit = 3\nfunction bump() hits = (hits or 0) + 1 return hits end";
+    let new = "limit = 5\nfunction bump() hits = (hits or 0) + 1 return hits end";
+    run_with(&mut lua, &mut compiler, old);
+    run(&mut lua, "bump() bump()");
+    assert_eq!(hotswap(&mut lua, &mut compiler, old, new), HotswapResult::RootChanged);
+    // `hits` was set by a function, not the root: it carries over
+    assert_eq!(run(&mut lua, "return bump()"), silt_lua::ExVal::Integer(3));
+    assert_eq!(run(&mut lua, "return limit"), silt_lua::ExVal::Integer(5));
+    assert_eq!(run(&mut lua, "return math.floor(2.5)"), silt_lua::ExVal::Integer(2));
+}
+
+#[test]
+fn hotswap_one_file_leaves_another_alone() {
+    let (mut lua, mut compiler) = make_vm();
+    let a_old = "a_val = 1\nfunction from_a() return 'a1' end";
+    let a_new = "a_val = 2\nfunction from_a() return 'a1' end";
+    let b = "b_val = 7\nfunction from_b() return 'b' end";
+    load(&mut lua, &mut compiler, "a.lua", a_old);
+    load(&mut lua, &mut compiler, "b.lua", b);
+    run(&mut lua, "b_val = 8");
+
+    assert_eq!(swap_file(&mut lua, &mut compiler, "a.lua", a_old, a_new), HotswapResult::RootChanged);
+    assert_eq!(run(&mut lua, "return a_val"), silt_lua::ExVal::Integer(2));
+    // b's state and functions are untouched by a's reload
+    assert_eq!(run(&mut lua, "return b_val .. from_b()"), silt_lua::ExVal::String("8b".to_string()));
+}
+
+#[test]
+fn hotswap_does_not_replace_another_files_function() {
+    let (mut lua, mut compiler) = make_vm();
+    let a_old = "function shared() return 'a' end";
+    let a_new = "function shared() return 'a2' end";
+    load(&mut lua, &mut compiler, "a.lua", a_old);
+    // b, loaded later, owns the global now
+    load(&mut lua, &mut compiler, "b.lua", "function shared() return 'b' end");
+
+    let r = lua
+        .hotswap_functions(Some("a.lua"), a_old, a_new, &mut compiler)
+        .map_err(|e| e.to_string())
+        .unwrap();
+    assert_eq!(r, HotswapResult::RootChanged, "a no longer owns `shared`, so it can't swap it in place");
+    assert_eq!(run(&mut lua, "return shared()"), silt_lua::ExVal::String("b".to_string()));
+}
+
+#[test]
+fn hotswap_functions_never_runs_root_code() {
+    let (mut lua, mut compiler) = make_vm();
+    let old = "n = 1";
+    let new = "n = 2";
+    run_with(&mut lua, &mut compiler, old);
+    let r = lua.hotswap_functions(None, old, new, &mut compiler).map_err(|e| e.to_string()).unwrap();
+    assert_eq!(r, HotswapResult::RootChanged);
+    assert_eq!(run(&mut lua, "return n"), silt_lua::ExVal::Integer(1));
+}
+
+#[test]
+fn hotswap_function_keeps_file_local_upvalues() {
+    let (mut lua, mut compiler) = make_vm();
+    let old = "local n = 10\nfunction get() return n end\nfunction set(v) n = v end";
+    let new = "local n = 10\nfunction get() return n * 2 end\nfunction set(v) n = v end";
+    run_with(&mut lua, &mut compiler, old);
+    run(&mut lua, "set(4)");
+    let r = hotswap(&mut lua, &mut compiler, old, new);
+    assert_eq!(r, HotswapResult::FunctionChanged(vec!["get".to_string()]));
+    // the new body reads the same cell `set` writes
+    assert_eq!(run(&mut lua, "return get()"), silt_lua::ExVal::Integer(8));
+    run(&mut lua, "set(6)");
+    assert_eq!(run(&mut lua, "return get()"), silt_lua::ExVal::Integer(12));
+}
+
+#[test]
+fn hotswap_changed_local_function_reloads_the_file() {
+    let (mut lua, mut compiler) = make_vm();
+    let old = "local function helper() return 1 end\nfunction api() return helper() end";
+    let new = "local function helper() return 2 end\nfunction api() return helper() end";
+    run_with(&mut lua, &mut compiler, old);
+    // a local function has no global to swap through: the file runs again
+    assert_eq!(hotswap(&mut lua, &mut compiler, old, new), HotswapResult::RootChanged);
+    assert_eq!(run(&mut lua, "return api()"), silt_lua::ExVal::Integer(2));
 }

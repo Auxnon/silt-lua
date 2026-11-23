@@ -332,37 +332,71 @@ impl<'c> Lexer<'c> {
         self.error(SiltError::UnterminatedString)
     }
 
-    fn multi_line_string(&mut self) -> TokenOption {
-        self.column_start = self.column;
-        self.line_start = self.line_number;
-        self.eat();
-        self.start_token = self.current;
-        while self.current < self.end {
-            let char = self.peek();
-            match char {
-                Some(c) => match c {
-                    '\n' => {
-                        self.eat();
-                        self.new_line();
-                    }
-                    ']' => {
-                        self.eat();
-                        if self.peek() == Some(&']') {
-                            self.eat();
-                            break;
-                        }
-                    }
-                    _ => {
-                        self.eat();
-                    }
-                },
-                None => {
-                    return self.error(SiltError::UnterminatedString);
+    /// A long bracket string, `[[ … ]]` or `[==[ … ]==]`, with its first `[` eaten. As in
+    /// Lua, a newline straight after the opening bracket is not part of the string.
+    fn long_string(&mut self) -> TokenOption {
+        let Some(level) = self.long_bracket_open() else {
+            return self.error(SiltError::Custom("invalid long string delimiter".into()));
+        };
+        if self.peek() == Some(&'\r') {
+            self.eat();
+        }
+        if self.peek() == Some(&'\n') {
+            self.eat();
+            self.new_line();
+        }
+        let from = self.current;
+        match self.long_bracket_close(level) {
+            Some(to) => {
+                let s = self.source[from..to].to_string();
+                self.send(Token::StringLiteral(s.into_boxed_str()))
+            }
+            None => self.error(SiltError::UnterminatedString),
+        }
+    }
+
+    /// After a long bracket's first `[`: eat its `=`s and second `[`, returning its level
+    /// (the number of `=`), or `None`, having eaten only the `=`s, when no `[` follows.
+    fn long_bracket_open(&mut self) -> Option<usize> {
+        let mut level = 0;
+        while self.peek() == Some(&'=') {
+            self.eat();
+            level += 1;
+        }
+        if self.peek() == Some(&'[') {
+            self.eat();
+            Some(level)
+        } else {
+            None
+        }
+    }
+
+    /// Eat through the close of a long bracket of `level` (`]]`, `]=]`, …), returning the
+    /// byte offset the close starts at, or `None` at the end of the input.
+    fn long_bracket_close(&mut self, level: usize) -> Option<usize> {
+        loop {
+            match *self.peek()? {
+                '\n' => {
+                    self.eat();
+                    self.new_line();
                 }
+                ']' => {
+                    let at = self.current;
+                    self.eat();
+                    let mut n = 0;
+                    while n < level && self.peek() == Some(&'=') {
+                        self.eat();
+                        n += 1;
+                    }
+                    // a `]` that doesn't close is content; a following `]` is looked at again
+                    if n == level && self.peek() == Some(&']') {
+                        self.eat();
+                        return Some(at);
+                    }
+                }
+                _ => self.eat(),
             }
         }
-        let cc = self.source[self.start_token..self.current - 2].to_string();
-        self.send(Token::StringLiteral(cc.into_boxed_str()))
     }
 
     fn word_eater(&mut self) {
@@ -576,34 +610,17 @@ impl<'c> Lexer<'c> {
                                 self.get_flag()
                             } else if self.peek() == Some(&'[') {
                                 self.eat(); // first '['
-                                if self.peek() == Some(&'[') {
-                                    // `--[[ … ]]` block comment: can be inline (code after
-                                    // it on the same line) or span multiple lines. Consume
-                                    // to the closing `]]` (mirrors `multi_line_string`).
-                                    self.eat(); // second '['
-                                    loop {
-                                        match self.peek() {
-                                            Some('\n') => {
-                                                self.eat();
-                                                self.new_line();
-                                            }
-                                            Some(']') => {
-                                                self.eat();
-                                                if self.peek() == Some(&']') {
-                                                    self.eat();
-                                                    break;
-                                                }
-                                            }
-                                            Some(_) => self.eat(),
-                                            None => break, // unterminated → treat rest as comment
-                                        }
+                                // `--[[ … ]]` / `--[==[ … ]==]` block comment: can be inline
+                                // (code after it on the same line) or span lines; unterminated,
+                                // it runs to the end. `--[` with no second `[` (after any
+                                // `=`s) is an ordinary line comment.
+                                match self.long_bracket_open() {
+                                    Some(level) => {
+                                        self.long_bracket_close(level);
                                     }
-                                    self.send(Token::Comment)
-                                } else {
-                                    // `--[` not a block opener: an ordinary line comment.
-                                    self.eat_to_line_end();
-                                    self.send(Token::Comment)
+                                    None => self.eat_to_line_end(),
                                 }
+                                self.send(Token::Comment)
                             } else {
                                 self.eat_to_line_end();
                                 self.send(Token::Comment)
@@ -728,11 +745,7 @@ impl<'c> Lexer<'c> {
                     self.eat();
                     match self.peek() {
                         Some(c) => match c {
-                            '[' => self.multi_line_string(),
-                            // '=' => {
-                            //     self.eat();
-                            //     return Some(Token::OpenBracketAssign);
-                            // }
+                            '[' | '=' => self.long_string(),
                             _ => self.send(Token::OpenBracket),
                         },
                         None => self.send(Token::OpenBracket),
