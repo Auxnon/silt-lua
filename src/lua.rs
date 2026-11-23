@@ -1173,6 +1173,9 @@ pub struct VM<'gc> {
     // gray_stack: Vec<Value>,
     // TODO temporary solution to a hash id
     table_counter: RefCell<usize>,
+    /// The arena's metrics, which tables report their buffer sizes to.
+    #[collect(require_static)]
+    metrics: gc_arena::metrics::Metrics,
     // a useful index to reference the current root table on a stack, used for userdata
     // table_op_index: usize,
     // meta_lookup: HashMap<String, MetaMethod>,
@@ -1298,12 +1301,13 @@ impl<'gc> VM<'gc> {
             stack_count: 0,
             stack,
             // stack_top,
-            globals: Gc::new(mc, RefLock::new(Table::new(0))), //Gc::new(mc, gtable),
+            globals: Gc::new(mc, RefLock::new(Table::new(mc.metrics(), 0))), //Gc::new(mc, gtable),
             primative_meta_tables: vec![],
             string_lib: Value::Nil,
             vec_lib: Value::Nil,
             open_upvalues: vec![],
             table_counter: RefCell::new(1),
+            metrics: mc.metrics().clone(),
             userdata_registry: UserDataRegistry::new(),
             userdata_stack: Some(UDVec(vec![])),
             external_functions: vec![],
@@ -2236,7 +2240,7 @@ impl<'gc> VM<'gc> {
                         // look up by the constant itself: `get(&String)` built (and
                         // freed) a fresh String key per read. A read needs no write
                         // barrier, so `borrow`, not `borrow_mut`.
-                        let v = self.globals.borrow().getr(value).cloned().unwrap_or_default();
+                        let v = self.globals.borrow().get_value(value);
                         self.push(v);
                     } else {
                         break Err(SiltError::VmCorruptConstant);
@@ -3758,7 +3762,7 @@ impl<'gc> VM<'gc> {
 
     /// create a new Table Value, iterating our primative table id counter
     pub fn new_table(&self, mc: &Mutation<'gc>) -> Value<'gc> {
-        let t = Table::new(*self.table_counter.borrow());
+        let t = Table::new(&self.metrics, *self.table_counter.borrow());
         *self.table_counter.borrow_mut() += 1;
         Value::Table(Gc::new(mc, RefLock::new(t)))
     }
@@ -3776,7 +3780,7 @@ impl<'gc> VM<'gc> {
         I: IntoIterator<Item = A>,
         A: Into<Value<'gc>>,
     {
-        let mut t = Table::new(*self.table_counter.borrow());
+        let mut t = Table::new(&self.metrics, *self.table_counter.borrow());
         *self.table_counter.borrow_mut() += 1;
         t.concat_array(array);
 
@@ -3784,7 +3788,7 @@ impl<'gc> VM<'gc> {
     }
 
     pub fn raw_table(&self) -> Table<'gc> {
-        let t = Table::new(*self.table_counter.borrow());
+        let t = Table::new(&self.metrics, *self.table_counter.borrow());
         *self.table_counter.borrow_mut() += 1;
         t
     }

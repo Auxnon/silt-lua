@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use gc_arena::{Collect, Mutation};
+use gc_arena::{metrics::Metrics, Collect, Mutation};
 
 use crate::{
     error::SiltError,
@@ -22,6 +22,15 @@ use crate::{
 /// * `hash` never holds the key `array.len() + 1`: appending runs `absorb`, which
 ///   pulls any such run of keys over, so a sequence built out of order
 ///   (`t[3]=c; t[1]=a; t[2]=b`) still collapses into the array.
+/// * A hash entry whose value is `Nil` is a *dead key*: `t[k] = nil` on a hash key
+///   keeps the key, as Lua does, so a `pairs` loop that clears fields can still
+///   find its place. Reads treat a dead key as absent. Dead keys are swept out
+///   only when a *new* key needs room (`make_room`), which is also where the hash
+///   part shrinks — adding keys mid-traversal is undefined in Lua, so neither
+///   ever moves a traversal.
+/// * The array and hash buffers live outside the `Gc` allocation, so their size
+///   is reported to the arena's metrics (`Footprint`), letting collection pace
+///   itself on what tables really hold.
 ///
 /// `#t` is the border `array.len()` (after trimming), O(1) for hole-free tables.
 /// Sequence reads/writes are a bounds-checked index instead of a hash and
@@ -33,6 +42,59 @@ pub struct Table<'v> {
     hash: hashbrown::HashMap<Value<'v>, Value<'v>, FxBuild>,
     meta: Option<Value<'v>>,
     id: usize,
+    footprint: Footprint,
+}
+
+/// The bytes a table's buffers hold outside its `Gc` allocation, as last reported
+/// to the arena. Handing them back on drop lives here because `Table` itself may
+/// not implement `Drop` (`#[collect(no_drop)]`).
+#[derive(Collect)]
+#[collect(require_static)]
+struct Footprint {
+    metrics: Metrics,
+    /// The array and hash capacities last reported (the bytes are derived from
+    /// them), so the common no-change check is two compares. `u32` keeps the
+    /// struct at 16 bytes; a part past 4G slots would only re-report.
+    array_cap: u32,
+    hash_cap: u32,
+}
+
+impl Footprint {
+    /// Parts under [`COUNT_MIN`] slots count as nothing, so the many small tables
+    /// a program makes and drops (`{x = 1, y = 2}`) never touch the metrics; their
+    /// few hundred bytes are near the size of the `Gc` allocation, which the arena
+    /// counts already. A part that grows past it reports all of its size.
+    fn bytes(&self) -> usize {
+        let counted = |cap: u32| if cap < COUNT_MIN { 0 } else { cap as usize };
+        counted(self.array_cap) * std::mem::size_of::<Value>()
+            + hash_bytes::<Value, Value>(counted(self.hash_cap))
+    }
+}
+
+/// See [`Footprint::bytes`].
+const COUNT_MIN: u32 = 8;
+
+impl Drop for Footprint {
+    fn drop(&mut self) {
+        let bytes = self.bytes();
+        if bytes != 0 {
+            self.metrics.mark_external_deallocation(bytes);
+        }
+    }
+}
+
+/// Below this many slots the array part is never shrunk: small tables would only churn.
+const SHRINK_MIN: usize = 64;
+
+/// Approximate heap bytes of a hashbrown map with room for `cap` entries: its
+/// buckets (a power of two, kept at most 7/8 full) each hold an entry plus a
+/// control byte.
+fn hash_bytes<K, V>(cap: usize) -> usize {
+    if cap == 0 {
+        return 0;
+    }
+    let buckets = if cap < 8 { cap + 1 } else { (cap * 8 / 7).next_power_of_two() };
+    buckets * (std::mem::size_of::<(K, V)>() + 1) + 16
 }
 
 /// A float key with an integer value is that integer, as in Lua: `t[6/2]` is `t[3]`
@@ -48,13 +110,90 @@ fn float_key<'v>(key: &Value<'v>) -> Option<Value<'v>> {
 }
 
 impl<'v> Table<'v> {
-    pub fn new(id: usize) -> Self {
+    /// An empty table. `metrics` is the arena's (`mc.metrics()`), which the
+    /// table reports its buffer sizes to.
+    pub fn new(metrics: &Metrics, id: usize) -> Self {
         Table {
             array: Vec::new(),
             hash: hashbrown::HashMap::default(),
             meta: None,
             id,
+            footprint: Footprint { metrics: metrics.clone(), array_cap: 0, hash_cap: 0 },
         }
+    }
+
+    /// Report any change in buffer size since the last report. Call after
+    /// anything that may grow or shrink a buffer.
+    #[inline]
+    fn account(&mut self) {
+        let f = &self.footprint;
+        if self.array.capacity() as u32 != f.array_cap || self.hash.capacity() as u32 != f.hash_cap {
+            self.report();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn report(&mut self) {
+        let before = self.footprint.bytes();
+        self.footprint.array_cap = self.array.capacity() as u32;
+        self.footprint.hash_cap = self.hash.capacity() as u32;
+        let now = self.footprint.bytes();
+        let m = &self.footprint.metrics;
+        if now == before {
+        } else if now > before {
+            m.mark_external_allocation(now - before);
+        } else {
+            m.mark_external_deallocation(before - now);
+        }
+    }
+
+    /// Store `v` (not `Nil`) under hash key `k`. An existing or dead key is
+    /// overwritten in place; a new key that would grow the map first sweeps
+    /// out the dead keys, as Lua's rehash does.
+    #[inline]
+    fn hash_set(&mut self, k: Value<'v>, v: Value<'v>) -> Option<Value<'v>> {
+        // (an unallocated map is "full" too, but holds no key and nothing dead)
+        if self.hash.len() == self.hash.capacity() && self.hash.capacity() != 0 {
+            // hashbrown's `insert` reserves room before it looks for the key, so
+            // on a full map even overwriting a key would rehash, reordering any
+            // traversal in progress (overwriting fields mid-`pairs` is allowed)
+            if let Some(slot) = self.hash.get_mut(&k) {
+                return Some(std::mem::replace(slot, v)).filter(|o| !matches!(o, Value::Nil));
+            }
+            self.make_room();
+        }
+        let old = self.hash.insert(k, v);
+        self.account();
+        old.filter(|o| !matches!(o, Value::Nil))
+    }
+
+    /// `t[k] = nil` on a hash key: leave it as a dead key (see the type docs).
+    #[inline]
+    fn hash_clear(&mut self, k: &Value<'v>) -> Option<Value<'v>> {
+        match self.hash.get_mut(k) {
+            Some(slot) => Some(std::mem::take(slot)).filter(|o| !matches!(o, Value::Nil)),
+            None => None,
+        }
+    }
+
+    /// The hash part is full and a new key is coming. If any keys are dead,
+    /// rebuild it with room for twice the live ones, which sweeps them and
+    /// shrinks a mostly-empty map; otherwise leave the growing to `insert`.
+    ///
+    /// A rebuild rather than `retain`: `retain` leaves its removals as tombstones
+    /// that `capacity()` doesn't count, so the map would look empty while it
+    /// keeps every bucket.
+    #[cold]
+    #[inline(never)]
+    fn make_room(&mut self) {
+        let live = self.hash.values().filter(|v| !matches!(v, Value::Nil)).count();
+        if live == self.hash.len() {
+            return;
+        }
+        let old = std::mem::take(&mut self.hash);
+        self.hash = hashbrown::HashMap::with_capacity_and_hasher(live * 2, FxBuild::default());
+        self.hash.extend(old.into_iter().filter(|(_, v)| !matches!(v, Value::Nil)));
     }
 
     pub fn wrap_map(
@@ -63,7 +202,7 @@ impl<'v> Table<'v> {
         id: usize,
         input: &ExTable,
     ) -> Result<Table<'v>, SiltError> {
-        let mut t = Table::new(id);
+        let mut t = Table::new(mc.metrics(), id);
         for (k, v) in input.into_iter() {
             let kk: Value = k.into_value(vm, mc)?;
             let vv = v.into_value(vm, mc)?;
@@ -82,17 +221,20 @@ impl<'v> Table<'v> {
         }
     }
 
-    /// The value at `key`, or `None` when absent (a `Nil` hole counts as absent).
+    /// The value at `key`, or `None` when absent (a `Nil` hole or a dead key
+    /// counts as absent).
     #[inline]
     fn get_ref(&self, key: &Value<'v>) -> Option<&Value<'v>> {
+        self.lookup(key).filter(|v| !matches!(v, Value::Nil))
+    }
+
+    /// Where `key` is stored, which may hold `Nil` (a hole or a dead key). The
+    /// reads that turn a miss into `nil` anyway use this and skip the check.
+    #[inline]
+    fn lookup(&self, key: &Value<'v>) -> Option<&Value<'v>> {
         if let Value::Integer(i) = key {
             if let Some(idx) = self.slot(*i) {
-                let v = &self.array[idx];
-                return if matches!(v, Value::Nil) {
-                    None
-                } else {
-                    Some(v)
-                };
+                return Some(&self.array[idx]);
             }
         }
         match self.hash.get(key) {
@@ -111,7 +253,7 @@ impl<'v> Table<'v> {
             return None;
         };
         match self.slot(i) {
-            Some(idx) => Some(&self.array[idx]).filter(|v| !matches!(v, Value::Nil)),
+            Some(idx) => Some(&self.array[idx]),
             None => self.hash.get(&k),
         }
     }
@@ -119,7 +261,7 @@ impl<'v> Table<'v> {
     /// The value at string key `key`, looked up without allocating a string.
     #[inline]
     pub fn get_str(&self, key: &str) -> Option<&Value<'v>> {
-        self.hash.get(&StrKey::new(key))
+        self.hash.get(&StrKey::new(key)).filter(|v| !matches!(v, Value::Nil))
     }
 
     /// Drop trailing `Nil`s so `array.last()` is a real value (or the array is empty).
@@ -127,6 +269,12 @@ impl<'v> Table<'v> {
     fn trim(&mut self) {
         while matches!(self.array.last(), Some(Value::Nil)) {
             self.array.pop();
+        }
+        // Shrinking the buffer never moves an index, so it is safe mid-traversal.
+        let (len, cap) = (self.array.len(), self.array.capacity());
+        if cap > SHRINK_MIN && len * 4 < cap {
+            self.array.shrink_to(len * 2);
+            self.account();
         }
     }
 
@@ -141,6 +289,9 @@ impl<'v> Table<'v> {
             .hash
             .remove(&Value::Integer(self.array.len() as i64 + 1))
         {
+            if matches!(v, Value::Nil) {
+                break; // a dead key: the sequence ends here
+            }
             self.array.push(v);
         }
     }
@@ -161,16 +312,17 @@ impl<'v> Table<'v> {
         }
         if i as usize == self.array.len() + 1 && i >= 1 {
             if is_nil {
-                return self.hash.remove(&Value::Integer(i));
+                return self.hash_clear(&Value::Integer(i));
             }
             self.array.push(v);
             self.absorb();
+            self.account();
             return None;
         }
         if is_nil {
-            self.hash.remove(&Value::Integer(i))
+            self.hash_clear(&Value::Integer(i))
         } else {
-            self.hash.insert(Value::Integer(i), v)
+            self.hash_set(Value::Integer(i), v)
         }
     }
 
@@ -195,8 +347,9 @@ impl<'v> Table<'v> {
         self.get_ref(&Value::Integer(i as i64))
     }
 
+    #[inline]
     pub fn get_value(&self, key: &Value<'v>) -> Value<'v> {
-        match self.get_ref(key) {
+        match self.lookup(key) {
             Some(v) => v.clone(),
             None => Value::Nil,
         }
@@ -213,6 +366,17 @@ impl<'v> Table<'v> {
             Value::Integer(i) => self.slot(*i).map(|idx| idx + 1),
             _ => None,
         };
+        // An integer key past the array that the hash part doesn't hold was in
+        // the array part until a `t[k] = nil` trimmed it off: the array is done.
+        let array_from = match (array_from, key) {
+            (None, Value::Integer(i)) if *i >= 1 && !self.hash.contains_key(key) => {
+                Some(self.array.len())
+            }
+            (a, _) => a,
+        };
+        let live = |(k, v): (&Value<'v>, &Value<'v>)| {
+            (!matches!(v, Value::Nil)).then(|| (k.clone(), v.clone()))
+        };
         if let Some(from) = array_from {
             for (idx, v) in self.array.iter().enumerate().skip(from) {
                 if !matches!(v, Value::Nil) {
@@ -220,16 +384,17 @@ impl<'v> Table<'v> {
                 }
             }
             // array exhausted: fall through to the start of the hash part
-            return self.hash.iter().next().map(|(k, v)| (k.clone(), v.clone()));
+            return self.hash.iter().find_map(live);
         }
-        // advance past `key` in the hash part, then yield the following entry
+        // advance past `key` in the hash part (it may be dead by now: a traversal
+        // may clear the field it is on), then yield the next live entry
         let mut iter = self.hash.iter();
         for (k, _) in iter.by_ref() {
             if k == key {
                 break;
             }
         }
-        iter.next().map(|(k, v)| (k.clone(), v.clone()))
+        iter.find_map(live)
     }
 
     pub fn try_get_type<'f, T, R>(&self, key: T, vm: &VM<'v>, mc: &Mutation<'v>) -> Option<R>
@@ -284,9 +449,9 @@ impl<'v> Table<'v> {
             }
         }
         if matches!(v, Value::Nil) {
-            self.hash.remove(&k)
+            self.hash_clear(&k)
         } else {
-            self.hash.insert(k, v)
+            self.hash_set(k, v)
         }
     }
 
@@ -299,6 +464,7 @@ impl<'v> Table<'v> {
     {
         self.array.push(val.into());
         self.absorb();
+        self.account();
         None
     }
 
@@ -365,7 +531,8 @@ impl<'v> Table<'v> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.array.iter().all(|v| matches!(v, Value::Nil)) && self.hash.is_empty()
+        self.array.iter().all(|v| matches!(v, Value::Nil))
+            && self.hash.values().all(|v| matches!(v, Value::Nil))
     }
 
     /// Positional insert — Lua `table.insert(t, pos, v)`: open a slot at `pos` by
@@ -375,6 +542,7 @@ impl<'v> Table<'v> {
         if i >= 1 && (i as usize) <= self.array.len() + 1 {
             self.array.insert(i as usize - 1, value);
             self.absorb();
+            self.account();
         } else {
             self.set_int(i, value);
         }
@@ -400,7 +568,7 @@ impl<'v> Table<'v> {
             self.trim();
             removed
         } else {
-            self.hash.remove(&Value::Integer(pos)).unwrap_or_default()
+            self.hash_clear(&Value::Integer(pos)).unwrap_or_default()
         }
     }
 
@@ -482,7 +650,12 @@ impl<'v> Table<'v> {
             .enumerate()
             .filter(|(_, v)| !matches!(v, Value::Nil))
             .map(|(i, v)| (Value::Integer(i as i64 + 1), v))
-            .chain(self.hash.iter().map(|(k, v)| (k.clone(), v)))
+            .chain(
+                self.hash
+                    .iter()
+                    .filter(|(_, v)| !matches!(v, Value::Nil))
+                    .map(|(k, v)| (k.clone(), v)),
+            )
     }
 
     pub fn list_keys(&self) -> String {
