@@ -2,6 +2,8 @@ use std::{fmt::Display, rc::Rc};
 
 use colored::Colorize;
 use gc_arena::{lock::RefLock, Collect, Gc, Mutation};
+#[cfg(feature = "hot-swap")]
+use gc_arena::lock::Lock;
 
 use crate::{
     chunk::Chunk,
@@ -59,7 +61,7 @@ impl<'frame> CallFrame<'frame> {
         // prototype, costing nothing beyond a pointer copy (and it lets `get_chunk`
         // skip one indirection on every constant access).
         #[cfg(feature = "hot-swap")]
-        let proto = match *function.function.swap.borrow() {
+        let proto = match function.function.swap.get() {
             Some(redirect) => redirect,
             None => function.function,
         };
@@ -187,7 +189,7 @@ pub struct FunctionObject<'chnk> {
     /// Gated behind `hot-swap`: builds without the feature carry neither this field
     /// nor the per-call redirect check, so the normal execution path is unchanged.
     #[cfg(feature = "hot-swap")]
-    pub swap: RefLock<Option<Gc<'chnk, FunctionObject<'chnk>>>>,
+    pub swap: Lock<Option<Gc<'chnk, FunctionObject<'chnk>>>>,
 }
 
 impl<'chnk> FunctionObject<'chnk> {
@@ -206,7 +208,7 @@ impl<'chnk> FunctionObject<'chnk> {
             source_index: crate::error::SOURCE_INDEX_UNKNOWN,
             chunk_name: None,
             #[cfg(feature = "hot-swap")]
-            swap: RefLock::new(None),
+            swap: Lock::new(None),
         }
     }
 

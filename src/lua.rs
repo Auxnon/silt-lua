@@ -562,7 +562,7 @@ pub enum HotswapResult {
 /// The prototype a closure of `p` runs: `p`, or the body a hot-swap redirected it to.
 #[cfg(feature = "hot-swap")]
 fn effective<'gc>(p: Gc<'gc, FunctionObject<'gc>>) -> Gc<'gc, FunctionObject<'gc>> {
-    match *p.swap.borrow() {
+    match p.swap.get() {
         Some(n) => n,
         None => p,
     }
@@ -1443,7 +1443,7 @@ impl<'gc> VM<'gc> {
                     // `swap` lives inside an allocated Gc, so the new pointer goes
                     // through the write barrier.
                     let cell = gc_arena::barrier::unlock!(Gc::write(mc, old), FunctionObject, swap);
-                    cell.replace(Some(new));
+                    cell.set(Some(new));
                 }
             }
         }
